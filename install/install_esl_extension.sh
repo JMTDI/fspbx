@@ -26,6 +26,14 @@ if [ ! -x "$PHP_BIN" ]; then
   exit 1
 fi
 
+# ── Clear any stale/broken ESL ini files before we begin ───────────────────
+# (prevents PHP startup warnings during the build phase)
+for ini in \
+    /etc/php/8.4/cli/conf.d/30-esl.ini \
+    /etc/php/8.4/fpm/conf.d/30-esl.ini; do
+  [ -f "$ini" ] && rm -f "$ini" && print_info "Removed stale: $ini"
+done
+
 EXTENSION_DIR="$("$PHP_BIN" -r 'echo ini_get("extension_dir");')"
 if [ -z "$EXTENSION_DIR" ]; then
   print_error "Failed to detect PHP 8.4 extension_dir."
@@ -37,62 +45,94 @@ print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
-  # Install build dependencies
+  # NOTE: libfreeswitch-dev is NOT in Debian ARM64 repos (SignalWire x86 only).
+  # The ESL build is self-contained inside the FreeSWITCH source tree — we
+  # only need the generic build tools + php8.4-dev + swig.
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     php8.4-dev \
     swig \
     build-essential \
     git \
-    libfreeswitch-dev \
-    ca-certificates
+    ca-certificates \
+    libtool \
+    automake \
+    autoconf
 
-  # Locate or clone FreeSWITCH source
+  # ── Locate or clone FreeSWITCH source ──────────────────────────────────
   FS_SRC=""
   for candidate in /usr/src/freeswitch /usr/src/freeswitch-*; do
     if [ -d "$candidate/libs/esl" ]; then
       FS_SRC="$candidate"
+      print_info "Found existing FreeSWITCH source at: $FS_SRC"
       break
     fi
   done
 
   if [ -z "$FS_SRC" ]; then
-    print_warn "FreeSWITCH source not found — cloning (shallow)..."
+    print_warn "FreeSWITCH source not found — cloning (shallow, main branch)..."
     git clone --depth=1 https://github.com/signalwire/freeswitch.git /usr/src/freeswitch
     FS_SRC="/usr/src/freeswitch"
     cd "$FS_SRC"
+    print_info "Running bootstrap..."
     ./bootstrap.sh -j
   fi
 
-  print_info "Building ESL PHP module in $FS_SRC/libs/esl ..."
-  cd "$FS_SRC/libs/esl"
-  make phpmod
-
-  # Confirm the built .so is actually aarch64
-  BUILT_SO="$FS_SRC/libs/esl/php8/esl.so"
-  if [ ! -f "$BUILT_SO" ]; then
-    print_error "Build completed but esl.so not found at: $BUILT_SO"
+  ESL_DIR="$FS_SRC/libs/esl"
+  if [ ! -d "$ESL_DIR" ]; then
+    print_error "ESL directory not found in FreeSWITCH source: $ESL_DIR"
     exit 1
   fi
 
-  SO_ARCH="$(file "$BUILT_SO")"
-  print_info "Built binary: $SO_ARCH"
-  case "$SO_ARCH" in
-    *aarch64*|*ARM*) print_success "Architecture verified: aarch64 ✓" ;;
+  print_info "Building ESL PHP module (make phpmod) in $ESL_DIR ..."
+  cd "$ESL_DIR"
+
+  # Clean any previous partial build
+  make clean 2>/dev/null || true
+  make phpmod
+
+  # ── Locate the built .so ────────────────────────────────────────────────
+  BUILT_SO=""
+  for candidate in \
+      "$ESL_DIR/php8/esl.so" \
+      "$ESL_DIR/php/esl.so" \
+      "$ESL_DIR/.libs/esl.so"; do
+    if [ -f "$candidate" ]; then
+      BUILT_SO="$candidate"
+      break
+    fi
+  done
+
+  if [ -z "$BUILT_SO" ]; then
+    print_error "Build finished but esl.so not found. Searched:"
+    print_error "  $ESL_DIR/php8/esl.so"
+    print_error "  $ESL_DIR/php/esl.so"
+    print_error "  $ESL_DIR/.libs/esl.so"
+    print_error "Contents of $ESL_DIR:"
+    ls -la "$ESL_DIR" || true
+    exit 1
+  fi
+
+  print_info "Found built module: $BUILT_SO"
+
+  # ── Arch verification ───────────────────────────────────────────────────
+  SO_FILE_OUTPUT="$(file "$BUILT_SO")"
+  print_info "Built binary: $SO_FILE_OUTPUT"
+  case "$SO_FILE_OUTPUT" in
+    *aarch64*|*ARM\ aarch64*)
+      print_success "Architecture verified: aarch64 ✓" ;;
     *)
-      print_error "Built .so does not appear to be aarch64: $SO_ARCH"
-      exit 1
-      ;;
+      print_error "Built .so does not appear to be aarch64: $SO_FILE_OUTPUT"
+      exit 1 ;;
   esac
 
-  # Verify shared library dependencies before deploying
-  if ! ldd "$BUILT_SO" | grep -q "not found"; then
-    print_success "ldd check passed — no missing dependencies."
-  else
+  # ── Dependency check ────────────────────────────────────────────────────
+  if ldd "$BUILT_SO" 2>&1 | grep -q "not found"; then
     print_error "Missing shared library dependencies:"
     ldd "$BUILT_SO" | grep "not found"
     exit 1
   fi
+  print_success "ldd check passed — no missing dependencies."
 
   ESL_SO_SRC="$BUILT_SO"
 }
@@ -100,32 +140,26 @@ build_esl_from_source() {
 # ── Decide: use pre-built or build from source ───────────────────────────────
 case "$ARCH" in
   aarch64|arm64)
-    # Ignore any pre-built x86_64 binary and always build natively
     build_esl_from_source
     ;;
   x86_64|amd64)
-    # Use the pre-built binary as before
     if [ ! -f "$ESL_SO_SRC" ]; then
       print_error "Missing ESL module: $ESL_SO_SRC"
       print_error "Place your compiled module at: /var/www/fspbx/install/esl-8.4.so"
       exit 1
     fi
-    # Verify the pre-built binary is actually x86_64
-    SO_ARCH="$(file "$ESL_SO_SRC")"
-    case "$SO_ARCH" in
-      *x86-64*|*x86_64*) print_success "Pre-built binary architecture verified: x86_64 ✓" ;;
+    SO_FILE_OUTPUT="$(file "$ESL_SO_SRC")"
+    case "$SO_FILE_OUTPUT" in
+      *x86-64*|*x86_64*)
+        print_success "Pre-built binary architecture verified: x86_64 ✓" ;;
       *)
-        print_error "Pre-built .so does not appear to be x86_64: $SO_ARCH"
-        print_error "You may be running x86_64 but have an incompatible binary."
-        exit 1
-        ;;
+        print_error "Pre-built .so is not x86_64: $SO_FILE_OUTPUT"
+        exit 1 ;;
     esac
     ;;
   *)
     print_error "Unsupported architecture: $ARCH"
-    print_error "Only x86_64 (pre-built) and aarch64 (source build) are supported."
-    exit 1
-    ;;
+    exit 1 ;;
 esac
 
 # ── Install the .so ──────────────────────────────────────────────────────────
