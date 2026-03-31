@@ -59,14 +59,13 @@ detect_swig_php_flag() {
 }
 
 # ── Ensure a complete FreeSWITCH clone ──────────────────────────────────────
-# Header layout (confirmed from directory listing):
-#   libs/esl/ESL.i              — SWIG interface file
-#   libs/esl/src/esl_oop.cpp    — C++ implementation
-#   libs/esl/src/include/       — all .h headers (esl_oop.h, esl.h, etc.)
+# Header layout:
+#   libs/esl/ESL.i
+#   libs/esl/src/include/esl_oop.h   (confirmed from directory listing)
+#   libs/esl/src/include/esl.h
 ensure_freeswitch_source() {
   ESL_DIR="$FS_SRC/libs/esl"
-  ESL_SRC_DIR="$ESL_DIR/src"
-  ESL_INC_DIR="$ESL_SRC_DIR/include"   # <-- headers are HERE
+  ESL_INC_DIR="$ESL_DIR/src/include"
 
   HEADERS_OK=true
   for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
@@ -81,8 +80,6 @@ ensure_freeswitch_source() {
       print_info "Cloning FreeSWITCH source..."
     fi
 
-    # --recurse-submodules initialises libs/esl/src/ (it is a submodule).
-    # --shallow-submodules keeps that clone shallow too.
     git clone \
       --depth=1 \
       --recurse-submodules \
@@ -93,16 +90,16 @@ ensure_freeswitch_source() {
     return
   fi
 
-  # Post-clone sanity check — dump layout on failure to catch future moves
+  # Post-clone sanity check
   for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
     if [ ! -f "$f" ]; then
       print_error "Required file still missing after clone: $f"
-      print_error "── $ESL_DIR contents:"
-      ls -la "$ESL_DIR"    2>/dev/null || true
-      print_error "── $ESL_SRC_DIR contents:"
-      ls -la "$ESL_SRC_DIR" 2>/dev/null || true
-      print_error "── $ESL_INC_DIR contents:"
-      ls -la "$ESL_INC_DIR" 2>/dev/null || print_error "  (does not exist)"
+      print_error "── $ESL_DIR:"
+      ls -la "$ESL_DIR"            2>/dev/null || true
+      print_error "── $ESL_DIR/src:"
+      ls -la "$ESL_DIR/src"        2>/dev/null || true
+      print_error "── $ESL_INC_DIR:"
+      ls -la "$ESL_INC_DIR"        2>/dev/null || print_error "  (does not exist)"
       exit 1
     fi
   done
@@ -137,10 +134,15 @@ build_esl_from_source() {
   fi
 
   # ── Regenerate SWIG bindings ────────────────────────────────────────────
-  # Run from ESL_DIR; pass all three header locations to be safe.
+  # -c++        : parse in C++ mode — required because esl_oop.h uses 'class'
+  # -module esl : ESL.i has no %module directive; we must supply the name
+  # -cppext cpp : output file gets .cpp extension (not .cxx)
+  # -I flags    : cover all three header locations
   print_info "Regenerating SWIG bindings..."
   cd "$ESL_DIR"
   swig "$SWIG_PHP_FLAG" \
+       -c++ \
+       -module esl \
        -cppext cpp \
        -I"$ESL_DIR" \
        -I"$ESL_SRC_DIR" \
@@ -182,9 +184,9 @@ build_esl_from_source() {
     print_error "Build finished but esl.so not found. Searched:"
     print_error "  $PHP_EXT_DIR/modules/esl.so"
     print_error "  $PHP_EXT_DIR/.libs/esl.so"
-    print_error "Contents of $PHP_EXT_DIR:"
+    print_error "── $PHP_EXT_DIR:"
     ls -la "$PHP_EXT_DIR/" || true
-    print_error "Contents of modules/ (if exists):"
+    print_error "── $PHP_EXT_DIR/modules (if exists):"
     ls -la "$PHP_EXT_DIR/modules/" 2>/dev/null || true
     exit 1
   fi
