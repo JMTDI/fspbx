@@ -16,7 +16,7 @@ PHP_BIN="/usr/bin/php8.4"
 PHP_CONFIG="/usr/bin/php-config8.4"
 PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
-SCRIPT_DIR=""](CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
 FS_SRC="/usr/src/freeswitch"
 
@@ -171,7 +171,7 @@ ENDOFCONFIG
   #
   # Root cause of "libtool: error: ignoring unknown tag CXX":
   #   The FreeSWITCH source tree ships a very old build/ltmain.sh that
-  #   predates libtool's --tag= support.  Both phpize and ./configure
+  #   predates libtool --tag= support.  Both phpize and ./configure
   #   regenerate the local ./libtool wrapper FROM this file, so no matter
   #   what we put in ./libtool before configure runs, config.status will
   #   overwrite it from the same broken ltmain.sh.
@@ -181,7 +181,7 @@ ENDOFCONFIG
   #
   # Fix: patch build/ltmain.sh IN PLACE (once, idempotent) by prepending
   # a small argument-stripping shim right after the she-bang line.  The
-  # shim removes any --tag=* entry from $@ before the rest of ltmain.sh
+  # shim removes any --tag=* entry from "$@" before the rest of ltmain.sh
   # processes arguments.  Every ./libtool subsequently regenerated from
   # this file will inherit the fix.
   LTMAIN="$FS_SRC/build/ltmain.sh"
@@ -190,15 +190,16 @@ ENDOFCONFIG
     LTMAIN_TMP="${LTMAIN}.tmp$$"
     # Line 1: preserve the she-bang
     head -n 1 "$LTMAIN" > "$LTMAIN_TMP"
-    # Insert the shim
+    # Insert the shim immediately after the she-bang
     cat >> "$LTMAIN_TMP" <<'LTPATCH'
 
 # COPILOT_TAG_PATCH -- strip --tag=* so this old ltmain.sh does not choke on it
 _lt_new_args=''
 for _lt_arg in "$@"; do
   case "$_lt_arg" in
-    --tag=*) ;;     
-    *) _lt_new_args="${_lt_new_args} \"${_lt_arg}\"" ;;
+    --tag=*) ;;
+    *) _lt_new_args="
+${_lt_new_args} \"${_lt_arg}\"" ;;
   esac
 done
 eval set -- ${_lt_new_args}
@@ -206,7 +207,7 @@ unset _lt_new_args _lt_arg
 # END COPILOT_TAG_PATCH
 
 LTPATCH
-    # Remainder of original file (skip she-bang we already wrote)
+    # Remainder of original file (skip she-bang already written)
     tail -n +2 "$LTMAIN" >> "$LTMAIN_TMP"
     mv "$LTMAIN_TMP" "$LTMAIN"
     chmod +x "$LTMAIN"
@@ -261,7 +262,7 @@ LTPATCH
   print_info "Built binary info: $SO_FILE_OUTPUT"
   case "$SO_FILE_OUTPUT" in
     *aarch64*|*ARM\ aarch64*)
-      print_success "Architecture verified: aarch64" ;; 
+      print_success "Architecture verified: aarch64" ;;
     *)
       print_error "Built .so does not appear to be aarch64: $SO_FILE_OUTPUT"
       exit 1 ;;
@@ -291,7 +292,7 @@ case "$ARCH" in
     SO_FILE_OUTPUT="$(file "$ESL_SO_SRC")"
     case "$SO_FILE_OUTPUT" in
       *x86-64*|*x86_64*)
-        print_success "Pre-built binary architecture verified: x86_64" ;; 
+        print_success "Pre-built binary architecture verified: x86_64" ;;
       *)
         print_error "Pre-built .so is not x86_64: $SO_FILE_OUTPUT"
         exit 1 ;;
@@ -302,7 +303,7 @@ case "$ARCH" in
     exit 1 ;;
 esac
 
-# ── Install the .so ──────────────────────────────────────────────────────────
+# ── Install the .so ────────────────────────────────���─────────────────────────
 install -m 0644 -o root -g root "$ESL_SO_SRC" "$EXTENSION_DIR/esl.so"
 print_success "Installed: $EXTENSION_DIR/esl.so"
 
@@ -334,4 +335,4 @@ else
   exit 1
 fi
 
-print_success "ESL installation completed successfully for PHP 8.4 on $ARCH.
+print_success "ESL installation completed successfully for PHP 8.4 on $ARCH."
