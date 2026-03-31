@@ -13,9 +13,12 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 PHP_BIN="/usr/bin/php8.4"
+PHP_CONFIG="/usr/bin/php-config8.4"
+PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
+FS_SRC="/usr/src/freeswitch"
 
 # ── Detect architecture ─────────────────────────────────────────────────────
 ARCH="$(uname -m)"
@@ -27,7 +30,6 @@ if [ ! -x "$PHP_BIN" ]; then
 fi
 
 # ── Clear any stale/broken ESL ini files before we begin ───────────────────
-# (prevents PHP startup warnings during the build phase)
 for ini in \
     /etc/php/8.4/cli/conf.d/30-esl.ini \
     /etc/php/8.4/fpm/conf.d/30-esl.ini; do
@@ -45,9 +47,9 @@ print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
-  # NOTE: libfreeswitch-dev is NOT in Debian ARM64 repos (SignalWire x86 only).
-  # The ESL build is self-contained inside the FreeSWITCH source tree — we
-  # only need the generic build tools + php8.4-dev + swig.
+  # libfreeswitch-dev is x86-only in SignalWire's repo — do NOT install it.
+  # bootstrap.sh is NOT run — it overwrites the ESL Makefile and removes phpmod.
+  # We build via phpize inside libs/esl/php/ which has pre-generated SWIG files.
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     php8.4-dev \
@@ -55,48 +57,72 @@ build_esl_from_source() {
     build-essential \
     git \
     ca-certificates \
-    libtool \
-    automake \
     autoconf
 
-  # ── Locate or clone FreeSWITCH source ──────────────────────────────────
-  FS_SRC=""
-  for candidate in /usr/src/freeswitch /usr/src/freeswitch-*; do
-    if [ -d "$candidate/libs/esl" ]; then
-      FS_SRC="$candidate"
-      print_info "Found existing FreeSWITCH source at: $FS_SRC"
-      break
-    fi
-  done
-
-  if [ -z "$FS_SRC" ]; then
-    print_warn "FreeSWITCH source not found — cloning (shallow, main branch)..."
-    git clone --depth=1 https://github.com/signalwire/freeswitch.git /usr/src/freeswitch
-    FS_SRC="/usr/src/freeswitch"
+  # ── Clone FreeSWITCH source (shallow — we only need libs/esl) ──────────
+  if [ ! -d "$FS_SRC/libs/esl" ]; then
+    print_info "Cloning FreeSWITCH source (shallow)..."
+    # Use sparse checkout to pull only libs/esl — much faster on ARM
+    git clone \
+      --depth=1 \
+      --filter=blob:none \
+      --sparse \
+      https://github.com/signalwire/freeswitch.git "$FS_SRC"
     cd "$FS_SRC"
-    print_info "Running bootstrap..."
-    ./bootstrap.sh -j
+    git sparse-checkout set libs/esl
+  else
+    print_info "Found existing FreeSWITCH source at: $FS_SRC"
   fi
 
   ESL_DIR="$FS_SRC/libs/esl"
-  if [ ! -d "$ESL_DIR" ]; then
-    print_error "ESL directory not found in FreeSWITCH source: $ESL_DIR"
+  PHP_EXT_DIR="$ESL_DIR/php"
+
+  if [ ! -d "$PHP_EXT_DIR" ]; then
+    print_error "Expected ESL PHP dir not found: $PHP_EXT_DIR"
+    print_error "Repository layout may have changed. Contents of $ESL_DIR:"
+    ls -la "$ESL_DIR" || true
     exit 1
   fi
 
-  print_info "Building ESL PHP module (make phpmod) in $ESL_DIR ..."
-  cd "$ESL_DIR"
+  # ── Regenerate SWIG bindings if ESL.cpp is missing ─────────────────────
+  if [ ! -f "$PHP_EXT_DIR/ESL.cpp" ]; then
+    print_warn "SWIG-generated ESL.cpp not found — regenerating..."
+    if [ ! -f "$ESL_DIR/ESL.i" ]; then
+      print_error "SWIG interface file ESL.i not found in $ESL_DIR"
+      exit 1
+    fi
+    swig -php8 -cppext cpp \
+         -o "$PHP_EXT_DIR/ESL.cpp" \
+         -outdir "$PHP_EXT_DIR" \
+         "$ESL_DIR/ESL.i"
+    print_success "SWIG bindings generated."
+  else
+    print_info "Using existing SWIG-generated ESL.cpp."
+  fi
+
+  # ── Build using phpize ──────────────────────────────────────────────────
+  print_info "Running phpize in $PHP_EXT_DIR ..."
+  cd "$PHP_EXT_DIR"
 
   # Clean any previous partial build
-  make clean 2>/dev/null || true
-  make phpmod
+  if [ -f Makefile ]; then
+    make distclean 2>/dev/null || make clean 2>/dev/null || true
+  fi
+
+  "$PHPIZE" --clean 2>/dev/null || true
+  "$PHPIZE"
+
+  print_info "Running configure..."
+  ./configure --with-php-config="$PHP_CONFIG"
+
+  print_info "Running make..."
+  make -j"$(nproc)"
 
   # ── Locate the built .so ────────────────────────────────────────────────
   BUILT_SO=""
   for candidate in \
-      "$ESL_DIR/php8/esl.so" \
-      "$ESL_DIR/php/esl.so" \
-      "$ESL_DIR/.libs/esl.so"; do
+      "$PHP_EXT_DIR/modules/esl.so" \
+      "$PHP_EXT_DIR/.libs/esl.so"; do
     if [ -f "$candidate" ]; then
       BUILT_SO="$candidate"
       break
@@ -105,19 +131,20 @@ build_esl_from_source() {
 
   if [ -z "$BUILT_SO" ]; then
     print_error "Build finished but esl.so not found. Searched:"
-    print_error "  $ESL_DIR/php8/esl.so"
-    print_error "  $ESL_DIR/php/esl.so"
-    print_error "  $ESL_DIR/.libs/esl.so"
-    print_error "Contents of $ESL_DIR:"
-    ls -la "$ESL_DIR" || true
+    print_error "  $PHP_EXT_DIR/modules/esl.so"
+    print_error "  $PHP_EXT_DIR/.libs/esl.so"
+    print_error "Contents of $PHP_EXT_DIR:"
+    ls -la "$PHP_EXT_DIR/" || true
+    print_error "Contents of modules/ (if exists):"
+    ls -la "$PHP_EXT_DIR/modules/" 2>/dev/null || true
     exit 1
   fi
 
   print_info "Found built module: $BUILT_SO"
 
-  # ── Arch verification ───────────────────────────────────────────────────
+  # ── Arch + dependency verification ─────────────────────────────────────
   SO_FILE_OUTPUT="$(file "$BUILT_SO")"
-  print_info "Built binary: $SO_FILE_OUTPUT"
+  print_info "Built binary info: $SO_FILE_OUTPUT"
   case "$SO_FILE_OUTPUT" in
     *aarch64*|*ARM\ aarch64*)
       print_success "Architecture verified: aarch64 ✓" ;;
@@ -126,7 +153,6 @@ build_esl_from_source() {
       exit 1 ;;
   esac
 
-  # ── Dependency check ────────────────────────────────────────────────────
   if ldd "$BUILT_SO" 2>&1 | grep -q "not found"; then
     print_error "Missing shared library dependencies:"
     ldd "$BUILT_SO" | grep "not found"
