@@ -2,7 +2,7 @@
 set -eu
 
 print_success() { printf "\033[32m%s\033[0m\n" "$1"; }
-print_error()   { printf "\033[31m%s\034[0m\n" "$1"; }
+print_error()   { printf "\033[31m%s\033[0m\n" "$1"; }
 print_warn()    { printf "\033[33m%s\033[0m\n" "$1"; }
 print_info()    { printf "\033[36m%s\033[0m\n" "$1"; }
 
@@ -16,8 +16,7 @@ PHP_BIN="/usr/bin/php8.4"
 PHP_CONFIG="/usr/bin/php-config8.4"
 PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
-SCRIPT_DIR="$(CDPATH= cd -- "
-$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
 FS_SRC="/usr/src/freeswitch"
 
@@ -201,7 +200,7 @@ EOF
   print_info "Running make..."
   make -j"$(nproc)"
 
-  # ── Locate the built .so ────────────────────────────────────────────────
+  # ── Locate the built .so ──────────────��─────────────────────────────────
   BUILT_SO=""
   for candidate in \
       "$PHP_EXT_DIR/modules/esl.so" \
