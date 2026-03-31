@@ -58,29 +58,31 @@ detect_swig_php_flag() {
   fi
 }
 
-# ── Ensure a complete FreeSWITCH clone with submodules initialized ───────────
-# libs/esl/src/ is a git submodule — without --recurse-submodules it clones
-# as an empty directory and all headers (esl_oop.h, esl.h) will be missing.
+# ── Ensure a complete FreeSWITCH clone ──────────────────────────────────────
+# Header layout (confirmed from directory listing):
+#   libs/esl/ESL.i              — SWIG interface file
+#   libs/esl/src/esl_oop.cpp    — C++ implementation
+#   libs/esl/src/include/       — all .h headers (esl_oop.h, esl.h, etc.)
 ensure_freeswitch_source() {
   ESL_DIR="$FS_SRC/libs/esl"
   ESL_SRC_DIR="$ESL_DIR/src"
+  ESL_INC_DIR="$ESL_SRC_DIR/include"   # <-- headers are HERE
 
   HEADERS_OK=true
-  for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
+  for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
     [ -f "$f" ] || HEADERS_OK=false
   done
 
   if [ "$HEADERS_OK" = false ]; then
     if [ -d "$FS_SRC" ]; then
-      print_warn "FreeSWITCH source incomplete — removing and re-cloning with submodules..."
+      print_warn "FreeSWITCH source incomplete — removing and re-cloning..."
       rm -rf "$FS_SRC"
     else
-      print_info "Cloning FreeSWITCH source with submodules..."
+      print_info "Cloning FreeSWITCH source..."
     fi
 
-    # --recurse-submodules is essential: libs/esl/src/ is a submodule and
-    # will be an empty directory without it, causing all header lookups to fail.
-    # --shallow-submodules keeps the submodule clone shallow too (saves time/space).
+    # --recurse-submodules initialises libs/esl/src/ (it is a submodule).
+    # --shallow-submodules keeps that clone shallow too.
     git clone \
       --depth=1 \
       --recurse-submodules \
@@ -91,14 +93,16 @@ ensure_freeswitch_source() {
     return
   fi
 
-  # Post-clone sanity check
-  for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
+  # Post-clone sanity check — dump layout on failure to catch future moves
+  for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
     if [ ! -f "$f" ]; then
       print_error "Required file still missing after clone: $f"
-      print_error "Contents of $ESL_DIR:"
-      ls -la "$ESL_DIR" || true
-      print_error "Contents of $ESL_SRC_DIR:"
-      ls -la "$ESL_SRC_DIR" 2>/dev/null || print_error "  (directory does not exist)"
+      print_error "── $ESL_DIR contents:"
+      ls -la "$ESL_DIR"    2>/dev/null || true
+      print_error "── $ESL_SRC_DIR contents:"
+      ls -la "$ESL_SRC_DIR" 2>/dev/null || true
+      print_error "── $ESL_INC_DIR contents:"
+      ls -la "$ESL_INC_DIR" 2>/dev/null || print_error "  (does not exist)"
       exit 1
     fi
   done
@@ -123,6 +127,7 @@ build_esl_from_source() {
 
   ESL_DIR="$FS_SRC/libs/esl"
   ESL_SRC_DIR="$ESL_DIR/src"
+  ESL_INC_DIR="$ESL_SRC_DIR/include"
   PHP_EXT_DIR="$ESL_DIR/php"
 
   if [ ! -d "$PHP_EXT_DIR" ]; then
@@ -132,12 +137,14 @@ build_esl_from_source() {
   fi
 
   # ── Regenerate SWIG bindings ────────────────────────────────────────────
+  # Run from ESL_DIR; pass all three header locations to be safe.
   print_info "Regenerating SWIG bindings..."
   cd "$ESL_DIR"
   swig "$SWIG_PHP_FLAG" \
        -cppext cpp \
        -I"$ESL_DIR" \
        -I"$ESL_SRC_DIR" \
+       -I"$ESL_INC_DIR" \
        -o "$PHP_EXT_DIR/ESL.cpp" \
        -outdir "$PHP_EXT_DIR" \
        "$ESL_DIR/ESL.i"
@@ -154,7 +161,7 @@ build_esl_from_source() {
   "$PHPIZE"
 
   print_info "Running configure..."
-  CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR" \
+  CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR -I$ESL_INC_DIR" \
     ./configure --with-php-config="$PHP_CONFIG"
 
   print_info "Running make..."
