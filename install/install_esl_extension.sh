@@ -41,7 +41,7 @@ fi
 print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
 detect_swig_php_flag() {
-  SWIG_VER="$(${SWIG_VERSION})"
+  SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"  # ← FIX: was $(${SWIG_VERSION})
   print_info "Detected SWIG version: $SWIG_VER"
   SWIG_MAJOR="$(printf '%s' "$SWIG_VER" | cut -d. -f1)"
   SWIG_MINOR="$(printf '%s' "$SWIG_VER" | cut -d. -f2)"
@@ -61,7 +61,7 @@ ensure_freeswitch_source() {
   for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
     [ -f "$f" ] || HEADERS_OK=false
   done
-  if [ "${HEADERS_OK}" = false ]; then
+  if [ "$HEADERS_OK" = false ]; then
     if [ -d "$FS_SRC" ]; then
       print_warn "FreeSWITCH source incomplete -- removing and re-cloning..."
       rm -rf "$FS_SRC"
@@ -113,13 +113,10 @@ build_esl_from_source() {
        "$ESL_DIR/ESL.i"
   print_success "SWIG bindings generated."
 
-  # PHP include flags only -- do NOT use --ldflags/--libs as those pull in
-  # system libraries that are already provided by the PHP process at runtime
   PHP_INCLUDES="$($PHP_CONFIG --includes)"
 
   mkdir -p "$PHP_EXT_DIR/modules"
 
-  # Step 1: compile the SWIG-generated ESL.cpp -> ESL.o
   print_info "Compiling ESL.cpp (SWIG wrapper)..."
   c++ -fPIC \
       -I"$ESL_DIR" -I"$ESL_SRC_DIR" -I"$ESL_INC_DIR" \
@@ -129,7 +126,6 @@ build_esl_from_source() {
       -o "$PHP_EXT_DIR/ESL.o"
   print_success "Compiled ESL.o"
 
-  # Step 2: compile all ESL C implementation files
   print_info "Compiling ESL C implementation files..."
   for src_c in "$ESL_SRC_DIR"/*.c; do
     [ -f "$src_c" ] || continue
@@ -142,7 +138,6 @@ build_esl_from_source() {
   done
   print_success "Compiled ESL C sources."
 
-  # Step 3: compile all ESL C++ implementation files (excluding SWIG ESL.cpp)
   print_info "Compiling ESL C++ implementation files..."
   for src_cpp in "$ESL_SRC_DIR"/*.cpp; do
     [ -f "$src_cpp" ] || continue
@@ -155,7 +150,6 @@ build_esl_from_source() {
   done
   print_success "Compiled ESL C++ sources."
 
-  # Step 4: link everything (SWIG wrapper + all ESL implementation objects) into esl.so
   print_info "Linking esl.so..."
   c++ -shared -fPIC \
       -o "$PHP_EXT_DIR/modules/esl.so" \
@@ -177,7 +171,7 @@ build_esl_from_source() {
   SO_FILE_OUTPUT="$(file "$BUILT_SO")"
   print_info "Built binary info: $SO_FILE_OUTPUT"
   case "$SO_FILE_OUTPUT" in
-    *aarch64*|*ARM\ aarch64*) print_success "Architecture verified: aarch64" ;; 
+    *aarch64*|*ARM\ aarch64*) print_success "Architecture verified: aarch64" ;;
     *) print_error "Built .so does not appear to be aarch64: $SO_FILE_OUTPUT"; exit 1 ;;
   esac
 
@@ -203,7 +197,7 @@ case "$ARCH" in
     fi
     SO_FILE_OUTPUT="$(file "$ESL_SO_SRC")"
     case "$SO_FILE_OUTPUT" in
-      *x86-64*|*x86_64*) print_success "Pre-built binary architecture verified: x86_64" ;; 
+      *x86-64*|*x86_64*) print_success "Pre-built binary architecture verified: x86_64" ;;
       *) print_error "Pre-built .so is not x86_64: $SO_FILE_OUTPUT"; exit 1 ;;
     esac
     ;;
