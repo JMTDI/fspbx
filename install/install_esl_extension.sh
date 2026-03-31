@@ -41,7 +41,7 @@ fi
 print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
 detect_swig_php_flag() {
-  SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
+  SWIG_VER="$(${SWIG_VERSION})"
   print_info "Detected SWIG version: $SWIG_VER"
   SWIG_MAJOR="$(printf '%s' "$SWIG_VER" | cut -d. -f1)"
   SWIG_MINOR="$(printf '%s' "$SWIG_VER" | cut -d. -f2)"
@@ -61,7 +61,7 @@ ensure_freeswitch_source() {
   for f in "$ESL_DIR/ESL.i" "$ESL_INC_DIR/esl_oop.h" "$ESL_INC_DIR/esl.h"; do
     [ -f "$f" ] || HEADERS_OK=false
   done
-  if [ "$HEADERS_OK" = false ]; then
+  if [ "${HEADERS_OK}" = false ]; then
     if [ -d "$FS_SRC" ]; then
       print_warn "FreeSWITCH source incomplete -- removing and re-cloning..."
       rm -rf "$FS_SRC"
@@ -119,8 +119,8 @@ build_esl_from_source() {
 
   mkdir -p "$PHP_EXT_DIR/modules"
 
-  # Step 1: compile ESL.cpp -> ESL.o
-  print_info "Compiling ESL.cpp..."
+  # Step 1: compile the SWIG-generated ESL.cpp -> ESL.o
+  print_info "Compiling ESL.cpp (SWIG wrapper)..."
   c++ -fPIC \
       -I"$ESL_DIR" -I"$ESL_SRC_DIR" -I"$ESL_INC_DIR" \
       $PHP_INCLUDES \
@@ -129,13 +129,39 @@ build_esl_from_source() {
       -o "$PHP_EXT_DIR/ESL.o"
   print_success "Compiled ESL.o"
 
-  # Step 2: link into a shared PHP extension.
-  # Extensions are dlopen()-ed into a running PHP process; all PHP and system
-  # symbols are already resident.  No extra -l flags are required or correct.
+  # Step 2: compile all ESL C implementation files
+  print_info "Compiling ESL C implementation files..."
+  for src_c in "$ESL_SRC_DIR"/*.c; do
+    [ -f "$src_c" ] || continue
+    base="$(basename "$src_c" .c)"
+    print_info "  Compiling $base.c..."
+    cc -fPIC \
+       -I"$ESL_INC_DIR" \
+       -c "$src_c" \
+       -o "$PHP_EXT_DIR/${base}_c.o"
+  done
+  print_success "Compiled ESL C sources."
+
+  # Step 3: compile all ESL C++ implementation files (excluding SWIG ESL.cpp)
+  print_info "Compiling ESL C++ implementation files..."
+  for src_cpp in "$ESL_SRC_DIR"/*.cpp; do
+    [ -f "$src_cpp" ] || continue
+    base="$(basename "$src_cpp" .cpp)"
+    print_info "  Compiling $base.cpp..."
+    c++ -fPIC \
+        -I"$ESL_INC_DIR" \
+        -c "$src_cpp" \
+        -o "$PHP_EXT_DIR/${base}_impl.o"
+  done
+  print_success "Compiled ESL C++ sources."
+
+  # Step 4: link everything (SWIG wrapper + all ESL implementation objects) into esl.so
   print_info "Linking esl.so..."
   c++ -shared -fPIC \
       -o "$PHP_EXT_DIR/modules/esl.so" \
-      "$PHP_EXT_DIR/ESL.o"
+      "$PHP_EXT_DIR/ESL.o" \
+      "$PHP_EXT_DIR"/*_c.o \
+      "$PHP_EXT_DIR"/*_impl.o
   print_success "Linked esl.so"
 
   BUILT_SO="$PHP_EXT_DIR/modules/esl.so"
@@ -151,7 +177,7 @@ build_esl_from_source() {
   SO_FILE_OUTPUT="$(file "$BUILT_SO")"
   print_info "Built binary info: $SO_FILE_OUTPUT"
   case "$SO_FILE_OUTPUT" in
-    *aarch64*|*ARM\ aarch64*) print_success "Architecture verified: aarch64" ;;
+    *aarch64*|*ARM\ aarch64*) print_success "Architecture verified: aarch64" ;; 
     *) print_error "Built .so does not appear to be aarch64: $SO_FILE_OUTPUT"; exit 1 ;;
   esac
 
@@ -184,7 +210,7 @@ case "$ARCH" in
   *)
     print_error "Unsupported architecture: $ARCH"
     exit 1 ;;
- esac
+esac
 
 install -m 0644 -o root -g root "$ESL_SO_SRC" "$EXTENSION_DIR/esl.so"
 print_success "Installed: $EXTENSION_DIR/esl.so"
@@ -192,8 +218,9 @@ print_success "Installed: $EXTENSION_DIR/esl.so"
 CLI_INI_DIR="/etc/php/8.4/cli/conf.d"
 FPM_INI_DIR="/etc/php/8.4/fpm/conf.d"
 mkdir -p "$CLI_INI_DIR" "$FPM_INI_DIR"
-echo "extension=esl.so" > "$CLI_INI_DIR/30-esl.ini"
-echo "extension=esl.so" > "$FPM_INI_DIR/30-esl.ini"
+
+printf 'extension=esl.so\n' > "$CLI_INI_DIR/30-esl.ini"
+printf 'extension=esl.so\n' > "$FPM_INI_DIR/30-esl.ini"
 print_success "Enabled ESL in $CLI_INI_DIR/30-esl.ini and $FPM_INI_DIR/30-esl.ini"
 
 if command -v systemctl >/dev/null 2>&1; then
