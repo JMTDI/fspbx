@@ -16,7 +16,7 @@ PHP_BIN="/usr/bin/php8.4"
 PHP_CONFIG="/usr/bin/php-config8.4"
 PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR=""](CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
 FS_SRC="/usr/src/freeswitch"
 
@@ -167,6 +167,54 @@ ENDOFCONFIG
     print_success "config.m4 generated."
   fi
 
+  # ── Patch build/ltmain.sh to accept --tag=CXX ──────────────────────────
+  #
+  # Root cause of "libtool: error: ignoring unknown tag CXX":
+  #   The FreeSWITCH source tree ships a very old build/ltmain.sh that
+  #   predates libtool's --tag= support.  Both phpize and ./configure
+  #   regenerate the local ./libtool wrapper FROM this file, so no matter
+  #   what we put in ./libtool before configure runs, config.status will
+  #   overwrite it from the same broken ltmain.sh.
+  #
+  #   /usr/bin/libtool on Debian is only a thin dispatcher wrapper -- it
+  #   cannot substitute for the generated ./libtool script.
+  #
+  # Fix: patch build/ltmain.sh IN PLACE (once, idempotent) by prepending
+  # a small argument-stripping shim right after the she-bang line.  The
+  # shim removes any --tag=* entry from $@ before the rest of ltmain.sh
+  # processes arguments.  Every ./libtool subsequently regenerated from
+  # this file will inherit the fix.
+  LTMAIN="$FS_SRC/build/ltmain.sh"
+  if [ -f "$LTMAIN" ] && ! grep -q 'COPILOT_TAG_PATCH' "$LTMAIN"; then
+    print_info "Patching $LTMAIN to accept --tag=CXX..."
+    LTMAIN_TMP="${LTMAIN}.tmp$$"
+    # Line 1: preserve the she-bang
+    head -n 1 "$LTMAIN" > "$LTMAIN_TMP"
+    # Insert the shim
+    cat >> "$LTMAIN_TMP" <<'LTPATCH'
+
+# COPILOT_TAG_PATCH -- strip --tag=* so this old ltmain.sh does not choke on it
+_lt_new_args=''
+for _lt_arg in "$@"; do
+  case "$_lt_arg" in
+    --tag=*) ;;     
+    *) _lt_new_args="${_lt_new_args} \"${_lt_arg}\"" ;;
+  esac
+done
+eval set -- ${_lt_new_args}
+unset _lt_new_args _lt_arg
+# END COPILOT_TAG_PATCH
+
+LTPATCH
+    # Remainder of original file (skip she-bang we already wrote)
+    tail -n +2 "$LTMAIN" >> "$LTMAIN_TMP"
+    mv "$LTMAIN_TMP" "$LTMAIN"
+    chmod +x "$LTMAIN"
+    print_success "build/ltmain.sh patched."
+  else
+    print_info "build/ltmain.sh already patched or not found -- skipping."
+  fi
+
   # ── Build using phpize ──────────────────────────────────────────────────
   print_info "Running phpize in $PHP_EXT_DIR ..."
   cd "$PHP_EXT_DIR"
@@ -180,23 +228,6 @@ ENDOFCONFIG
   print_info "Running configure..."
   CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR -I$ESL_INC_DIR" \
     ./configure --with-php-config="${PHP_CONFIG}"
-
-  # ── Fix: replace the generated libtool wrapper with the system binary ───
-  #
-  # Root cause of the "ignoring unknown tag CXX" error:
-  #   FreeSWITCH's configure.ac uses the obsolete AC_PROG_LIBTOOL macro.
-  #   When ./configure runs, config.status regenerates ./libtool from the
-  #   bundled build/ltmain.sh.  That ltmain.sh predates --tag=CXX support,
-  #   so every C++ compilation invoked via libtool fails with:
-  #       libtool: error: ignoring unknown tag CXX
-  #
-  # Fix: overwrite ./libtool with /usr/bin/libtool (installed by the system
-  # libtool package).  This is a complete, modern libtool script that fully
-  # supports --tag=CXX and all other standard options.
-  print_info "Replacing generated libtool wrapper with system libtool..."
-  cp /usr/bin/libtool "$PHP_EXT_DIR/libtool"
-  chmod +x "$PHP_EXT_DIR/libtool"
-  print_success "libtool wrapper replaced -- --tag=CXX now supported."
 
   print_info "Running make..."
   make -j"$(nproc)"
@@ -230,7 +261,7 @@ ENDOFCONFIG
   print_info "Built binary info: $SO_FILE_OUTPUT"
   case "$SO_FILE_OUTPUT" in
     *aarch64*|*ARM\ aarch64*)
-      print_success "Architecture verified: aarch64" ;;
+      print_success "Architecture verified: aarch64" ;; 
     *)
       print_error "Built .so does not appear to be aarch64: $SO_FILE_OUTPUT"
       exit 1 ;;
@@ -269,7 +300,7 @@ case "$ARCH" in
   *)
     print_error "Unsupported architecture: $ARCH"
     exit 1 ;;
- esac
+esac
 
 # ── Install the .so ──────────────────────────────────────────────────────────
 install -m 0644 -o root -g root "$ESL_SO_SRC" "$EXTENSION_DIR/esl.so"
@@ -303,4 +334,4 @@ else
   exit 1
 fi
 
-print_success "ESL installation completed successfully for PHP 8.4 on $ARCH."
+print_success "ESL installation completed successfully for PHP 8.4 on $ARCH.
