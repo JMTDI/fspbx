@@ -58,14 +58,13 @@ detect_swig_php_flag() {
   fi
 }
 
-# ── Ensure a clean, complete FreeSWITCH clone ───────────────────────────────
-# Headers are in libs/esl/src/ — any sparse/partial clone will be missing them.
-# The only reliable fix for a broken clone is to wipe and re-clone.
+# ── Ensure a complete FreeSWITCH clone with submodules initialized ───────────
+# libs/esl/src/ is a git submodule — without --recurse-submodules it clones
+# as an empty directory and all headers (esl_oop.h, esl.h) will be missing.
 ensure_freeswitch_source() {
   ESL_DIR="$FS_SRC/libs/esl"
   ESL_SRC_DIR="$ESL_DIR/src"
 
-  # Check that the key headers actually exist in the right place
   HEADERS_OK=true
   for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
     [ -f "$f" ] || HEADERS_OK=false
@@ -73,24 +72,33 @@ ensure_freeswitch_source() {
 
   if [ "$HEADERS_OK" = false ]; then
     if [ -d "$FS_SRC" ]; then
-      print_warn "Existing FreeSWITCH source is incomplete (missing headers in libs/esl/src/)."
-      print_info "Removing and re-cloning..."
+      print_warn "FreeSWITCH source incomplete — removing and re-cloning with submodules..."
       rm -rf "$FS_SRC"
     else
-      print_info "FreeSWITCH source not found — cloning..."
+      print_info "Cloning FreeSWITCH source with submodules..."
     fi
 
-    # Full shallow clone — no sparse checkout.
-    # The full repo is ~500 MB but we need the complete libs/esl/src/ tree.
-    git clone --depth=1 https://github.com/signalwire/freeswitch.git "$FS_SRC"
+    # --recurse-submodules is essential: libs/esl/src/ is a submodule and
+    # will be an empty directory without it, causing all header lookups to fail.
+    # --shallow-submodules keeps the submodule clone shallow too (saves time/space).
+    git clone \
+      --depth=1 \
+      --recurse-submodules \
+      --shallow-submodules \
+      https://github.com/signalwire/freeswitch.git "$FS_SRC"
   else
     print_info "FreeSWITCH source OK at: $FS_SRC"
+    return
   fi
 
-  # Final sanity check
+  # Post-clone sanity check
   for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
     if [ ! -f "$f" ]; then
       print_error "Required file still missing after clone: $f"
+      print_error "Contents of $ESL_DIR:"
+      ls -la "$ESL_DIR" || true
+      print_error "Contents of $ESL_SRC_DIR:"
+      ls -la "$ESL_SRC_DIR" 2>/dev/null || print_error "  (directory does not exist)"
       exit 1
     fi
   done
@@ -119,12 +127,11 @@ build_esl_from_source() {
 
   if [ ! -d "$PHP_EXT_DIR" ]; then
     print_error "PHP extension dir not found: $PHP_EXT_DIR"
+    ls -la "$ESL_DIR" || true
     exit 1
   fi
 
   # ── Regenerate SWIG bindings ────────────────────────────────────────────
-  # Run from ESL_DIR so relative paths in ESL.i resolve correctly.
-  # -I flags cover both libs/esl/ and libs/esl/src/ where the headers live.
   print_info "Regenerating SWIG bindings..."
   cd "$ESL_DIR"
   swig "$SWIG_PHP_FLAG" \
@@ -147,7 +154,6 @@ build_esl_from_source() {
   "$PHPIZE"
 
   print_info "Running configure..."
-  # Pass ESL src headers so the C++ compiler can find esl.h at compile time
   CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR" \
     ./configure --with-php-config="$PHP_CONFIG"
 
