@@ -45,13 +45,10 @@ print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
 # ── Detect correct SWIG PHP flag based on installed version ─────────────────
 detect_swig_php_flag() {
-  # SWIG < 4.1 uses -php8 ; SWIG >= 4.1 dropped the version suffix → -php
   SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
   print_info "Detected SWIG version: $SWIG_VER"
-
   SWIG_MAJOR="$(printf '%s' "$SWIG_VER" | cut -d. -f1)"
   SWIG_MINOR="$(printf '%s' "$SWIG_VER" | cut -d. -f2)"
-
   if [ "$SWIG_MAJOR" -gt 4 ] || { [ "$SWIG_MAJOR" -eq 4 ] && [ "$SWIG_MINOR" -ge 1 ]; }; then
     SWIG_PHP_FLAG="-php"
     print_info "Using SWIG flag: -php  (SWIG >= 4.1)"
@@ -65,8 +62,6 @@ detect_swig_php_flag() {
 build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
-  # libfreeswitch-dev is x86-only — do NOT install it.
-  # bootstrap.sh is NOT run — it overwrites the ESL Makefile and kills phpmod.
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     php8.4-dev \
@@ -78,22 +73,41 @@ build_esl_from_source() {
 
   detect_swig_php_flag
 
-  # ── Clone FreeSWITCH source (sparse — libs/esl only) ───────────────────
+  # ── Clone FreeSWITCH source ─────────────────────────────────────────────
+  # NOTE: Do NOT use sparse checkout — ESL.i references headers across
+  # libs/esl/ and a partial tree causes "Unable to find 'esl_oop.h'" errors.
   if [ ! -d "$FS_SRC/libs/esl" ]; then
-    print_info "Cloning FreeSWITCH source (sparse checkout, libs/esl only)..."
-    git clone \
-      --depth=1 \
-      --filter=blob:none \
-      --sparse \
-      https://github.com/signalwire/freeswitch.git "$FS_SRC"
-    cd "$FS_SRC"
-    git sparse-checkout set libs/esl
+    print_info "Cloning FreeSWITCH source (shallow)..."
+    git clone --depth=1 https://github.com/signalwire/freeswitch.git "$FS_SRC"
   else
     print_info "Found existing FreeSWITCH source at: $FS_SRC"
+
+    # If this was a previous sparse checkout, it may be missing files.
+    # Check for the header that SWIG needs and fetch if absent.
+    if [ ! -f "$FS_SRC/libs/esl/esl_oop.h" ]; then
+      print_warn "esl_oop.h missing — previous sparse checkout detected."
+      print_info "Fetching full libs/esl tree..."
+      cd "$FS_SRC"
+      # Disable sparse checkout so git pulls everything
+      git sparse-checkout disable 2>/dev/null || true
+      git config core.sparseCheckout false 2>/dev/null || true
+      git checkout HEAD -- libs/esl
+    fi
   fi
 
   ESL_DIR="$FS_SRC/libs/esl"
   PHP_EXT_DIR="$ESL_DIR/php"
+
+  # Verify all required headers are present
+  for required in "$ESL_DIR/ESL.i" "$ESL_DIR/esl_oop.h" "$ESL_DIR/esl.h"; do
+    if [ ! -f "$required" ]; then
+      print_error "Required file missing: $required"
+      print_error "Contents of $ESL_DIR:"
+      ls -la "$ESL_DIR" || true
+      exit 1
+    fi
+  done
+  print_success "All required ESL headers found."
 
   if [ ! -d "$PHP_EXT_DIR" ]; then
     print_error "Expected ESL PHP dir not found: $PHP_EXT_DIR"
@@ -103,18 +117,13 @@ build_esl_from_source() {
   fi
 
   # ── Regenerate SWIG bindings ────────────────────────────────────────────
-  # Always regenerate — avoids stale files from a previous failed build,
-  # and ensures the output matches the installed SWIG version.
-  if [ ! -f "$ESL_DIR/ESL.i" ]; then
-    print_error "SWIG interface file ESL.i not found in $ESL_DIR"
-    print_error "Contents of $ESL_DIR:"
-    ls -la "$ESL_DIR" || true
-    exit 1
-  fi
-
-  print_info "Regenerating SWIG bindings with flag: $SWIG_PHP_FLAG"
+  # Run from ESL_DIR so SWIG resolves relative #include paths correctly.
+  # -I"$ESL_DIR" makes headers like esl_oop.h findable explicitly.
+  print_info "Regenerating SWIG bindings (from $ESL_DIR)..."
+  cd "$ESL_DIR"
   swig "$SWIG_PHP_FLAG" \
        -cppext cpp \
+       -I"$ESL_DIR" \
        -o "$PHP_EXT_DIR/ESL.cpp" \
        -outdir "$PHP_EXT_DIR" \
        "$ESL_DIR/ESL.i"
@@ -124,7 +133,6 @@ build_esl_from_source() {
   print_info "Running phpize in $PHP_EXT_DIR ..."
   cd "$PHP_EXT_DIR"
 
-  # Clean any previous partial build
   if [ -f Makefile ]; then
     make distclean 2>/dev/null || make clean 2>/dev/null || true
   fi
