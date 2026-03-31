@@ -43,13 +43,30 @@ if [ -z "$EXTENSION_DIR" ]; then
 fi
 print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
+# ── Detect correct SWIG PHP flag based on installed version ─────────────────
+detect_swig_php_flag() {
+  # SWIG < 4.1 uses -php8 ; SWIG >= 4.1 dropped the version suffix → -php
+  SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
+  print_info "Detected SWIG version: $SWIG_VER"
+
+  SWIG_MAJOR="$(printf '%s' "$SWIG_VER" | cut -d. -f1)"
+  SWIG_MINOR="$(printf '%s' "$SWIG_VER" | cut -d. -f2)"
+
+  if [ "$SWIG_MAJOR" -gt 4 ] || { [ "$SWIG_MAJOR" -eq 4 ] && [ "$SWIG_MINOR" -ge 1 ]; }; then
+    SWIG_PHP_FLAG="-php"
+    print_info "Using SWIG flag: -php  (SWIG >= 4.1)"
+  else
+    SWIG_PHP_FLAG="-php8"
+    print_info "Using SWIG flag: -php8  (SWIG < 4.1)"
+  fi
+}
+
 # ── Build ESL from source (ARM64 / aarch64) ─────────────────────────────────
 build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
-  # libfreeswitch-dev is x86-only in SignalWire's repo — do NOT install it.
-  # bootstrap.sh is NOT run — it overwrites the ESL Makefile and removes phpmod.
-  # We build via phpize inside libs/esl/php/ which has pre-generated SWIG files.
+  # libfreeswitch-dev is x86-only — do NOT install it.
+  # bootstrap.sh is NOT run — it overwrites the ESL Makefile and kills phpmod.
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     php8.4-dev \
@@ -59,10 +76,11 @@ build_esl_from_source() {
     ca-certificates \
     autoconf
 
-  # ── Clone FreeSWITCH source (shallow — we only need libs/esl) ──────────
+  detect_swig_php_flag
+
+  # ── Clone FreeSWITCH source (sparse — libs/esl only) ───────────────────
   if [ ! -d "$FS_SRC/libs/esl" ]; then
-    print_info "Cloning FreeSWITCH source (shallow)..."
-    # Use sparse checkout to pull only libs/esl — much faster on ARM
+    print_info "Cloning FreeSWITCH source (sparse checkout, libs/esl only)..."
     git clone \
       --depth=1 \
       --filter=blob:none \
@@ -79,26 +97,28 @@ build_esl_from_source() {
 
   if [ ! -d "$PHP_EXT_DIR" ]; then
     print_error "Expected ESL PHP dir not found: $PHP_EXT_DIR"
-    print_error "Repository layout may have changed. Contents of $ESL_DIR:"
+    print_error "Contents of $ESL_DIR:"
     ls -la "$ESL_DIR" || true
     exit 1
   fi
 
-  # ── Regenerate SWIG bindings if ESL.cpp is missing ─────────────────────
-  if [ ! -f "$PHP_EXT_DIR/ESL.cpp" ]; then
-    print_warn "SWIG-generated ESL.cpp not found — regenerating..."
-    if [ ! -f "$ESL_DIR/ESL.i" ]; then
-      print_error "SWIG interface file ESL.i not found in $ESL_DIR"
-      exit 1
-    fi
-    swig -php8 -cppext cpp \
-         -o "$PHP_EXT_DIR/ESL.cpp" \
-         -outdir "$PHP_EXT_DIR" \
-         "$ESL_DIR/ESL.i"
-    print_success "SWIG bindings generated."
-  else
-    print_info "Using existing SWIG-generated ESL.cpp."
+  # ── Regenerate SWIG bindings ────────────────────────────────────────────
+  # Always regenerate — avoids stale files from a previous failed build,
+  # and ensures the output matches the installed SWIG version.
+  if [ ! -f "$ESL_DIR/ESL.i" ]; then
+    print_error "SWIG interface file ESL.i not found in $ESL_DIR"
+    print_error "Contents of $ESL_DIR:"
+    ls -la "$ESL_DIR" || true
+    exit 1
   fi
+
+  print_info "Regenerating SWIG bindings with flag: $SWIG_PHP_FLAG"
+  swig "$SWIG_PHP_FLAG" \
+       -cppext cpp \
+       -o "$PHP_EXT_DIR/ESL.cpp" \
+       -outdir "$PHP_EXT_DIR" \
+       "$ESL_DIR/ESL.i"
+  print_success "SWIG bindings generated."
 
   # ── Build using phpize ──────────────────────────────────────────────────
   print_info "Running phpize in $PHP_EXT_DIR ..."
@@ -108,7 +128,6 @@ build_esl_from_source() {
   if [ -f Makefile ]; then
     make distclean 2>/dev/null || make clean 2>/dev/null || true
   fi
-
   "$PHPIZE" --clean 2>/dev/null || true
   "$PHPIZE"
 
