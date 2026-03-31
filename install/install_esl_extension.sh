@@ -152,6 +152,20 @@ build_esl_from_source() {
        "$ESL_DIR/ESL.i"
   print_success "SWIG bindings generated."
 
+  # ── Generate config.m4 if missing (phpize requires it) ─────────────────
+  if [ ! -f "$PHP_EXT_DIR/config.m4" ]; then
+    print_info "Generating config.m4 for ESL PHP extension..."
+    cat > "$PHP_EXT_DIR/config.m4" <<'EOF'
+PHP_ARG_ENABLE(esl, whether to enable ESL support,
+[  --enable-esl            Enable ESL support])
+
+if test "$PHP_ESL" != "no"; then
+  PHP_NEW_EXTENSION(esl, ESL.cpp, $ext_shared)
+fi
+EOF
+    print_success "config.m4 generated."
+  fi
+
   # ── Build using phpize ──────────────────────────────────────────────────
   print_info "Running phpize in $PHP_EXT_DIR ..."
   cd "$PHP_EXT_DIR"
