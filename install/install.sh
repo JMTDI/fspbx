@@ -600,6 +600,15 @@ else
     exit 1
 fi
 
+# Restore execute bits on shell scripts after blanket 644 pass
+sudo find /var/www/fspbx -type f -name "*.sh" -exec chmod 755 {} \;
+if [ $? -eq 0 ]; then
+    print_success "Execute bits restored on shell scripts successfully."
+else
+    print_error "Error occurred while restoring execute bits on shell scripts."
+    exit 1
+fi
+
 # Change group ownership to www-data for storage and bootstrap/cache
 sudo chgrp -R www-data /var/www/fspbx/storage /var/www/fspbx/bootstrap/cache
 if [ $? -eq 0 ]; then
@@ -814,6 +823,32 @@ else
     exit 1
 fi
 
+# Start FreeSWITCH before Supervisor ESL processes depend on it
+print_success "Starting FreeSWITCH service..."
+sudo systemctl enable freeswitch || true
+sudo systemctl start freeswitch || true
+if [ $? -eq 0 ]; then
+    print_success "FreeSWITCH started successfully."
+else
+    print_error "Warning: FreeSWITCH may not have started; ESL listener may fail to connect."
+fi
+
+# Wait for FreeSWITCH ESL port 8021 to be ready (up to 60 seconds)
+print_success "Waiting for FreeSWITCH ESL port 8021 to be ready..."
+ESL_READY=false
+for i in $(seq 1 30); do
+    if nc -z 127.0.0.1 8021 2>/dev/null; then
+        ESL_READY=true
+        break
+    fi
+    sleep 2
+done
+if [ "$ESL_READY" = true ]; then
+    print_success "FreeSWITCH ESL port 8021 is ready."
+else
+    print_error "Warning: FreeSWITCH ESL port 8021 did not become ready in 60 seconds. ESL listener may fail to connect on first start."
+fi
+
 # Copy Horizon configuration to Supervisor
 sudo cp install/horizon.conf /etc/supervisor/conf.d/
 if [ $? -eq 0 ]; then
@@ -890,7 +925,7 @@ else
 fi
 
 # Restart Horizon processes under Supervisor
-sudo supervisorctl restart horizon:*
+sudo supervisorctl restart horizon:* 
 if [ $? -eq 0 ]; then
     sleep 6
     print_success "Horizon processes restarted successfully."
@@ -900,16 +935,16 @@ else
 fi
 
 # Restart FS ELS Emergency process under Supervisor
-sudo supervisorctl start fs-esl-listener-emergency
+sudo supervisorctl restart fs-esl-listener-emergency
 if [ $? -eq 0 ]; then
     sleep 6
-    print_success "FS ELS Emergency process restarted successfully."
+    print_success "FS ELS Emergency process started successfully."
 else
-    print_error "Error occurred while restarting FS ELS Emergency process."
+    print_error "Error occurred while starting FS ELS Emergency process."
     exit 1
 fi
 
-# Restart FS ELS Emergency process under Supervisor
+# Restart FS PBX CDR Service process under Supervisor
 sudo supervisorctl restart fs-cdr-service
 if [ $? -eq 0 ]; then
     sleep 6
