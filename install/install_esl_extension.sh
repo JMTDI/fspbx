@@ -96,22 +96,25 @@ patch_generated_libtool() {
     print_warn "Generated libtool not found at $_lt -- skipping patch."
     return
   fi
-  if grep -q 'COPILOT_CXX_TAG_PATCH' "$$_lt"; then
+  # FIX 1: was "$$_lt" (expanded to PID), now correctly "$_lt"
+  if grep -q 'COPILOT_CXX_TAG_PATCH' "$_lt"; then
     print_info "Generated libtool already patched -- skipping."
     return
   fi
   print_info "Patching generated libtool to strip --tag=* ..."
   _tmp="${_lt}.tmp$$"
   head -n 1 "$_lt" > "$_tmp"
+  # FIX 2: replace broken eval/string-building approach with safe positional
+  # parameter shifting that preserves arguments with spaces correctly.
   printf '%s\n' \
     '' \
     '# COPILOT_CXX_TAG_PATCH begin' \
-    '_ctp_args=""' \
-    'for _ctp_a in "$@"; do' \
-    '  case "$_ctp_a" in --tag=*) ;; *) _ctp_args="$_ctp_args \"$_ctp_a\"" ;; esac' \
+    '_ctp_i=0; _ctp_total=$#' \
+    'while [ "$_ctp_i" -lt "$_ctp_total" ]; do' \
+    '  _ctp_a="$1"; shift; _ctp_i=$((_ctp_i + 1))' \
+    '  case "$_ctp_a" in --tag=*) ;; *) set -- "$@" "$_ctp_a" ;; esac' \
     'done' \
-    'eval set -- $_ctp_args' \
-    'unset _ctp_args _ctp_a' \
+    'unset _ctp_a _ctp_i _ctp_total' \
     '# COPILOT_CXX_TAG_PATCH end' \
     '' >> "$_tmp"
   tail -n +2 "$_lt" >> "$_tmp"
@@ -178,7 +181,8 @@ M4EOF
   patch_generated_libtool "$PHP_EXT_DIR/libtool"
 
   print_info "Running make..."
-  make -j"$(nproc)"
+  # FIX 3: forward CPPFLAGS explicitly to make so the ESL headers are found
+  make -j"$(nproc)" CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR -I$ESL_INC_DIR"
 
   BUILT_SO=""
   for candidate in "$PHP_EXT_DIR/modules/esl.so" "$PHP_EXT_DIR/.libs/esl.so"; do
@@ -257,4 +261,4 @@ else
   exit 1
 fi
 
-print_success "ESL installation completed successfully for PHP 8.4 on $ARCH.",
+print_success "ESL installation completed successfully for PHP 8.4 on $ARCH."
