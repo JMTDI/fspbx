@@ -2,7 +2,7 @@
 set -eu
 
 print_success() { printf "\033[32m%s\033[0m\n" "$1"; }
-print_error()   { printf "\033[31m%s\033[0m\n" "$1"; }
+print_error()   { printf "\033[31m%s\034[0m\n" "$1"; }
 print_warn()    { printf "\033[33m%s\033[0m\n" "$1"; }
 print_info()    { printf "\033[36m%s\033[0m\n" "$1"; }
 
@@ -16,7 +16,8 @@ PHP_BIN="/usr/bin/php8.4"
 PHP_CONFIG="/usr/bin/php-config8.4"
 PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "
+$(dirname -- "$0")" && pwd)"
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
 FS_SRC="/usr/src/freeswitch"
 
@@ -36,7 +37,7 @@ for ini in \
   [ -f "$ini" ] && rm -f "$ini" && print_info "Removed stale: $ini"
 done
 
-EXTENSION_DIR="$("$PHP_BIN" -r 'echo ini_get("extension_dir");')"
+EXTENSION_DIR="$($PHP_BIN -r 'echo ini_get("extension_dir");')"
 if [ -z "$EXTENSION_DIR" ]; then
   print_error "Failed to detect PHP 8.4 extension_dir."
   exit 1
@@ -111,7 +112,6 @@ build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
   apt-get update -qq
-  # FIX: added libtool so a working system libtool is available
   apt-get install -y --no-install-recommends \
     php8.4-dev \
     swig \
@@ -177,16 +177,26 @@ EOF
   fi
   "$PHPIZE" --clean 2>/dev/null || true
 
-  # FIX: Remove the stale libtool/ltmain.sh shipped with the FreeSWITCH source
-  # tree. That script predates --tag=CXX support and breaks C++ compilation.
-  # phpize will install a fresh, system-compatible libtool wrapper below.
-  rm -f libtool ltmain.sh
+  # Remove stale libtool artifacts from the FreeSWITCH build system.
+  # These will be regenerated correctly by libtoolize + phpize below.
+  rm -f libtool ltmain.sh aclocal.m4
 
   "$PHPIZE"
+
+  # Run libtoolize --force so configure receives a fresh ltmain.sh and a
+  # libtool wrapper that understands --tag=CXX (required for C++ compilation).
+  # Without this, configure regenerates the libtool script from the stale
+  # FreeSWITCH-bundled ltmain.sh, which predates --tag=CXX support.
+  libtoolize --force --copy 2>/dev/null || true
 
   print_info "Running configure..."
   CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR -I$ESL_INC_DIR" \
     ./configure --with-php-config="$PHP_CONFIG"
+
+  # Re-run libtoolize after configure in case configure regenerated libtool
+  # from the bundled ltmain.sh again — this ensures the final wrapper is
+  # the system libtool that supports --tag=CXX.
+  libtoolize --force --copy 2>/dev/null || true
 
   print_info "Running make..."
   make -j"$(nproc)"
@@ -283,7 +293,7 @@ else
 fi
 print_success "Restarted: $FPM_SERVICE"
 
-# ── Verify module loads ─────────────────────────────────────────────────────
+# ── Verify module loads ──────────────────────────────────────────────────────
 if "$PHP_BIN" -m | grep -qi '^esl$'; then
   print_success "✅ ESL loaded in PHP 8.4 (CLI)."
 else
