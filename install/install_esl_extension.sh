@@ -43,7 +43,7 @@ if [ -z "$EXTENSION_DIR" ]; then
 fi
 print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
-# ── Detect correct SWIG PHP flag based on installed version ─────────────────
+# ── Detect correct SWIG PHP flag ─────────────────────────────────────────────
 detect_swig_php_flag() {
   SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
   print_info "Detected SWIG version: $SWIG_VER"
@@ -56,6 +56,45 @@ detect_swig_php_flag() {
     SWIG_PHP_FLAG="-php8"
     print_info "Using SWIG flag: -php8  (SWIG < 4.1)"
   fi
+}
+
+# ── Ensure a clean, complete FreeSWITCH clone ───────────────────────────────
+# Headers are in libs/esl/src/ — any sparse/partial clone will be missing them.
+# The only reliable fix for a broken clone is to wipe and re-clone.
+ensure_freeswitch_source() {
+  ESL_DIR="$FS_SRC/libs/esl"
+  ESL_SRC_DIR="$ESL_DIR/src"
+
+  # Check that the key headers actually exist in the right place
+  HEADERS_OK=true
+  for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
+    [ -f "$f" ] || HEADERS_OK=false
+  done
+
+  if [ "$HEADERS_OK" = false ]; then
+    if [ -d "$FS_SRC" ]; then
+      print_warn "Existing FreeSWITCH source is incomplete (missing headers in libs/esl/src/)."
+      print_info "Removing and re-cloning..."
+      rm -rf "$FS_SRC"
+    else
+      print_info "FreeSWITCH source not found — cloning..."
+    fi
+
+    # Full shallow clone — no sparse checkout.
+    # The full repo is ~500 MB but we need the complete libs/esl/src/ tree.
+    git clone --depth=1 https://github.com/signalwire/freeswitch.git "$FS_SRC"
+  else
+    print_info "FreeSWITCH source OK at: $FS_SRC"
+  fi
+
+  # Final sanity check
+  for f in "$ESL_DIR/ESL.i" "$ESL_SRC_DIR/esl_oop.h" "$ESL_SRC_DIR/esl.h"; do
+    if [ ! -f "$f" ]; then
+      print_error "Required file still missing after clone: $f"
+      exit 1
+    fi
+  done
+  print_success "All required ESL source files verified."
 }
 
 # ── Build ESL from source (ARM64 / aarch64) ─────────────────────────────────
@@ -72,58 +111,26 @@ build_esl_from_source() {
     autoconf
 
   detect_swig_php_flag
-
-  # ── Clone FreeSWITCH source ─────────────────────────────────────────────
-  # NOTE: Do NOT use sparse checkout — ESL.i references headers across
-  # libs/esl/ and a partial tree causes "Unable to find 'esl_oop.h'" errors.
-  if [ ! -d "$FS_SRC/libs/esl" ]; then
-    print_info "Cloning FreeSWITCH source (shallow)..."
-    git clone --depth=1 https://github.com/signalwire/freeswitch.git "$FS_SRC"
-  else
-    print_info "Found existing FreeSWITCH source at: $FS_SRC"
-
-    # If this was a previous sparse checkout, it may be missing files.
-    # Check for the header that SWIG needs and fetch if absent.
-    if [ ! -f "$FS_SRC/libs/esl/esl_oop.h" ]; then
-      print_warn "esl_oop.h missing — previous sparse checkout detected."
-      print_info "Fetching full libs/esl tree..."
-      cd "$FS_SRC"
-      # Disable sparse checkout so git pulls everything
-      git sparse-checkout disable 2>/dev/null || true
-      git config core.sparseCheckout false 2>/dev/null || true
-      git checkout HEAD -- libs/esl
-    fi
-  fi
+  ensure_freeswitch_source
 
   ESL_DIR="$FS_SRC/libs/esl"
+  ESL_SRC_DIR="$ESL_DIR/src"
   PHP_EXT_DIR="$ESL_DIR/php"
 
-  # Verify all required headers are present
-  for required in "$ESL_DIR/ESL.i" "$ESL_DIR/esl_oop.h" "$ESL_DIR/esl.h"; do
-    if [ ! -f "$required" ]; then
-      print_error "Required file missing: $required"
-      print_error "Contents of $ESL_DIR:"
-      ls -la "$ESL_DIR" || true
-      exit 1
-    fi
-  done
-  print_success "All required ESL headers found."
-
   if [ ! -d "$PHP_EXT_DIR" ]; then
-    print_error "Expected ESL PHP dir not found: $PHP_EXT_DIR"
-    print_error "Contents of $ESL_DIR:"
-    ls -la "$ESL_DIR" || true
+    print_error "PHP extension dir not found: $PHP_EXT_DIR"
     exit 1
   fi
 
   # ── Regenerate SWIG bindings ────────────────────────────────────────────
-  # Run from ESL_DIR so SWIG resolves relative #include paths correctly.
-  # -I"$ESL_DIR" makes headers like esl_oop.h findable explicitly.
-  print_info "Regenerating SWIG bindings (from $ESL_DIR)..."
+  # Run from ESL_DIR so relative paths in ESL.i resolve correctly.
+  # -I flags cover both libs/esl/ and libs/esl/src/ where the headers live.
+  print_info "Regenerating SWIG bindings..."
   cd "$ESL_DIR"
   swig "$SWIG_PHP_FLAG" \
        -cppext cpp \
        -I"$ESL_DIR" \
+       -I"$ESL_SRC_DIR" \
        -o "$PHP_EXT_DIR/ESL.cpp" \
        -outdir "$PHP_EXT_DIR" \
        "$ESL_DIR/ESL.i"
@@ -140,7 +147,9 @@ build_esl_from_source() {
   "$PHPIZE"
 
   print_info "Running configure..."
-  ./configure --with-php-config="$PHP_CONFIG"
+  # Pass ESL src headers so the C++ compiler can find esl.h at compile time
+  CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR" \
+    ./configure --with-php-config="$PHP_CONFIG"
 
   print_info "Running make..."
   make -j"$(nproc)"
