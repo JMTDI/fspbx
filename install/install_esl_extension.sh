@@ -111,13 +111,15 @@ build_esl_from_source() {
   print_info "ARM64 detected — building ESL PHP extension from source..."
 
   apt-get update -qq
+  # FIX: added libtool so a working system libtool is available
   apt-get install -y --no-install-recommends \
     php8.4-dev \
     swig \
     build-essential \
     git \
     ca-certificates \
-    autoconf
+    autoconf \
+    libtool
 
   detect_swig_php_flag
   ensure_freeswitch_source
@@ -174,6 +176,12 @@ EOF
     make distclean 2>/dev/null || make clean 2>/dev/null || true
   fi
   "$PHPIZE" --clean 2>/dev/null || true
+
+  # FIX: Remove the stale libtool/ltmain.sh shipped with the FreeSWITCH source
+  # tree. That script predates --tag=CXX support and breaks C++ compilation.
+  # phpize will install a fresh, system-compatible libtool wrapper below.
+  rm -f libtool ltmain.sh
+
   "$PHPIZE"
 
   print_info "Running configure..."
@@ -275,7 +283,7 @@ else
 fi
 print_success "Restarted: $FPM_SERVICE"
 
-# ── Verify module loads ──────────────────────────────────────────────────────
+# ── Verify module loads ─────────────────────────────────────────────────────
 if "$PHP_BIN" -m | grep -qi '^esl$'; then
   print_success "✅ ESL loaded in PHP 8.4 (CLI)."
 else
