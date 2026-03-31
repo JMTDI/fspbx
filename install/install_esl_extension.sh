@@ -16,7 +16,7 @@ PHP_BIN="/usr/bin/php8.4"
 PHP_CONFIG="/usr/bin/php-config8.4"
 PHPIZE="/usr/bin/phpize8.4"
 FPM_SERVICE="php8.4-fpm"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR=""(CDPATH= cd -- "$(dirname -- "$0")" && pwd)""
 ESL_SO_SRC="${SCRIPT_DIR}/esl-8.4.so"
 FS_SRC="/usr/src/freeswitch"
 
@@ -45,10 +45,14 @@ print_success "PHP 8.4 extension_dir: $EXTENSION_DIR"
 
 # ── Detect correct SWIG PHP flag ─────────────────────────────────────────────
 detect_swig_php_flag() {
-  SWIG_VER="$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
+  SWIG_VER="$$(swig -version 2>&1 | awk '/SWIG Version/{print $3}')"
   print_info "Detected SWIG version: $SWIG_VER"
-  SWIG_MAJOR="$(printf '%s' "$SWIG_VER" | cut -d. -f1)"
-  SWIG_MINOR="$(printf '%s' "$SWIG_VER" | cut -d. -f2)"
+  SWIG_MAJOR="$$(
+printf '%s' "$SWIG_VER" | cut -d. -f1)
+"
+  SWIG_MINOR="$$(
+printf '%s' "$SWIG_VER" | cut -d. -f2)
+"
   if [ "$SWIG_MAJOR" -gt 4 ] || { [ "$SWIG_MAJOR" -eq 4 ] && [ "$SWIG_MINOR" -ge 1 ]; }; then
     SWIG_PHP_FLAG="-php"
     print_info "Using SWIG flag: -php  (SWIG >= 4.1)"
@@ -175,32 +179,28 @@ EOF
     make distclean 2>/dev/null || make clean 2>/dev/null || true
   fi
   "$PHPIZE" --clean 2>/dev/null || true
-
-  # Remove stale libtool artifacts from the FreeSWITCH build system.
-  # These will be regenerated correctly by libtoolize + phpize below.
-  rm -f libtool ltmain.sh aclocal.m4
-
   "$PHPIZE"
-
-  # Run libtoolize --force so configure receives a fresh ltmain.sh and a
-  # libtool wrapper that understands --tag=CXX (required for C++ compilation).
-  # Without this, configure regenerates the libtool script from the stale
-  # FreeSWITCH-bundled ltmain.sh, which predates --tag=CXX support.
-  libtoolize --force --copy 2>/dev/null || true
 
   print_info "Running configure..."
   CPPFLAGS="-I$ESL_DIR -I$ESL_SRC_DIR -I$ESL_INC_DIR" \
     ./configure --with-php-config="$PHP_CONFIG"
 
-  # Re-run libtoolize after configure in case configure regenerated libtool
-  # from the bundled ltmain.sh again — this ensures the final wrapper is
-  # the system libtool that supports --tag=CXX.
-  libtoolize --force --copy 2>/dev/null || true
+  # The FreeSWITCH configure.ac uses the obsolete AC_PROG_LIBTOOL macro which
+  # generates a libtool wrapper that does not understand --tag=CXX (needed for
+  # C++ compilation). config.status regenerates ./libtool from the bundled
+  # build/ltmain.sh regardless of what libtoolize wrote.
+  # Fix: overwrite the generated ./libtool with the system libtool binary
+  # directly. The system /usr/bin/libtool is a full libtool script that
+  # supports all tags including CXX.
+  print_info "Replacing generated libtool wrapper with system libtool..."
+  cp /usr/bin/libtool "$PHP_EXT_DIR/libtool"
+  chmod +x "$PHP_EXT_DIR/libtool"
+  print_success "libtool wrapper replaced."
 
   print_info "Running make..."
   make -j"$(nproc)"
 
-  # ── Locate the built .so ──────────────��─────────────────────────────────
+  # ── Locate the built .so ────────────────────────────────────────────────
   BUILT_SO=""
   for candidate in \
       "$PHP_EXT_DIR/modules/esl.so" \
@@ -302,4 +302,5 @@ else
   exit 1
 fi
 
-print_success "🎉 ESL installation completed successfully for PHP 8.4 on $ARCH."
+print_success "🎉 ESL installation completed successfully for PHP 8.4 on $ARCH.
+"
