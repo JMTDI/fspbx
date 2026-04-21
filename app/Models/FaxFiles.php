@@ -25,6 +25,7 @@ class FaxFiles extends Model
     protected $appends = [
         'fax_date_formatted',
         'fax_caller_id_number_formatted',
+        'fax_destination_formatted',
     ];
 
     public function locations()
@@ -54,6 +55,11 @@ class FaxFiles extends Model
         return formatPhoneNumber($this->fax_caller_id_number, 'US', PhoneNumberFormat::NATIONAL);
     }
 
+    public function getFaxDestinationFormattedAttribute()
+    {
+        return formatPhoneNumber($this->fax_destination, 'US', PhoneNumberFormat::NATIONAL);
+    }
+
     /**
      * Get the domain to which this faxfile belongs
      */
@@ -70,5 +76,10 @@ class FaxFiles extends Model
     public function faxQueue()
     {
         return $this->belongsTo(FaxQueues::class, 'fax_file_path', 'fax_file');
+    }
+
+    public function faxLog()
+    {
+        return $this->belongsTo(FaxLogs::class, 'fax_file_uuid', 'fax_log_uuid');
     }
 }
