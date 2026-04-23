@@ -8,6 +8,42 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "CDRs",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/list-call-detail-records",
+          label: "List Call Detail Records",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/retrieve-a-call-detail-record",
+          label: "Retrieve a Call Detail Record",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Devices",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/list-devices",
+          label: "List devices",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/retrieve-a-device",
+          label: "Retrieve a device",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Domains",
       items: [
         {

@@ -2,10 +2,12 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\DomainController;
+use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\ExtensionController;
 use App\Http\Controllers\Api\V1\RingGroupController;
 use App\Http\Controllers\Api\V1\VoicemailController;
 use App\Http\Controllers\Api\V1\PhoneNumberController;
+use App\Http\Controllers\Api\V1\CdrController;
 
 /*
 |--------------------------------------------------------------------------
@@ -99,6 +101,17 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     /*
     |--------------------------------------------------------------------------
+    | Devices (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/devices', [DeviceController::class, 'index'])
+        ->middleware('user.authorize:device_view');
+
+    Route::get('/domains/{domain_uuid}/devices/{device_uuid}', [DeviceController::class, 'show'])
+        ->middleware('user.authorize:device_view');
+
+    /*
+    |--------------------------------------------------------------------------
     | Phone Numbers (domain-scoped)
     |--------------------------------------------------------------------------
     */
@@ -116,4 +129,15 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     Route::delete('/domains/{domain_uuid}/phone-numbers/{destination_uuid}', [PhoneNumberController::class, 'destroy'])
         ->middleware('user.authorize:ring_group_delete');
+
+    /*
+    |--------------------------------------------------------------------------
+    | CDRs (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/cdrs', [CdrController::class, 'index'])
+        ->middleware('user.authorize:xml_cdr_view');
+
+    Route::get('/domains/{domain_uuid}/cdrs/{xml_cdr_uuid}', [CdrController::class, 'show'])
+        ->middleware('user.authorize:xml_cdr_view');
 });
