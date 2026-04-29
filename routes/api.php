@@ -1,11 +1,13 @@
 <?php
 
 use App\Http\Controllers\AccountSettingsController;
+use App\Http\Controllers\AccessControlController;
 use App\Http\Controllers\Api\EmergencyCallController;
 use App\Http\Controllers\Api\HolidayHoursController;
 use App\Http\Controllers\Api\LocationsController;
 use App\Http\Controllers\Api\ProvisioningTemplateController;
 use App\Http\Controllers\BusinessHoursController;
+use App\Http\Controllers\CallFlowController;
 use App\Http\Controllers\CallTranscriptionController;
 use App\Http\Controllers\CdrsController;
 use App\Http\Controllers\CharPmsWebhookController;
@@ -23,6 +25,7 @@ use App\Http\Controllers\FaxInboxController;
 use App\Http\Controllers\FaxLogController;
 use App\Http\Controllers\FaxSentController;
 use App\Http\Controllers\GreetingsController;
+use App\Http\Controllers\GatewayController;
 use App\Http\Controllers\GroupsController;
 use App\Http\Controllers\HotelHousekeepingDefinitionController;
 use App\Http\Controllers\HotelRoomController;
@@ -37,6 +40,7 @@ use App\Http\Controllers\RecordingsManagerController;
 use App\Http\Controllers\RingGroupsController;
 use App\Http\Controllers\SipStatusController;
 use App\Http\Controllers\SpeedDialController;
+use App\Http\Controllers\SystemController;
 use App\Http\Controllers\SystemSettingsController;
 use App\Http\Controllers\TokenController;
 use App\Http\Controllers\UserLogsController;
@@ -263,6 +267,39 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     Route::post('devices/assign', [DeviceController::class, 'assign'])->name('devices.assign');
     Route::post('devices/bulk-unassign', [DeviceController::class, 'bulkUnassign'])->name('devices.bulk.unassign');
 
+    // Gateways
+    Route::post('gateways', [GatewayController::class, 'store'])->name('gateways.store');
+    Route::put('gateways/{gateway}', [GatewayController::class, 'update'])->name('gateways.update');
+    Route::get('/gateways/data', [GatewayController::class, 'getData'])->name('gateways.data');
+    Route::post('/gateways/item-options', [GatewayController::class, 'getItemOptions'])->name('gateways.item.options');
+    Route::post('/gateways/select-all', [GatewayController::class, 'selectAll'])->name('gateways.select.all');
+    Route::post('/gateways/bulk-delete', [GatewayController::class, 'bulkDelete'])->name('gateways.bulk.delete');
+    Route::post('/gateways/bulk-copy', [GatewayController::class, 'bulkCopy'])->name('gateways.bulk.copy');
+    Route::post('/gateways/bulk-toggle', [GatewayController::class, 'bulkToggle'])->name('gateways.bulk.toggle');
+    Route::post('/gateways/bulk-start', [GatewayController::class, 'bulkStart'])->name('gateways.bulk.start');
+    Route::post('/gateways/bulk-stop', [GatewayController::class, 'bulkStop'])->name('gateways.bulk.stop');
+
+    // Access Controls
+    Route::post('access-controls', [AccessControlController::class, 'store'])->name('access-controls.store');
+    Route::put('access-controls/{access_control}', [AccessControlController::class, 'update'])->name('access-controls.update');
+    Route::get('/access-controls/data', [AccessControlController::class, 'getData'])->name('access-controls.data');
+    Route::post('/access-controls/item-options', [AccessControlController::class, 'getItemOptions'])->name('access-controls.item.options');
+    Route::post('/access-controls/select-all', [AccessControlController::class, 'selectAll'])->name('access-controls.select.all');
+    Route::post('/access-controls/bulk-delete', [AccessControlController::class, 'bulkDelete'])->name('access-controls.bulk.delete');
+    Route::post('/access-controls/bulk-copy', [AccessControlController::class, 'bulkCopy'])->name('access-controls.bulk.copy');
+    Route::post('/access-controls/reload', [AccessControlController::class, 'reload'])->name('access-controls.reload');
+
+    // Call Flows
+    Route::post('call-flows', [CallFlowController::class, 'store'])->name('call-flows.store');
+    Route::put('call-flows/{call_flow}', [CallFlowController::class, 'update'])->name('call-flows.update');
+    Route::get('/call-flows/data', [CallFlowController::class, 'getData'])->name('call-flows.data');
+    Route::post('/call-flows/item-options', [CallFlowController::class, 'getItemOptions'])->name('call-flows.item.options');
+    Route::post('/call-flows/groups', [CallFlowController::class, 'storeGroup'])->name('call-flows.groups.store');
+    Route::post('/call-flows/select-all', [CallFlowController::class, 'selectAll'])->name('call-flows.select.all');
+    Route::post('/call-flows/bulk-delete', [CallFlowController::class, 'bulkDelete'])->name('call-flows.bulk.delete');
+    Route::post('/call-flows/bulk-copy', [CallFlowController::class, 'bulkCopy'])->name('call-flows.bulk.copy');
+    Route::post('/call-flows/bulk-toggle', [CallFlowController::class, 'bulkToggle'])->name('call-flows.bulk.toggle');
+
     // Phone Numbers
     Route::post('phone-numbers', [PhoneNumbersController::class, 'store'])->name('phone-numbers.store');
     Route::put('phone-numbers/{phone_number}', [PhoneNumbersController::class, 'update'])->name('phone-numbers.update');
@@ -364,6 +401,9 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     // System Settings
     Route::put('system-settings/update', [SystemSettingsController::class, 'update'])->name('system-settings.update');
     Route::get('system-settings/payment_gateways', [SystemSettingsController::class, 'getPaymentGatewayData'])->name('system-settings.payment_gateways');
+
+    // System
+    Route::get('system/data', [SystemController::class, 'data'])->name('system.data');
 
     // Call Transcription
     Route::get('/call-transcription/providers', [CallTranscriptionController::class, 'getProviders'])->name('call-transcription.providers');

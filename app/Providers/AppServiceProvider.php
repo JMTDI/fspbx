@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\BusinessHourHoliday;
+use App\Models\CallFlows;
 use App\Models\CallTranscriptionPolicy;
 use App\Models\CallTranscriptionProviderConfig;
 use App\Models\Devices;
@@ -18,6 +19,7 @@ use App\Models\Sanctum\PersonalAccessToken;
 use App\Models\User;
 use App\Models\UserDomainGroupPermissions;
 use App\Observers\BusinessHourHolidayObserver;
+use App\Observers\CallFlowObserver;
 use App\Observers\CallTranscriptionPolicyObserver;
 use App\Observers\CallTranscriptionProviderConfigObserver;
 use App\Observers\DeviceObserver;
@@ -69,7 +71,8 @@ class AppServiceProvider extends ServiceProvider
         Vite::useHotFile(storage_path('vite.hot')) // Customize the "hot" file...
             ->useBuildDirectory('storage/vite') // Customize the build directory...
             ->withEntryPoints([
-                'resources/js/app.js'
+                'resources/js/vue.js',
+                'resources/scss/tailwind.css',
             ]);
 
 
@@ -115,6 +118,7 @@ class AppServiceProvider extends ServiceProvider
         CallTranscriptionProviderConfig::observe(CallTranscriptionProviderConfigObserver::class);
         Domain::observe(DomainObserver::class);    
         DomainGroupRelations::observe(DomainGroupRelationsObserver::class);
+        CallFlows::observe(CallFlowObserver::class);
         RingGroups::observe(RingGroupObserver::class);
         Messages::observe(MessageObserver::class);
 

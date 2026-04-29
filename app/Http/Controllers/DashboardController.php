@@ -106,7 +106,7 @@ class DashboardController extends Controller
         $params['filter']['startPeriod'] = $startPeriod;
         $params['filter']['endPeriod'] = $endPeriod;
         // Check if user is allowed to see all CDRs for tenant
-        if (!userCheckPermission("xml_cdr_domain")) {
+        if (userCheckPermission("xml_cdr_view") && userCheckPermission("xml_cdr_view_self_records") && !userCheckPermission("xml_cdr_view_all_records")) {
             $user = auth()->user();
             $params['filter']['entity']['value'] = $user->extension_uuid;
             $params['filter']['entity']['type'] = 'extension';
@@ -183,7 +183,7 @@ class DashboardController extends Controller
         }
 
         //Messages Count
-        if (userCheckPermission("message_settings_list_view")) {
+        if (userCheckPermission("messages_view")) {
             $counts['messages'] = Messages::where('domain_uuid', $domain_uuid)
                 ->whereRaw("created_at >= '" . date('Y-m-d') . " 00:00:00.00 " . get_domain_setting('time_zone') . "'")
                 ->count();
@@ -395,12 +395,12 @@ class DashboardController extends Controller
             $apps[] = ['name' => 'Call History (CDRs)', 'href' => route('cdrs.index'), 'icon' => 'CallHistoryIcon', 'slug' => 'cdrs'];
         }
         if (userCheckPermission("call_flow_view")) {
-            $apps[] = ['name' => 'Call Flows', 'href' => '/app/call_flows/call_flows.php', 'icon' => 'AlternativeRouteIcon', 'slug' => 'call_flows'];
+            $apps[] = ['name' => 'Call Flows', 'href' => route('call-flows.index'), 'icon' => 'AlternativeRouteIcon', 'slug' => 'call_flows'];
         }
         if (userCheckPermission("fax_view")) {
             $apps[] = ['name' => 'Faxes', 'href' => '/faxes', 'icon' => 'FaxIcon', 'slug' => 'faxes'];
         }
-        if (userCheckPermission("message_settings_list_view")) {
+        if (userCheckPermission("messages_view")) {
             $apps[] = ['name' => 'Messages', 'href' => '/messages', 'icon' => 'UsersIcon', 'slug' => 'messages'];
         }
         if (userCheckPermission("whitelisted_numbers_list_view")) {

@@ -21,7 +21,7 @@ class CdrDataService
 
         // Check if user is allowed to see all CDRs for tenant
         $user = auth()->user();
-        if ($user && userCheckPermission("xml_cdr_view") && userCheckPermission("xml_cdr_view_self_records")) {
+        if ($user && userCheckPermission("xml_cdr_view") && userCheckPermission("xml_cdr_view_self_records") && !userCheckPermission("xml_cdr_view_all_records")) {
             $params['filter']['entity']['value'] = $user->extension_uuid;
             $params['filter']['entity']['type'] = 'extension';
         }

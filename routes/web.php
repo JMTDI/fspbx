@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AccountSettingsController;
+use App\Http\Controllers\AccessControlController;
 use App\Http\Controllers\ActiveCallsController;
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AppsController;
@@ -8,6 +9,7 @@ use App\Http\Controllers\AppsCredentialsController;
 use App\Http\Controllers\Auth\ForgotPasswordController;
 use App\Http\Controllers\BusinessHoursController;
 use App\Http\Controllers\CallRecordingController;
+use App\Http\Controllers\CallFlowController;
 use App\Http\Controllers\CallRoutingOptionsController;
 use App\Http\Controllers\CdrsController;
 use App\Http\Controllers\CsrfTokenController;
@@ -25,6 +27,7 @@ use App\Http\Controllers\FaxLogController;
 use App\Http\Controllers\FaxQueueController;
 use App\Http\Controllers\FaxSentController;
 use App\Http\Controllers\FirewallController;
+use App\Http\Controllers\GatewayController;
 use App\Http\Controllers\GroupsController;
 use App\Http\Controllers\LogsController;
 use App\Http\Controllers\MessageController;
@@ -43,6 +46,7 @@ use App\Http\Controllers\SansayActiveCallsController;
 use App\Http\Controllers\SansayRegistrationsController;
 use App\Http\Controllers\SipStatusController;
 use App\Http\Controllers\SpeedDialController;
+use App\Http\Controllers\SystemController;
 use App\Http\Controllers\SystemSettingsController;
 use App\Http\Controllers\UserLogsController;
 use App\Http\Controllers\UsersController;
@@ -178,6 +182,12 @@ Route::group(['middleware' => 'auth'], function () {
     // Ring Groups
     Route::get('ring-groups', [RingGroupsController::class, 'index'])->name('ring-groups.index');
 
+    // Gateways
+    Route::get('gateways', [GatewayController::class, 'index'])->name('gateways.index');
+
+    // Access Controls
+    Route::get('access-controls', [AccessControlController::class, 'index'])->name('access-controls.index');
+
     // Recordings Manager
     Route::get('recordings-manager', [RecordingsManagerController::class, 'index'])->name('recordings-manager.index');
     Route::get('recordings-manager/{recording}/download', [RecordingsManagerController::class, 'download'])->name('recordings-manager.download');
@@ -190,6 +200,9 @@ Route::group(['middleware' => 'auth'], function () {
 
     // Business hours
     Route::get('business-hours', [BusinessHoursController::class, 'index'])->name('business-hours.index');
+
+    // Call Flows
+    Route::get('call-flows', [CallFlowController::class, 'index'])->name('call-flows.index');
 
     //Voicemails
     Route::get('voicemails', [VoicemailController::class, 'index'])->name('voicemails.index');
@@ -208,6 +221,9 @@ Route::group(['middleware' => 'auth'], function () {
 
     // System Settings
     Route::get('system-settings', [SystemSettingsController::class, 'index'])->name('system-settings.index');
+
+    // System
+    Route::get('system', [SystemController::class, 'index'])->name('system.index');
 
     // Route::get('/home', [App\Http\Controllers\HomeController::class, 'index'])->name('home');
     Route::get('/', [App\Http\Controllers\HomeController::class, 'index'])->name('home');
