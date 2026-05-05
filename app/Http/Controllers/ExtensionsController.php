@@ -89,7 +89,6 @@ class ExtensionsController extends Controller
      */
     public function index(Request $request)
     {
-
         // Check permissions
         if (!userCheckPermission("extension_view")) {
             return redirect('/');
@@ -125,6 +124,10 @@ class ExtensionsController extends Controller
     {
         $perPage = 50;
         $currentDomain = session('domain_uuid');
+
+        if (!userCheckPermission('extension_view')) {
+            abort(403);
+        }
 
         $extensions = QueryBuilder::for(Extensions::class)
             // only extensions in the current domain
@@ -358,6 +361,15 @@ class ExtensionsController extends Controller
     public function getItemOptions(Request $request)
     {
         $itemUuid = $request->input('item_uuid');
+        $selfService = $itemUuid && !userCheckPermission('extension_view') && $this->userOwnsExtension($itemUuid);
+
+        if ($itemUuid && !userCheckPermission('extension_view') && !$selfService) {
+            abort(403);
+        }
+
+        if (!$itemUuid && !userCheckPermission('extension_add') && !userCheckPermission('extension_create')) {
+            abort(403);
+        }
 
         //Check for limits
         if (!$itemUuid) {
@@ -479,6 +491,7 @@ class ExtensionsController extends Controller
                     }
                 ])
                 ->whereKey($itemUuid)
+                ->where('domain_uuid', $currentDomain)
                 ->firstOrFail()
                 ->append([
                     'emergency_caller_id_number_e164',
@@ -947,6 +960,15 @@ public function store(StoreExtensionRequest $request)
                 // Prepare necessary linking data
                 $data['extension_uuid'] = $extension->extension_uuid;
                 $data['domain_uuid'] = $extension->domain_uuid;
+                $voicemailData = $data;
+
+                if (array_key_exists('voicemail_file', $voicemailData)) {
+                    $voicemailData['voicemail_attach_file'] = $voicemailData['voicemail_file'] === 'attach' ? 'true' : 'false';
+
+                    if ($voicemailData['voicemail_file'] === 'link') {
+                        $voicemailData['voicemail_local_after_email'] = 'true';
+                    }
+                }
 
                 // Look for an orphaned/existing voicemail box
                 $existingVoicemail = Voicemails::where('domain_uuid', $extension->domain_uuid)
@@ -955,10 +977,10 @@ public function store(StoreExtensionRequest $request)
 
                 if ($existingVoicemail) {
                     // Box exists! Just re-attach it to this extension and update its settings
-                    $existingVoicemail->update($data);
+                    $existingVoicemail->update($voicemailData);
                 } else {
                     // Box doesn't exist, create a brand new one
-                    Voicemails::create($data);
+                    Voicemails::create($voicemailData);
                 }
             }
 
@@ -1002,6 +1024,10 @@ public function store(StoreExtensionRequest $request)
      */
     public function sipCredentials($extension_uuid)
     {
+        if (!userCheckPermission('extension_password') || (!userCheckPermission('extension_view') && !$this->userOwnsExtension($extension_uuid))) {
+            abort(403);
+        }
+
         try {
             $extension = QueryBuilder::for(Extensions::class)
                 ->select([
@@ -1011,6 +1037,7 @@ public function store(StoreExtensionRequest $request)
                     'user_context',
                 ])
                 ->whereKey($extension_uuid)
+                ->where('domain_uuid', session('domain_uuid'))
                 ->firstOrFail();
 
 
@@ -1040,6 +1067,10 @@ public function store(StoreExtensionRequest $request)
      */
     public function regenerateSipCredentials($extension_uuid)
     {
+        if (!userCheckPermission('extension_password') || (!userCheckPermission('extension_view') && !$this->userOwnsExtension($extension_uuid))) {
+            abort(403);
+        }
+
         try {
             DB::beginTransaction();
             $currentDomain = session('domain_uuid');
@@ -1049,7 +1080,9 @@ public function store(StoreExtensionRequest $request)
                     $q->where('domain_uuid', $currentDomain)
                         ->select('device_line_uuid', 'device_uuid', 'auth_id', 'domain_uuid', 'password');
                 }
-            ])->whereKey($extension_uuid)->firstOrFail();
+            ])->whereKey($extension_uuid)
+                ->where('domain_uuid', $currentDomain)
+                ->firstOrFail();
 
             // Generate new password
             $newPassword = generate_password();
@@ -1089,6 +1122,9 @@ public function store(StoreExtensionRequest $request)
 
     public function devices(Request $request, $extension_uuid)
     {
+        if (!userCheckPermission('extension_view') && !$this->userOwnsExtension($extension_uuid)) {
+            abort(403);
+        }
 
         $currentDomain = session('domain_uuid');
         try {
@@ -1144,6 +1180,7 @@ public function store(StoreExtensionRequest $request)
         try {
             DB::beginTransaction();
             $data = $request->validated();
+            $selfService = !userCheckPermission('extension_edit') && $this->userOwnsExtension($id);
 
             $canManageVoicemail = userCheckPermission('extension_voicemail_settings');
 
@@ -1185,7 +1222,13 @@ public function store(StoreExtensionRequest $request)
                     },
                 ])
                 ->where('extension_uuid', $id)
+                ->where('domain_uuid', $currentDomain)
                 ->firstOrFail();
+
+            if ($selfService) {
+                $data['extension'] = $extension->extension;
+                $data['effective_caller_id_number'] = $extension->extension;
+            }
 
             // Build Forwarding destinations
             $forwardTypes = ['forward_all', 'forward_busy', 'forward_no_answer', 'forward_user_not_registered'];
@@ -1228,13 +1271,23 @@ public function store(StoreExtensionRequest $request)
                     ->where('voicemail_id', $extension->extension)
                     ->first();
 
+                $voicemailData = $data;
+
+                if (array_key_exists('voicemail_file', $voicemailData)) {
+                    $voicemailData['voicemail_attach_file'] = $voicemailData['voicemail_file'] === 'attach' ? 'true' : 'false';
+
+                    if ($voicemailData['voicemail_file'] === 'link') {
+                        $voicemailData['voicemail_local_after_email'] = 'true';
+                    }
+                }
+
                 if ($voicemail) {
                     // Re-link and update
-                    $voicemail->update($data);
+                    $voicemail->update($voicemailData);
                 } else {
                     // Create new only if enabled
                     if (($data['voicemail_enabled'] ?? 'false') == 'true') {
-                        Voicemails::create($data);
+                        Voicemails::create($voicemailData);
                     }
                 }
             }
@@ -1280,7 +1333,7 @@ public function store(StoreExtensionRequest $request)
                 // Dispatch job
                 UpdateAppSettings::dispatch($mobileAppPayload)->onQueue('default');
 
-                if ($data['suspended'] && $extension->mobile_app->status != -1) {
+                if (!empty($data['suspended']) && $extension->mobile_app->status != -1) {
                     // logger('suspended');
                     SuspendAppUser::dispatch($mobileAppPayload)->onQueue('default');
                 }
@@ -1617,6 +1670,14 @@ public function store(StoreExtensionRequest $request)
             'extension_uuid' => $extension->extension_uuid,
             'voicemail_id' => $extension->extension,
         ]);
+
+        if (array_key_exists('voicemail_file', $payload)) {
+            $payload['voicemail_attach_file'] = $payload['voicemail_file'] === 'attach' ? 'true' : 'false';
+
+            if ($payload['voicemail_file'] === 'link') {
+                $payload['voicemail_local_after_email'] = 'true';
+            }
+        }
 
         if ($voicemail) {
             $voicemail->update($payload);
@@ -2178,6 +2239,9 @@ public function store(StoreExtensionRequest $request)
         $permissions['extension_enabled'] = userCheckPermission('extension_enabled');
         $permissions['extension_extension'] = userCheckPermission('extension_extension');
         $permissions['extension_password'] = userCheckPermission('extension_password');
+        $permissions['extension_create'] = userCheckPermission('extension_add') || userCheckPermission('extension_create');
+        $permissions['extension_update'] = userCheckPermission('extension_edit');
+        $permissions['extension_destroy'] = userCheckPermission('extension_delete');
         $permissions['extension_suspended'] = userCheckPermission('extension_suspended');
         $permissions['extension_do_not_disturb'] = userCheckPermission('extension_do_not_disturb');
         $permissions['extension_user_record'] = userCheckPermission('extension_user_record');
@@ -2231,5 +2295,16 @@ public function store(StoreExtensionRequest $request)
         $permissions['is_superadmin'] = isSuperAdmin();
 
         return $permissions;
+    }
+
+    private function userOwnsExtension(?string $extensionUuid): bool
+    {
+        if (!$extensionUuid || Auth::user()?->extension_uuid !== $extensionUuid) {
+            return false;
+        }
+
+        return Extensions::whereKey($extensionUuid)
+            ->where('domain_uuid', session('domain_uuid'))
+            ->exists();
     }
 }

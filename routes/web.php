@@ -16,6 +16,7 @@ use App\Http\Controllers\CsrfTokenController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceCloudProvisioningController;
 use App\Http\Controllers\DeviceController;
+use App\Http\Controllers\DialplanController;
 use App\Http\Controllers\DomainController;
 use App\Http\Controllers\DomainGroupsController;
 use App\Http\Controllers\EmailQueueController;
@@ -121,6 +122,10 @@ Route::match(['GET', 'HEAD'], '/prov/{path}', [ProvisioningController::class, 's
 Route::get('/call-detail-records/recordings/{uuid}/stream', [CallRecordingController::class, 'stream'])->name('cdrs.recording.stream');
 Route::get('/call-detail-records/recordings/{uuid}/download', [CallRecordingController::class, 'download'])->name('cdrs.recording.download');
 
+// Signed voicemail recording download links sent by email.
+Route::get('/voicemails/messages/{message_uuid}/public-download', [VoicemailMessagesController::class, 'downloadSignedVoicemailMessage'])
+    ->name('voicemails.messages.public-download');
+
 Route::group(['middleware' => 'auth'], function () {
 
     // Extensions
@@ -187,6 +192,9 @@ Route::group(['middleware' => 'auth'], function () {
 
     // Access Controls
     Route::get('access-controls', [AccessControlController::class, 'index'])->name('access-controls.index');
+
+    // Dialplans
+    Route::get('dialplans', [DialplanController::class, 'index'])->name('dialplans.index');
 
     // Recordings Manager
     Route::get('recordings-manager', [RecordingsManagerController::class, 'index'])->name('recordings-manager.index');

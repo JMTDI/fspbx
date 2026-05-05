@@ -176,8 +176,8 @@
                                     voicemail_password: options.voicemail?.voicemail_password ?? options.item.voicemail,
                                     voicemail_description: options.voicemail?.voicemail_description ?? '',
                                     voicemail_transcription_enabled: options.voicemail?.voicemail_transcription_enabled ?? 'true',
-                                    voicemail_file: options.voicemail?.voicemail_file === 'attach' ? 'attach' : '',
-                                    voicemail_local_after_email: options.voicemail?.voicemail_local_after_email ?? 'true',
+                                    voicemail_file: ['attach', 'link'].includes(options.voicemail?.voicemail_file) ? options.voicemail.voicemail_file : '',
+                                    voicemail_local_after_email: options.voicemail?.voicemail_file === 'link' ? 'true' : (options.voicemail?.voicemail_local_after_email ?? 'true'),
                                     voicemail_copies: options.voicemail_copies ?? [],
                                     greeting_id: options.voicemail?.greeting_id ?? null,
                                     voicemail_tutorial: options.voicemail?.voicemail_tutorial ?? 'false',
@@ -967,15 +967,18 @@
                                                 <ToggleElement name="voicemail_transcription_enabled"
                                                     text="Voicemail Transcription" true-value="true" false-value="false"
                                                     description="Convert voicemail messages to text using AI-powered transcription."
-                                                    :conditions="[['voicemail_enabled', '==', 'true']]" />
+                                                    :conditions="[
+                                                        (form$) => form$.el$('voicemail_enabled')?.value == 'true' && options.permissions.manage_voicemail_transcription
+                                                    ]" />
 
                                                 <StaticElement name="divider10" tag="hr"
                                                     :conditions="[['voicemail_enabled', '==', 'true']]" />
 
-                                                <ToggleElement name="voicemail_file"
-                                                    text="Attach File to Email Notifications" true-value="attach"
-                                                    false-value=""
-                                                    description="Attach voicemail recording file to the email notification."
+                                                <SelectElement name="voicemail_file" :items="voicemailFileOptions"
+                                                    :native="false" label="Voicemail Recording Delivery"
+                                                    value-prop="value" label-prop="label"
+                                                    description="Choose whether voicemail emails include the recording as an attachment, a download link, or not at all."
+                                                    @change="handleVoicemailFileChange"
                                                     :conditions="[['voicemail_enabled', '==', 'true']]" />
 
                                                 <StaticElement name="divider11" tag="hr"
@@ -985,7 +988,10 @@
                                                     text="Automatically Delete Voicemail After Email" true-value="false"
                                                     false-value="true"
                                                     description="Remove voicemail from the cloud once the email is sent."
-                                                    :conditions="[['voicemail_enabled', '==', 'true']]" />
+                                                    :disabled="isAutoDeleteDisabled"
+                                                    :conditions="[
+                                                        (form$) => form$.el$('voicemail_enabled')?.value == 'true' && options.permissions.manage_voicemail_auto_delete
+                                                    ]" />
 
                                                 <TagsElement name="voicemail_copies" :search="true"
                                                     :items="options.all_voicemails"
@@ -993,7 +999,9 @@
                                                     autocomplete="off"
                                                     description="Automatically send a copy of the voicemail to selected additional extensions."
                                                     :floating="false" placeholder="Enter name or extension"
-                                                    :conditions="[['voicemail_enabled', '==', 'true']]" />
+                                                    :conditions="[
+                                                        (form$) => form$.el$('voicemail_enabled')?.value == 'true' && options.permissions.manage_voicemail_copies
+                                                    ]" />
 
                                                 <StaticElement name="divider12" tag="hr" top="1" bottom="1"
                                                     :conditions="[['voicemail_enabled', '==', 'true']]" />
@@ -1240,7 +1248,9 @@
                                                     text="Play Recording Instructions" true-value="true"
                                                     false-value="false"
                                                     description='Play a prompt instructing callers to "Record your message after the tone. Stop speaking to end the recording."'
-                                                    :conditions="[['voicemail_enabled', '==', 'true']]" />
+                                                    :conditions="[
+                                                        (form$) => form$.el$('voicemail_enabled')?.value == 'true' && options.permissions.manage_voicemail_recording_instructions
+                                                    ]" />
 
                                                 <StaticElement name="divider18" tag="hr" :conditions="[
                                                     function (form$) {
@@ -1266,7 +1276,9 @@
                                                         sm: {
                                                             wrapper: 6,
                                                         },
-                                                    }" :conditions="[['voicemail_enabled', '==', 'true']]" />
+                                                    }" :conditions="[
+                                                        (form$) => form$.el$('voicemail_enabled')?.value == 'true' && options.permissions.is_superadmin
+                                                    ]" />
 
                                                 <GroupElement name="container_voicemail" />
 
@@ -1899,6 +1911,22 @@ const props = defineProps({
     header: String,
     loading: Boolean,
 });
+
+const voicemailFileOptions = [
+    { value: 'attach', label: 'Attach recording' },
+    { value: 'link', label: 'Send download link' },
+    { value: '', label: 'Do not include recording' },
+]
+
+const handleVoicemailFileChange = (newValue, oldValue, el$) => {
+    if (newValue === 'link') {
+        el$.form$.el$('voicemail_local_after_email')?.update('true')
+    }
+}
+
+const isAutoDeleteDisabled = [
+    (form$) => form$.el$('voicemail_file')?.value === 'link',
+]
 
 const copied = ref({ uuid: false })
 
