@@ -195,10 +195,24 @@
 
                             <template #action-buttons>
                                 <div class="flex items-center whitespace-nowrap">
-                                    <DevicePhoneMobileIcon v-if="!!row.mobile_app && row.mobile_app.status != '-1'"
-                                        class="h-5 w-5  text-blue-400 hover:text-blue-600 active:bg-blue-300" />
-                                    <MicrophoneIcon v-if="!!row.user_record"
-                                        class="h-5 w-5 text-rose-400 hover:text-rose-600 active:bg-rose-300" />
+                                    <ejs-tooltip v-if="String(row.mobile_app?.status) === '1'"
+                                        :content="'Mobile App (Activated)'" position='TopCenter'>
+                                        <DevicePhoneMobileSolidIcon
+                                            class="h-5 w-5 text-blue-400 hover:text-blue-600 active:bg-blue-300"
+                                            aria-label="Mobile App (Activated)" />
+                                    </ejs-tooltip>
+                                    <ejs-tooltip v-if="String(row.mobile_app?.status) === '-1'"
+                                        :content="'Mobile App (Phonebook Only)'" position='TopCenter'>
+                                        <DevicePhoneMobileIcon
+                                            class="h-5 w-5 text-gray-400 hover:text-gray-600 active:bg-gray-300"
+                                            aria-label="Mobile App (Phonebook Only)" />
+                                    </ejs-tooltip>
+                                    <ejs-tooltip v-if="!!row.user_record" :content="'Record Calls'"
+                                        position='TopCenter'>
+                                        <MicrophoneIcon
+                                            class="h-5 w-5 text-rose-400 hover:text-rose-600 active:bg-rose-300"
+                                            aria-label="Record Calls" />
+                                    </ejs-tooltip>
 
                                 </div>
                             </template>
@@ -346,7 +360,7 @@ import Paginator from "./components/general/Paginator.vue";
 import ConfirmationModal from "./components/modal/ConfirmationModal.vue";
 import Loading from "./components/general/Loading.vue";
 import { registerLicense } from '@syncfusion/ej2-base';
-import { MagnifyingGlassIcon, TrashIcon, PencilSquareIcon, ChevronUpIcon, ChevronDownIcon } from "@heroicons/vue/24/solid";
+import { MagnifyingGlassIcon, TrashIcon, PencilSquareIcon, ChevronUpIcon, ChevronDownIcon, DevicePhoneMobileIcon as DevicePhoneMobileSolidIcon } from "@heroicons/vue/24/solid";
 import { TooltipComponent as EjsTooltip } from "@syncfusion/ej2-vue-popups";
 import AdvancedActionButton from "./components/general/AdvancedActionButton.vue";
 import MainLayout from "../Layouts/MainLayout.vue";
@@ -618,7 +632,7 @@ const handleBulkActionRequest = (action) => {
         confirmDeleteAction.value = () => executeBulkDelete();
     }
     if (action === 'bulk_update') {
-        getItemOptions();
+        getItemOptions(null, { include_mobile_app_bulk: true });
         bulkUpdateModalTrigger.value = true;
     }
 };
@@ -768,10 +782,12 @@ const renderRequestedPage = (url) => {
 };
 
 
-const getItemOptions = (itemUuid = null) => {
+const getItemOptions = (itemUuid = null, extraPayload = {}) => {
     itemOptions.value = {}
-    const payload = itemUuid ? { item_uuid: itemUuid } : {}; // Conditionally add itemUuid to payload
-    isModalLoading.value = true
+    const payload = {
+        ...extraPayload,
+        ...(itemUuid ? { item_uuid: itemUuid } : {}),
+    };    isModalLoading.value = true
     axios.post(props.routes.item_options, payload)
         .then((response) => {
             itemOptions.value = response.data;

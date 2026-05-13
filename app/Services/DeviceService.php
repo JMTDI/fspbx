@@ -189,7 +189,7 @@ class DeviceService
             'sip_port' => $line['sip_port'] ?? get_domain_setting('line_sip_port', $domainUuid),
             'sip_transport' => $line['sip_transport'] ?? get_domain_setting('line_sip_transport', $domainUuid),
             'register_expires' => $line['register_expires'] ?? get_domain_setting('register_expires', $domainUuid),
-            'shared_line' => $line['shared_line'] ?? null,
+            'shared_line' => ($line['line_type_id'] ?? null) === 'sharedline' ? '1' : ($line['shared_line'] ?? null),
             'device_line_uuid' => (string) Str::uuid(),
             'domain_uuid' => $device->domain_uuid,
             'enabled' => 'true',

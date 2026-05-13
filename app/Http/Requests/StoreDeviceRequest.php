@@ -80,6 +80,7 @@ class StoreDeviceRequest extends FormRequest
             'device_lines.*.sip_port' => ['nullable'],
             'device_lines.*.sip_transport' => ['nullable'],
             'device_lines.*.register_expires' => ['nullable'],
+            'device_lines.*.shared_line' => ['nullable'],
             'device_lines.*.device_line_uuid' => ['nullable'],
             
             'device_provisioning' => [

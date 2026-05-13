@@ -17,6 +17,7 @@ use App\Services\DeviceActionService;
 use Spatie\QueryBuilder\QueryBuilder;
 use App\Services\FreeswitchEslService;
 use Spatie\QueryBuilder\AllowedFilter;
+use App\Http\Requests\DuplicateDeviceRequest;
 use App\Http\Requests\StoreDeviceRequest;
 use App\Http\Requests\UpdateDeviceRequest;
 use App\Http\Requests\BulkUpdateDeviceRequest;
@@ -78,18 +79,14 @@ class DeviceController extends Controller
     /**
      * Duplicate the specified Device.
      *
-     * @param  \Illuminate\Http\Request  $request
+     * @param  DuplicateDeviceRequest  $request
      * @return \Illuminate\Http\JsonResponse
      */
-    public function duplicate(Request $request)
+    public function duplicate(DuplicateDeviceRequest $request)
     {
-        // 1. Validate Input
-        $request->validate([
-            'uuid' => 'required|uuid|exists:v_devices,device_uuid',
-            'new_mac_address' => 'required|string', // Ensure we receive the new MAC
-        ]);
+        $validated = $request->validated();
 
-        // 2. Permission Check
+        // 1. Permission Check
         if (!userCheckPermission('device_add')) {
             return response()->json([
                 'messages' => ['error' => ['Access denied.']]
@@ -99,37 +96,20 @@ class DeviceController extends Controller
         try {
             DB::beginTransaction();
 
-            // 3. Sanitize MAC Address
-            $rawMac = $request->input('new_mac_address');
-            $cleanMac = strtolower(preg_replace('/[^0-9a-f]/i', '', $rawMac));
-
-            if (strlen($cleanMac) !== 12) {
-                throw new \Exception("Invalid MAC Address format. It must contain 12 hexadecimal characters.");
-            }
-
-            // Check uniqueness
-            $exists = $this->model::where('device_address', $cleanMac)
-                ->where('domain_uuid', session('domain_uuid'))
-                ->exists();
-
-            if ($exists) {
-                throw new \Exception("Device with this MAC address already exists.");
-            }
-
-            // 4. Fetch Original
-            $original = $this->model::where('device_uuid', $request->uuid)
+            // 2. Fetch Original
+            $original = $this->model::where('device_uuid', $validated['uuid'])
                 ->with(['lines', 'settings', 'keys'])
                 ->firstOrFail();
 
-            // 5. Replicate Parent
+            // 3. Replicate Parent
             $newDevice = $original->replicate();
             $newDevice->device_uuid = Str::uuid();
             $newDevice->device_label = $original->device_label . ' (Copy)';
-            $newDevice->device_address = $cleanMac;
+            $newDevice->device_address = $validated['new_mac_address_modified'];
 
             $newDevice->save();
 
-            // 6. Replicate Lines
+            // 4. Replicate Lines
             if ($original->lines) {
                 foreach ($original->lines as $line) {
                     $newLine = $line->replicate();
@@ -139,7 +119,7 @@ class DeviceController extends Controller
                 }
             }
 
-            // 7. Replicate Settings
+            // 5. Replicate Settings
             if ($original->settings) {
                 foreach ($original->settings as $setting) {
                     $newSetting = $setting->replicate();
@@ -149,7 +129,7 @@ class DeviceController extends Controller
                 }
             }
 
-            // 8. Replicate Keys
+            // 6. Replicate Keys
             if ($original->keys) {
                 foreach ($original->keys as $key) {
                     $newKey = $key->replicate();
@@ -695,7 +675,7 @@ class DeviceController extends Controller
             // Construct the itemOptions object
             $itemOptions = [
                 'item' => $deviceDto ?? null,
-                'templates' => getVendorTemplateCollection(),
+                'templates' => $this->getDeviceTemplateDropdownOptions(),
                 'profiles' => getProfileCollection($domain_uuid),
                 'extensions' => $extensionOptions,
                 'domains' => $domainOptions,
@@ -922,6 +902,8 @@ class DeviceController extends Controller
         $permissions['device_key_advanced'] = userCheckPermission('device_key_advanced');
         $permissions['device_address_update'] = userCheckPermission('device_address');
         $permissions['device_template_update'] = userCheckPermission('device_template');
+        $permissions['device_template_view_all'] = userCheckPermission('device_template_view_all');
+        $permissions['device_template_view_custom_only'] = userCheckPermission('device_template_view_custom_only');
         $permissions['device_domain_update'] = userCheckPermission('device_domain');
         $permissions['manage_device_cloud_provisioning_settings'] = userCheckPermission('manage_device_cloud_provisioning_settings');
         $permissions['device_setting_view'] = userCheckPermission('device_setting_view');
@@ -941,5 +923,17 @@ class DeviceController extends Controller
         $permissions['is_superadmin'] = isSuperAdmin();
 
         return $permissions;
+    }
+    private function getDeviceTemplateDropdownOptions(): array
+    {
+        if (userCheckPermission('device_template_view_all')) {
+            return getVendorTemplateCollection();
+        }
+
+        if (userCheckPermission('device_template_view_custom_only')) {
+            return getVendorTemplateCollection(false, true);
+        }
+
+        return [];
     }
 }

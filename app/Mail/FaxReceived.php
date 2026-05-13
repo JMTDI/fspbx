@@ -9,12 +9,13 @@ class FaxReceived extends BaseMailable
 {
     public function __construct(array $attributes = [])
     {
-        $faxDestination = $attributes['fax_destination'] ?? '';
+        $sender = $attributes['caller_id_number']
+            ?? $attributes['caller_id_name']
+            ?? '';
         $pages = $attributes['fax_pages'] ?? '';
 
         $attributes['email_subject'] = $attributes['email_subject']
-            ?? 'New fax received'
-                . ($faxDestination ? ' for ' . $faxDestination : '')
+            ?? 'Fax received from ' . $sender
                 . ($pages !== '' ? ' (' . $pages . ' page' . ((string) $pages === '1' ? '' : 's') . ')' : '');
 
         parent::__construct($attributes);

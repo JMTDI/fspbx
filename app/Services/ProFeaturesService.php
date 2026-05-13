@@ -188,6 +188,16 @@ class ProFeaturesService
                         continue;
                     }
 
+                    $installedVersion = $this->installedModuleVersion($moduleName);
+                    if ($installedVersion && version_compare($this->normalizeVersion($installedVersion), $this->normalizeVersion($version), '>=')) {
+                        if ($mode === 'all_entitled') {
+                            $this->enableInstalledModule($moduleName);
+                        }
+
+                        $result['skipped'][] = "{$moduleName}: already latest ({$installedVersion})";
+                        continue;
+                    }
+
                     $artifactName = ($map[$code]['artifact'])($version);
 
                     $deploy = $this->downloadAndDeployModule($licenseKey, $moduleName, $version, $artifactName);
@@ -196,7 +206,8 @@ class ProFeaturesService
                         continue;
                     }
 
-                    $result['updated'][] = "{$moduleName}: refreshed to latest ({$version})";
+                    $from = $installedVersion ? " from {$installedVersion}" : '';
+                    $result['updated'][] = "{$moduleName}: refreshed{$from} to latest ({$version})";
                 } catch (\Throwable $e) {
                     // Don't let one module kill the rest
                     $result['errors'][] = "Module loop failure: {$e->getMessage()}";
@@ -235,39 +246,15 @@ class ProFeaturesService
                 return "skipped artifact deploy for {$moduleName} (git-managed dev module)";
             }
 
-            // If module already exists locally, just enable it instead of redeploying
-            if ($this->isInstalledModule($moduleName)) {
-                Artisan::call('module:enable', ['module' => $moduleName]);
-
-                try {
-                    Artisan::call('module:seed', ['module' => $moduleName, '--force' => true]);
-                } catch (\Throwable $e) {
-                    // optional: ignore if seeding is not required
-                }
-
-                $this->callIfExists("module:install-{$moduleName}");
-                $this->callIfExists("module:update-{$moduleName}");
-
-                return true;
-            }
-
             $content = $this->keygenApiService->downloadArtifact($licenseKey, $version, $artifactName);
             if (!$content) {
                 return "failed to download artifact {$artifactName}";
             }
 
             $this->saveAndExtract($artifactName, $content, $moduleName);
+            $this->recordInstalledModuleVersion($moduleName, $version);
 
-            Artisan::call('module:enable', ['module' => $moduleName]);
-
-            try {
-                Artisan::call('module:seed', ['module' => $moduleName, '--force' => true]);
-            } catch (\Throwable $e) {
-                // optional
-            }
-
-            $this->callIfExists("module:install-{$moduleName}");
-            $this->callIfExists("module:update-{$moduleName}");
+            $this->enableInstalledModule($moduleName);
 
             return true;
         } catch (\Throwable $e) {
@@ -275,11 +262,53 @@ class ProFeaturesService
         }
     }
 
-    protected function isInstalledModule(string $moduleName): bool
+    protected function installedModuleVersion(string $moduleName): ?string
     {
-        $path = base_path("Modules/{$moduleName}");
+        $moduleJson = base_path("Modules/{$moduleName}/module.json");
+        if (!file_exists($moduleJson)) {
+            return null;
+        }
 
-        return is_dir($path) && file_exists("{$path}/module.json");
+        $data = json_decode((string) file_get_contents($moduleJson), true);
+        $version = is_array($data) ? ($data['version'] ?? null) : null;
+
+        return is_string($version) && $version !== '' ? $version : null;
+    }
+
+    protected function normalizeVersion(string $version): string
+    {
+        return ltrim($version, 'vV');
+    }
+
+    protected function recordInstalledModuleVersion(string $moduleName, string $version): void
+    {
+        $moduleJson = base_path("Modules/{$moduleName}/module.json");
+        $data = json_decode((string) file_get_contents($moduleJson), true);
+
+        if (!is_array($data)) {
+            throw new \RuntimeException("invalid module.json for {$moduleName}");
+        }
+
+        $data['version'] = $version;
+
+        file_put_contents(
+            $moduleJson,
+            json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL
+        );
+    }
+
+    protected function enableInstalledModule(string $moduleName): void
+    {
+        Artisan::call('module:enable', ['module' => $moduleName]);
+
+        try {
+            Artisan::call('module:seed', ['module' => $moduleName, '--force' => true]);
+        } catch (\Throwable $e) {
+            // optional
+        }
+
+        $this->callIfExists("module:install-{$moduleName}");
+        $this->callIfExists("module:update-{$moduleName}");
     }
 
     protected function isGitManagedModule(string $moduleName): bool
@@ -381,43 +410,69 @@ class ProFeaturesService
 
     protected function saveAndExtract(string $artifactName, string $artifactContent, string $moduleName): void
     {
-        $filePath = base_path("Modules/{$artifactName}");
-        $extractPath = base_path("Modules/{$moduleName}");
-
-        if (file_exists($extractPath)) {
-            $this->deleteDirectory($extractPath);
-        }
-        mkdir($extractPath, 0755, true);
-
-        file_put_contents($filePath, $artifactContent);
-
+        $modulesPath = base_path('Modules');
+        $filePath = "{$modulesPath}/{$artifactName}";
         $tarFile = str_replace('.gz', '', $filePath);
+        $extractPath = "{$modulesPath}/{$moduleName}";
+        $tmpExtractPath = "{$modulesPath}/.{$moduleName}-" . uniqid('extract-', true);
+
+        if (!is_dir($modulesPath) && !mkdir($modulesPath, 0755, true) && !is_dir($modulesPath)) {
+            throw new \RuntimeException("failed to create modules directory {$modulesPath}");
+        }
+
+        if (file_put_contents($filePath, $artifactContent) === false) {
+            throw new \RuntimeException("failed to write artifact {$filePath}");
+        }
+
         if (file_exists($tarFile)) {
             unlink($tarFile);
         }
 
-        $phar = new \PharData($filePath);
-        $phar->decompress();
+        try {
+            mkdir($tmpExtractPath, 0755, true);
 
-        $phar = new \PharData($tarFile);
-        $phar->extractTo($extractPath, null, true);
+            $phar = new \PharData($filePath);
+            $phar->decompress();
 
-        unlink($filePath);
-        unlink($tarFile);
+            $phar = new \PharData($tarFile);
+            $phar->extractTo($tmpExtractPath, null, true);
 
-        $subDirs = glob($extractPath . '/*', GLOB_ONLYDIR);
+            $subDirs = glob($tmpExtractPath . '/*', GLOB_ONLYDIR);
 
-        if (count($subDirs) > 0) {
-            $extractedDir = $subDirs[0];
-            $files = scandir($extractedDir);
+            if (count($subDirs) === 1 && !file_exists("{$tmpExtractPath}/module.json")) {
+                $extractedDir = $subDirs[0];
+                $files = scandir($extractedDir);
 
-            foreach ($files as $file) {
-                if ($file !== '.' && $file !== '..') {
-                    rename("{$extractedDir}/{$file}", "{$extractPath}/{$file}");
+                foreach ($files as $file) {
+                    if ($file !== '.' && $file !== '..') {
+                        rename("{$extractedDir}/{$file}", "{$tmpExtractPath}/{$file}");
+                    }
                 }
+
+                @rmdir($extractedDir);
             }
 
-            @rmdir($extractedDir);
+            if (!file_exists("{$tmpExtractPath}/module.json")) {
+                throw new \RuntimeException("artifact {$artifactName} did not contain module.json");
+            }
+
+            if (file_exists($extractPath)) {
+                $this->deleteDirectory($extractPath);
+            }
+
+            rename($tmpExtractPath, $extractPath);
+        } finally {
+            if (file_exists($filePath)) {
+                unlink($filePath);
+            }
+
+            if (file_exists($tarFile)) {
+                unlink($tarFile);
+            }
+
+            if (is_dir($tmpExtractPath)) {
+                $this->deleteDirectory($tmpExtractPath);
+            }
         }
     }
 

@@ -2,16 +2,25 @@
 
 use App\Http\Controllers\AccountSettingsController;
 use App\Http\Controllers\AccessControlController;
+use App\Http\Controllers\ActiveConferenceController;
 use App\Http\Controllers\ActiveCallsController;
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AppsController;
 use App\Http\Controllers\AppsCredentialsController;
 use App\Http\Controllers\Auth\ForgotPasswordController;
 use App\Http\Controllers\BusinessHoursController;
+use App\Http\Controllers\BridgeController;
+use App\Http\Controllers\BasicQueueController;
+use App\Http\Controllers\CallBlockController;
 use App\Http\Controllers\CallRecordingController;
 use App\Http\Controllers\CallFlowController;
 use App\Http\Controllers\CallRoutingOptionsController;
 use App\Http\Controllers\CdrsController;
+use App\Http\Controllers\ConferenceCenterController;
+use App\Http\Controllers\ConferenceController;
+use App\Http\Controllers\ConferenceControlController;
+use App\Http\Controllers\ConferenceProfileController;
+use App\Http\Controllers\ConferenceRoomController;
 use App\Http\Controllers\CsrfTokenController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceCloudProvisioningController;
@@ -34,6 +43,7 @@ use App\Http\Controllers\LogsController;
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\MessageMediaController;
 use App\Http\Controllers\MessageSettingsController;
+use App\Http\Controllers\MusicOnHoldController;
 use App\Http\Controllers\PhoneNumbersController;
 use App\Http\Controllers\PolycomLogController;
 use App\Http\Controllers\ProFeaturesController;
@@ -200,6 +210,12 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('recordings-manager', [RecordingsManagerController::class, 'index'])->name('recordings-manager.index');
     Route::get('recordings-manager/{recording}/download', [RecordingsManagerController::class, 'download'])->name('recordings-manager.download');
 
+    // Music on Hold
+    Route::get('music-on-hold', [MusicOnHoldController::class, 'index'])->name('music-on-hold.index');
+    Route::get('music-on-hold/{music_on_hold}/files/{file}', [MusicOnHoldController::class, 'download'])
+        ->where('file', '[^/]+')
+        ->name('music-on-hold.files.download');
+
     // SIP Status
     Route::get('sip-status', [SipStatusController::class, 'index'])->name('sip-status.index');
 
@@ -209,8 +225,26 @@ Route::group(['middleware' => 'auth'], function () {
     // Business hours
     Route::get('business-hours', [BusinessHoursController::class, 'index'])->name('business-hours.index');
 
+    // Bridges
+    Route::get('bridges', [BridgeController::class, 'index'])->name('bridges.index');
+
+    // Call Blocks
+    Route::get('call-blocks', [CallBlockController::class, 'index'])->name('call-blocks.index');
+
     // Call Flows
     Route::get('call-flows', [CallFlowController::class, 'index'])->name('call-flows.index');
+
+    // Basic Queues
+    Route::get('basic-queues', [BasicQueueController::class, 'index'])->name('basic-queues.index');
+    Route::get('basic-queues/agent-status', [BasicQueueController::class, 'agentStatus'])->name('basic-queues.agents.status');
+    Route::get('active-basic-queues', [BasicQueueController::class, 'activeBasicQueues'])->name('active-basic-queues.index');
+
+    // Conference Centers
+    Route::get('conference-centers', [ConferenceCenterController::class, 'index'])->name('conference-centers.index');
+    Route::get('conferences', [ConferenceController::class, 'index'])->name('conferences.index');
+    Route::get('conference-controls', [ConferenceControlController::class, 'index'])->name('conference-controls.index');
+    Route::get('conference-profiles', [ConferenceProfileController::class, 'index'])->name('conference-profiles.index');
+    Route::get('conference-rooms', [ConferenceRoomController::class, 'index'])->name('conference-rooms.index');
 
     //Voicemails
     Route::get('voicemails', [VoicemailController::class, 'index'])->name('voicemails.index');
@@ -320,10 +354,7 @@ Route::group(['middleware' => 'auth'], function () {
 
 
     // Firewall
-    Route::resource('firewall', FirewallController::class);
-    Route::post('firewall/unblock', [FirewallController::class, 'destroy'])->name('firewall.unblock');
-    Route::post('/firewall/block', [FirewallController::class, 'store'])->name('firewall.block');
-    Route::post('/firewall/select-all', [FirewallController::class, 'selectAll'])->name('firewall.select.all');
+    Route::get('firewall', [FirewallController::class, 'index'])->name('firewall.index');
 
 
 
@@ -395,6 +426,8 @@ Route::group(['middleware' => 'auth'], function () {
     Route::post('sansay/active-calls/delete', [SansayActiveCallsController::class, 'destroy'])->name('sansay.active-calls.delete');
 
     // Active Calls
+    Route::get('active-conferences', [ActiveConferenceController::class, 'index'])->name('active-conferences.index');
+    Route::get('active-conferences/{conference}/interactive', [ActiveConferenceController::class, 'interactive'])->name('active-conferences.interactive');
     Route::resource('active-calls', ActiveCallsController::class);
     Route::post('/active-calls/select-all', [ActiveCallsController::class, 'selectAll'])->name('active-calls.select.all');
     Route::post('/active-calls/action', [ActiveCallsController::class, 'handleAction'])->name('active-calls.action');

@@ -24,24 +24,69 @@ class ProvisioningController extends Controller
         // Extract {id}.{ext} from $path or from the current request path
         [$id, $ext] = $this->extractIdAndExt($request, $path);
 
+        provisioning_debug('ProvisioningController: processing provisioning request', [
+            'id' => $id,
+            'ext' => $ext,
+            'path' => $path,
+            'request_path' => $request->path(),
+            'client_ip' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+        ]);
+
         // Device is attached by DigestProvisionAuth; otherwise 404
         /** @var Devices|null $device */
         $device = $request->attributes->get('prov.device');
         if (!$device) {
+            provisioning_debug('ProvisioningController: no authenticated provisioning device found', [
+                'id' => $id,
+                'ext' => $ext,
+                'path' => $path,
+            ]);
+            return response('', 404);
+        }
+
+        provisioning_debug('ProvisioningController: matched provisioning device', [
+            'device_uuid' => (string) $device->device_uuid,
+            'domain_uuid' => (string) $device->domain_uuid,
+            'vendor' => $device->device_vendor,
+            'template' => $device->device_template,
+            'template_uuid' => $device->device_template_uuid,
+        ]);
+
+        if (!$ext && $device->device_vendor=='grandstream') {
+            provisioning_debug('ProvisioningController: no extension found', [
+                'ext' => $ext,
+            ]);
             return response('', 404);
         }
 
         // Choose content type based on ext
         $contentType = $this->contentTypeFromExt($ext);
+        provisioning_debug('ProvisioningController: selected response content type', [
+            'ext' => $ext,
+            'content_type' => $contentType,
+        ]);
 
         // Load the device’s chosen template (DB-backed or legacy default)
         $tpl = $this->resolveTemplateForDevice($device);
         if (!$tpl) {
+            provisioning_debug('ProvisioningController: no provisioning template resolved', [
+                'device_uuid' => (string) $device->device_uuid,
+                'template' => $device->device_template,
+                'template_uuid' => $device->device_template_uuid,
+            ]);
             return response('', 404);
         }
 
         // HEAD quick-path
         if ($request->isMethod('HEAD')) {
+            provisioning_debug('ProvisioningController: returning HEAD provisioning response', [
+                'device_uuid' => (string) $device->device_uuid,
+                'template_uuid' => (string) $tpl->template_uuid,
+                'template_type' => (string) $tpl->type,
+                'content_type' => $contentType,
+            ]);
+
             return response('', 200, [
                 'Content-Type'    => $contentType,
                 'Cache-Control'   => 'private, max-age=0, must-revalidate',
@@ -52,11 +97,40 @@ class ProvisioningController extends Controller
         }
 
         // Build Blade variables and render
-        $vars = $this->buildTemplateVars($device);
+        try {
+            provisioning_debug('ProvisioningController: building template variables', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
+            $vars = $this->buildTemplateVars($device);
+
+            provisioning_debug('ProvisioningController: template variables built', [
+                'device_uuid' => (string) $device->device_uuid,
+                'line_count' => $vars['line_count'] ?? 0,
+                'settings_count' => count($vars['settings'] ?? []),
+                'main_key_count' => count($vars['main_keys'] ?? []),
+                'multi_purpose_key_count' => count($vars['multi_purpose_keys'] ?? []),
+                'expansion_key_count' => count($vars['expansion_keys'] ?? []),
+            ]);
+        } catch (\Throwable $e) {
+            provisioning_debug('ProvisioningController: failed building template variables', [
+                'device_uuid' => (string) $device->device_uuid,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            throw $e;
+        }
 
         // logger($vars);
         // Compute flavor + MIME
         $flv = $this->computeFlavor($request, $device, $id, $ext);
+        provisioning_debug('ProvisioningController: computed provisioning flavor: ' . $flv['flavor'] ?? null, [
+            'device_uuid' => (string) $device->device_uuid,
+            'flavor' => $flv['flavor'] ?? null,
+            'mime' => $flv['mime'] ?? null,
+            'requested_ext' => strtolower($ext),
+        ]);
 
         // Add provisioning context
         $vars += [
@@ -64,20 +138,56 @@ class ProvisioningController extends Controller
             'requested_ext' => strtolower($ext),
         ];
 
-        $body = Blade::render($tpl->content, $vars);
+        try {
+            provisioning_debug('ProvisioningController: rendering provisioning template', [
+                'device_uuid' => (string) $device->device_uuid,
+                'template_uuid' => (string) $tpl->template_uuid,
+                'template_type' => (string) $tpl->type,
+                'flavor' => $vars['flavor'] ?? null,
+            ]);
+
+            $body = Blade::render($tpl->content, $vars);
+
+            provisioning_debug('ProvisioningController: provisioning template rendered', [
+                'device_uuid' => (string) $device->device_uuid,
+                'bytes' => strlen($body),
+            ]);
+        } catch (\Throwable $e) {
+            provisioning_debug('ProvisioningController: failed rendering provisioning template', [
+                'device_uuid' => (string) $device->device_uuid,
+                'template_uuid' => (string) $tpl->template_uuid,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            throw $e;
+        }
 
         // If the rendered body is valid XML, pretty-print it (keeps XML decl if present)
         if ($pretty = $this->maybePrettyPrintXml($body)) {
             $body = $pretty;
+            provisioning_debug('ProvisioningController: rendered body detected as XML and pretty printed', [
+                'device_uuid' => (string) $device->device_uuid,
+                'bytes' => strlen($body),
+            ]);
         } else {
             // Not XML → normalize provisioning text
             $body = $this->normalizeProvisionText($body);
+            provisioning_debug('ProvisioningController: rendered body treated as text and normalized', [
+                'device_uuid' => (string) $device->device_uuid,
+                'bytes' => strlen($body),
+            ]);
         }
 
         // ETag / 304 support
         $etag = '"' . hash('sha256', $body) . '"';
         $ifNoneMatch = $request->headers->get('If-None-Match');
         if ($ifNoneMatch && trim($ifNoneMatch) === $etag) {
+            provisioning_debug('ProvisioningController: returning not modified response', [
+                'device_uuid' => (string) $device->device_uuid,
+                'etag' => $etag,
+            ]);
+
             return response('', 304, [
                 'ETag'            => $etag,
                 'Content-Type'    => $contentType,
@@ -89,12 +199,40 @@ class ProvisioningController extends Controller
         }
 
         // Log device provisioning event
-        $device->fill([
-            'device_provisioned_date'   => Carbon::now('UTC'),
-            'device_provisioned_method' => strtolower($request->getScheme()),
-            'device_provisioned_ip'     => $request->ip(),
-            'device_provisioned_agent'  => (string) $request->userAgent(),
-        ])->save();
+        try {
+            provisioning_debug('ProvisioningController: updating device provisioning metadata', [
+                'device_uuid' => (string) $device->device_uuid,
+                'method' => strtolower($request->getScheme()),
+                'ip' => $request->ip(),
+            ]);
+
+            $device->fill([
+                'device_provisioned_date'   => Carbon::now('UTC'),
+                'device_provisioned_method' => strtolower($request->getScheme()),
+                'device_provisioned_ip'     => $request->ip(),
+                'device_provisioned_agent'  => (string) $request->userAgent(),
+            ])->save();
+
+            provisioning_debug('ProvisioningController: device provisioning metadata updated', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+        } catch (\Throwable $e) {
+            provisioning_debug('ProvisioningController: failed updating device provisioning metadata', [
+                'device_uuid' => (string) $device->device_uuid,
+                'error' => $e->getMessage(),
+                'exception' => get_class($e),
+            ]);
+
+            throw $e;
+        }
+
+        provisioning_debug('ProvisioningController: returning provisioning response', [
+            'device_uuid' => (string) $device->device_uuid,
+            'status' => 200,
+            'content_type' => $contentType,
+            'bytes' => strlen($body),
+            'etag' => $etag,
+        ]);
 
         return response($body, 200, [
             'ETag'            => $etag,
@@ -115,25 +253,76 @@ class ProvisioningController extends Controller
 
     private function resolveTemplateForDevice(Devices $device): ?ProvisioningTemplate
     {
+        provisioning_debug('ProvisioningController: resolving provisioning template', [
+            'device_uuid' => (string) $device->device_uuid,
+            'template_uuid' => $device->device_template_uuid,
+            'template' => $device->device_template,
+        ]);
+
         if (!empty($device->device_template_uuid)) {
             $row = ProvisioningTemplate::where('template_uuid', $device->device_template_uuid)->first();
-            if ($row) return $row;
+            if ($row) {
+                provisioning_debug('ProvisioningController: resolved provisioning template by UUID', [
+                    'device_uuid' => (string) $device->device_uuid,
+                    'template_uuid' => (string) $row->template_uuid,
+                    'vendor' => $row->vendor,
+                    'name' => $row->name,
+                    'type' => $row->type,
+                    'version' => $row->version,
+                ]);
+
+                return $row;
+            }
+
+            provisioning_debug('ProvisioningController: provisioning template UUID did not match a template', [
+                'device_uuid' => (string) $device->device_uuid,
+                'template_uuid' => $device->device_template_uuid,
+            ]);
         }
 
         if (!empty($device->device_template) && str_contains($device->device_template, '/')) {
             [$vendor, $name] = explode('/', strtolower($device->device_template), 2);
-            return ProvisioningTemplate::where('vendor', $vendor)
+            $row = ProvisioningTemplate::where('vendor', $vendor)
                 ->where('name', $name)
                 ->where('type', 'default')
                 ->orderByDesc('created_at')
                 ->first();
+
+            if ($row) {
+                provisioning_debug('ProvisioningController: resolved default provisioning template', [
+                    'device_uuid' => (string) $device->device_uuid,
+                    'template_uuid' => (string) $row->template_uuid,
+                    'vendor' => $row->vendor,
+                    'name' => $row->name,
+                    'type' => $row->type,
+                    'version' => $row->version,
+                ]);
+            } else {
+                provisioning_debug('ProvisioningController: no default provisioning template matched', [
+                    'device_uuid' => (string) $device->device_uuid,
+                    'vendor' => $vendor,
+                    'name' => $name,
+                ]);
+            }
+
+            return $row;
         }
+
+        provisioning_debug('ProvisioningController: device does not have a resolvable provisioning template reference', [
+            'device_uuid' => (string) $device->device_uuid,
+            'template_uuid' => $device->device_template_uuid,
+            'template' => $device->device_template,
+        ]);
 
         return null;
     }
 
     private function buildTemplateVars(Devices $device): array
     {
+        provisioning_debug('ProvisioningController: loading provisioning relationships', [
+            'device_uuid' => (string) $device->device_uuid,
+        ]);
+
         $device->load([
             'lines' => function ($q) {
                 // Include PK, FK, and only the columns you use
@@ -210,8 +399,20 @@ class ProvisioningController extends Controller
             },
         ]);
 
+        provisioning_debug('ProvisioningController: provisioning relationships loaded', [
+            'device_uuid' => (string) $device->device_uuid,
+            'line_count' => $device->lines->count(),
+            'profile_key_count' => $device->profile?->keys?->count() ?? 0,
+            'legacy_key_count' => $device->legacy_keys->count(),
+            'device_key_count' => $device->keys->count(),
+            'has_domain' => (bool) $device->domain,
+            'has_profile' => (bool) $device->profile,
+        ]);
+
         $lines = [];
         foreach ($device->lines as $line) {
+            $isSharedLine = $this->isSharedLineValue($line->shared_line ?? null);
+
             $lines[$line->line_number] = [
                 'user_id'           => $line->user_id ?? null,
                 'auth_id'           => $line->auth_id ?? null,
@@ -225,10 +426,17 @@ class ProvisioningController extends Controller
                 'sip_port'          => $line->sip_port ?? null,
                 'sip_transport'     => $this->normalizeTransportForVendor($device->device_vendor, $line->sip_transport),
                 'register_expires'  => $line->register_expires ?? null,
-                'shared_line'  => $line->shared_line ?? null,
+                'shared_line'       => $isSharedLine,
+                'line_type_id'      => $isSharedLine ? 'sharedline' : 'line',
                 'line_number'       => $line->line_number,
             ];
         }
+
+        provisioning_debug('ProvisioningController: built provisioning line variables', [
+            'device_uuid' => (string) $device->device_uuid,
+            'line_numbers' => array_keys($lines),
+            'shared_line_count' => collect($lines)->where('shared_line', true)->count(),
+        ]);
 
         $settings = $this->getProvisionSettings(
             (string) $device->domain_uuid,
@@ -237,6 +445,14 @@ class ProvisioningController extends Controller
 
         $keyAreas = $this->getEffectiveDeviceKeysByArea($device, $settings);
         // logger($keyAreas);
+        // logger($lines);
+
+        provisioning_debug('ProvisioningController: built effective provisioning keys', [
+            'device_uuid' => (string) $device->device_uuid,
+            'main_key_count' => count($keyAreas['main'] ?? []),
+            'multi_purpose_key_count' => count($keyAreas['multi_purpose'] ?? []),
+            'expansion_key_count' => count($keyAreas['expansion'] ?? []),
+        ]);
 
         return [
             'device_uuid'   => (string) $device->device_uuid,
@@ -249,11 +465,17 @@ class ProvisioningController extends Controller
             'mac'           => $device->device_address ?? null,
 
             // all keys flattened for legacy templates that expect a single list:
-            'keys' => $keyAreas['main'] ?? [],
+            'keys' => array_merge(
+                $keyAreas['main'] ?? [],
+                $keyAreas['multi_purpose'] ?? [],
+                $keyAreas['expansion'] ?? []
+            ),
+
             // keys separated by area for newer templates that want to organize by area:
             'keys_by_area' => $keyAreas,
             'main_keys' => $keyAreas['main'] ?? [],
             'multi_purpose_keys' => $keyAreas['multi_purpose'] ?? [],
+            'expansion_keys' => $keyAreas['expansion'] ?? [],
 
             'lines'       => $lines,
             'line_count'  => count($lines),
@@ -279,15 +501,28 @@ class ProvisioningController extends Controller
         $tail = basename($tail);
 
         if (preg_match('#^([^/]+)\.(cfg|xml|boot)$#i', $tail, $m)) {
+            provisioning_debug('ProvisioningController: extracted provisioning request identifier', [
+                'tail' => $tail,
+                'id' => $m[1],
+                'ext' => strtolower($m[2]),
+                'matched_extension' => true,
+            ]);
+
             return [$m[1], strtolower($m[2])];
         }
         // fallback: whole tail as id, assume cfg
-        return [$tail, 'cfg'];
+        provisioning_debug('ProvisioningController: provisioning request identifier did not include a known extension', [
+            'tail' => $tail,
+            'id' => $tail,
+            'ext' => null,
+            'matched_extension' => false,
+        ]);
+
+        return [$tail, null];
     }
 
     private function computeFlavor(Request $request, Devices $device, string $id, string $ext): array
     {
-        $debug = false;
         // Raw tail after /prov/
         $raw = ltrim((string)($request->route('path') ?? $request->path()), '/');
         if (str_starts_with($raw, 'prov/')) $raw = substr($raw, 5);
@@ -296,12 +531,21 @@ class ProvisioningController extends Controller
         $idLower = strtolower($id);
         $extLower = strtolower($ext);
 
-        if ($debug) {
-            logger('Vendor: ' . $vendor . '. ID: ' . $idLower . '. Ext: ' . $extLower);
-        }
+        provisioning_debug('ProvisioningController: evaluating provisioning flavor', [
+            'device_uuid' => (string) $device->device_uuid,
+            'vendor' => $vendor,
+            'id' => $idLower,
+            'ext' => $extLower,
+            'raw_path' => $raw,
+        ]);
 
         // Detect Dinstar serial index: "{productId}/{serial}.xml"
         if ($vendor === 'dinstar' && $extLower === 'xml' && preg_match('#^(?<pid>\d{2})/[A-Za-z0-9-]+\.xml$#', $raw, $m)) {
+            provisioning_debug('ProvisioningController: matched Dinstar serial XML flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+                'product_id' => $m['pid'] ?? null,
+            ]);
+
             return [
                 'flavor'     => 'serial.xml',
                 'mime'       => 'application/xml',
@@ -310,6 +554,10 @@ class ProvisioningController extends Controller
 
         // Polycom bootstrap index
         if ($vendor === 'polycom' && $extLower === 'cfg' && $idLower === '000000000000') {
+            provisioning_debug('ProvisioningController: matched Polycom bootstrap flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'mac.cfg',
                 'mime'   => 'application/xml',
@@ -318,6 +566,10 @@ class ProvisioningController extends Controller
 
         // Polycom per-device: phone<MAC>.cfg (e.g., phone0004f2abcdef.cfg)
         if ($vendor === 'polycom' && $extLower === 'cfg' && preg_match('#(^|/)phone[0-9a-f]{12}\.cfg$#i', $raw)) {
+            provisioning_debug('ProvisioningController: matched Polycom phone MAC flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'phonemac.cfg',
                 'mime'   => 'application/xml',
@@ -330,6 +582,10 @@ class ProvisioningController extends Controller
             $extLower === 'cfg' &&
             preg_match('#(^|/)(?:(?:SPIP|VVX|SSIP|EdgeE)\d{3,4}|SSDuo)-[0-9a-f]{12}\.cfg$#i', $raw)
         ) {
+            provisioning_debug('ProvisioningController: matched Polycom model MAC flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'model-mac.cfg',
                 'mime'   => 'application/xml',
@@ -338,6 +594,10 @@ class ProvisioningController extends Controller
 
         // Yealink model index (loose check)
         if ($vendor === 'yealink' && $extLower === 'cfg' && preg_match('/^y0{8}[0-9a-f]{2}$/i', $id)) {
+            provisioning_debug('ProvisioningController: matched Yealink model flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'yealink-model.cfg',
                 'mime'   => 'text/plain',
@@ -350,6 +610,10 @@ class ProvisioningController extends Controller
             $extLower === 'xml' &&
             preg_match('/^cfg[0-9a-f]{12}$/', $idLower)
         ) {
+            provisioning_debug('ProvisioningController: matched Htek MAC XML flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'mac.xml',
                 'mime'   => 'application/xml',
@@ -362,8 +626,44 @@ class ProvisioningController extends Controller
             $extLower === 'xml' &&
             preg_match('/^cfg[0-9a-f]{12}$/', $idLower)
         ) {
+            provisioning_debug('ProvisioningController: matched Grandstream cfg MAC XML flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
             return [
                 'flavor' => 'cfgmac.xml',
+                'mime'   => 'application/xml',
+            ];
+        }
+
+        // Snom per-device: <MAC>.xml (e.g., 000b82877bd4.xml)
+        if (
+            $vendor === 'snom' &&
+            $extLower === 'xml' &&
+            preg_match('/^[0-9a-f]{12}$/', $idLower)
+        ) {
+            provisioning_debug('ProvisioningController: matched Snom MAC XML flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
+            return [
+                'flavor' => 'mac.xml',
+                'mime'   => 'application/xml',
+            ];
+        }
+
+        // Cisco per-device: <MAC>.xml (e.g., 000b82877bd4.xml)
+        if (
+            $vendor === 'cisco' &&
+            $extLower === 'xml' &&
+            preg_match('/^[0-9a-f]{12}$/', $idLower)
+        ) {
+            provisioning_debug('ProvisioningController: matched Cisco MAC XML flavor', [
+                'device_uuid' => (string) $device->device_uuid,
+            ]);
+
+            return [
+                'flavor' => 'mac.xml',
                 'mime'   => 'application/xml',
             ];
         }
@@ -371,6 +671,11 @@ class ProvisioningController extends Controller
         // Otherwise, treat as per-device config for all vendors
         // Note: Dinstar's per-device ".cfg" content is XML, others are plain text.
         $mime = ($vendor === 'dinstar') ? 'application/xml' : ($extLower === 'xml' ? 'application/xml' : 'text/plain');
+
+        provisioning_debug('ProvisioningController: using default per-device provisioning flavor', [
+            'device_uuid' => (string) $device->device_uuid,
+            'mime' => $mime,
+        ]);
 
         return [
             'flavor' => 'mac.cfg',
@@ -380,8 +685,14 @@ class ProvisioningController extends Controller
 
     private function getProvisionSettings(?string $domainUuid, ?string $deviceUuid = null): array
     {
+        provisioning_debug('ProvisioningController: loading provisioning settings', [
+            'domain_uuid' => $domainUuid,
+            'device_uuid' => $deviceUuid,
+        ]);
+
         // Defaults → simple [subcategory => cast(value)]
         $settings = [];
+        $defaultSettingsCount = 0;
         DefaultSettings::query()
             ->select([
                 'default_setting_subcategory',
@@ -394,16 +705,20 @@ class ProvisioningController extends Controller
             ->where('default_setting_enabled', 'true')
             ->orderBy('default_setting_subcategory')
             ->get()
-            ->each(function ($r) use (&$settings) {
+            ->each(function ($r) use (&$settings, &$defaultSettingsCount) {
                 $sub = (string) $r->default_setting_subcategory;
                 $settings[$sub] = $this->castSettingValue(
                     (string) $r->default_setting_name,
                     (string) $r->default_setting_value
                 );
+                $defaultSettingsCount++;
             });
+
+        provisioning_debug('ProvisioningController: loaded ' . $defaultSettingsCount . ' default provisioning settings');
 
         // Domain overrides
         if (!empty($domainUuid)) {
+            $domainSettingsCount = 0;
             DomainSettings::query()
                 ->select([
                     'domain_setting_subcategory',
@@ -417,17 +732,25 @@ class ProvisioningController extends Controller
                 ->where('domain_setting_enabled', 'true')
                 ->orderBy('domain_setting_subcategory')
                 ->get()
-                ->each(function ($r) use (&$settings) {
+                ->each(function ($r) use (&$settings, &$domainSettingsCount) {
                     $sub = (string) $r->domain_setting_subcategory;
                     $settings[$sub] = $this->castSettingValue(
                         (string) $r->domain_setting_name,
                         (string) $r->domain_setting_value
                     );
+                    $domainSettingsCount++;
                 });
+
+            provisioning_debug('ProvisioningController: applied ' . $domainSettingsCount . ' domain provisioning settings');
+        } else {
+            provisioning_debug('ProvisioningController: skipped domain provisioning settings because domain UUID is empty', [
+                'device_uuid' => $deviceUuid,
+            ]);
         }
 
         // Device overrides (highest precedence)
         if (!empty($deviceUuid)) {
+            $deviceSettingsCount = 0;
             $q = DeviceSettings::query()
                 ->select([
                     'device_setting_subcategory',
@@ -445,13 +768,20 @@ class ProvisioningController extends Controller
 
             $q->orderBy('device_setting_subcategory')
                 ->get()
-                ->each(function ($r) use (&$settings) {
+                ->each(function ($r) use (&$settings, &$deviceSettingsCount) {
                     $sub = (string) $r->device_setting_subcategory;
                     $settings[$sub] = $this->castSettingValue(
                         (string) $r->device_setting_name,
                         (string) $r->device_setting_value
                     );
+                    $deviceSettingsCount++;
                 });
+
+            provisioning_debug('ProvisioningController: applied ' . $deviceSettingsCount . ' device provisioning settings');
+        } else {
+            provisioning_debug('ProvisioningController: skipped device provisioning settings because device UUID is empty', [
+                'domain_uuid' => $domainUuid,
+            ]);
         }
         $settings['provision_base_url'] = config('app.url') . '/prov/';
         return $settings;
@@ -489,14 +819,27 @@ class ProvisioningController extends Controller
         $legacyKeys  = collect($device->legacy_keys ?? []);
         $newKeys     = collect($device->keys ?? []);
 
+        provisioning_debug('ProvisioningController: building effective device keys', [
+            'device_uuid' => (string) $device->device_uuid,
+            'vendor' => $device->device_vendor,
+            'profile_key_count' => $profileKeys->count(),
+            'legacy_key_count' => $legacyKeys->count(),
+            'device_key_count' => $newKeys->count(),
+        ]);
+
         // For Polycom, collapse duplicate line keys before mapping
         if ($device->device_vendor === 'polycom') {
             $newKeys = collect($this->normalizeNewKeysForPolycom($device, $device->keys ?? []));
+            provisioning_debug('ProvisioningController: normalized Polycom device keys', [
+                'device_uuid' => (string) $device->device_uuid,
+                'normalized_device_key_count' => $newKeys->count(),
+            ]);
         }
 
         $maps = [
             'main' => [],
             'multi_purpose' => [],
+            'expansion' => [],
         ];
 
         // Normalize old/profile/legacy keys into the same effective shape
@@ -506,6 +849,17 @@ class ProvisioningController extends Controller
             $line  = $item['line'] !== null ? (int) $item['line'] : null;
             $value = $item['value'] ?? null;
             $label = $item['label'] ?? null;
+
+            if ($vendor === 'snom') {
+                $normalizedType = match (true) {
+                    $type === 'orbit' && str_starts_with((string) $value, 'park+*') => 'park',
+                    $type === 'speed' => 'speed_dial',
+                    default => $type,
+                };
+
+                $item['type'] = $normalizedType;
+                $type = $normalizedType;
+            }
 
             if ($type === 'line') {
                 // Polycom legacy/profile line keys already store the correct value.
@@ -520,7 +874,7 @@ class ProvisioningController extends Controller
                     if ($lineObj) {
                         $value = $lineObj->auth_id ?? $value;
 
-                        if (empty($label)) {
+                        if (empty($label) && !($vendor === 'yealink' && $this->isSharedLineValue($lineObj->shared_line ?? null))) {
                             $label = $lineObj->display_name ?? $lineObj->auth_id ?? null;
                         }
                     }
@@ -541,6 +895,7 @@ class ProvisioningController extends Controller
         };
 
         // Seed with profile keys
+        $profileKeysApplied = 0;
         foreach ($profileKeys as $pk) {
             $id = (int) $pk->profile_key_id;
             if ($id <= 0) {
@@ -551,6 +906,14 @@ class ProvisioningController extends Controller
                 $device->device_vendor,
                 $pk->profile_key_category
             );
+
+            if (
+                strtolower((string) $device->device_vendor) === 'cisco'
+                && $area === 'expansion'
+                && $category === 'expansion-2'
+            ) {
+                $id += 32;
+            }
 
             if (!array_key_exists($area, $maps)) {
                 $maps[$area] = [];
@@ -566,9 +929,12 @@ class ProvisioningController extends Controller
                 'extension' => $pk->profile_key_extension ?? null,
                 'label'     => $pk->profile_key_label ?? null,
             ], 'profile');
+
+            $profileKeysApplied++;
         }
 
         // Overlay with legacy device keys
+        $legacyKeysApplied = 0;
         foreach ($legacyKeys as $dk) {
             $id = (int) $dk->device_key_id;
             if ($id <= 0) {
@@ -579,6 +945,14 @@ class ProvisioningController extends Controller
                 $device->device_vendor,
                 $dk->device_key_category
             );
+
+            if (
+                strtolower((string) $device->device_vendor) === 'cisco'
+                && $area === 'expansion'
+                && $category === 'expansion-2'
+            ) {
+                $id += 32;
+            }
 
             if (!array_key_exists($area, $maps)) {
                 $maps[$area] = [];
@@ -594,9 +968,12 @@ class ProvisioningController extends Controller
                 'extension' => $dk->device_key_extension ?? null,
                 'label'     => $dk->device_key_label ?? null,
             ], 'device');
+
+            $legacyKeysApplied++;
         }
 
         // Overlay with new keys -> keyed by area + index
+        $newKeysApplied = 0;
         foreach ($newKeys as $nk) {
             $id = (int) ($nk->key_index ?? 0);
             if ($id <= 0) {
@@ -613,9 +990,17 @@ class ProvisioningController extends Controller
             $mapped['area'] = $area;
 
             $maps[$area][$id] = $mapped;
+            $newKeysApplied++;
         }
 
+        provisioning_debug('ProvisioningController: applied new device keys', [
+            'device_uuid' => (string) $device->device_uuid,
+            'device_keys_applied' => $newKeysApplied,
+            'raw_area_counts' => collect($maps)->map(fn($map) => count($map))->all(),
+        ]);
+
         foreach ($maps as $area => $map) {
+            $beforeCount = count($map);
             ksort($map, SORT_NUMERIC);
 
             $processed = $this->postProcessEffectiveKeys($device, array_values($map), $settings);
@@ -623,6 +1008,10 @@ class ProvisioningController extends Controller
             // Translate to vendor-specific output only after all logical processing is done
             $maps[$area] = $this->translateEffectiveKeysForVendor($device, $processed);
         }
+        provisioning_debug('ProvisioningController: finished effective device keys', [
+            'device_uuid' => (string) $device->device_uuid,
+            'area_counts' => collect($maps)->map(fn($map) => count($map))->all(),
+        ]);
 
         return $maps;
     }
@@ -630,6 +1019,10 @@ class ProvisioningController extends Controller
     private function translateEffectiveKeysForVendor(Devices $device, array $keys): array
     {
         foreach ($keys as &$key) {
+            if ($this->lineKeyTargetsSharedLine($device, $key)) {
+                $key['type'] = 'sharedline';
+            }
+
             $translated = $this->translateKeyTypeForVendor(
                 $device->device_vendor,
                 (string) ($key['type'] ?? '')
@@ -660,12 +1053,19 @@ class ProvisioningController extends Controller
             return ['multi_purpose', 'line'];
         }
 
+        // Cisco SPA expansion module profile/legacy keys.
+        // Treat expansion-1 and expansion-2 as the new "expansion" key area.
+        if ($vendor === 'cisco' && in_array($category, ['expansion-1', 'expansion-2'], true)) {
+            return ['expansion', $category];
+        }
+
         return ['main', $category ?: null];
     }
 
     private function postProcessEffectiveKeys(Devices $device, array $keys, array $settings = []): array
     {
         $dropSelfExtensionKeys = $settings['drop_self_extension_keys'] ?? true;
+        $initialCount = count($keys);
 
         if ($dropSelfExtensionKeys) {
             // Build list of device’s own extensions
@@ -715,15 +1115,25 @@ class ProvisioningController extends Controller
                 ->map(fn($r) => $r->effective_caller_id_name)
                 ->toArray();
 
+            $labelsFilled = 0;
             foreach ($keys as &$k) {
                 if (empty($k['label'])) {
+                    if ($this->templateShouldLabelSharedLineKey($device, $k)) {
+                        continue;
+                    }
+
                     $val = (string) ($k['value'] ?? '');
                     if ($val !== '' && !empty($extLabels[$val])) {
                         $k['label'] = $extLabels[$val];
+                        $labelsFilled++;
                     }
                 }
             }
             unset($k);
+
+            provisioning_debug('ProvisioningController: applied extension labels to keys');
+        } else {
+            provisioning_debug('ProvisioningController: no key extension labels needed');
         }
 
         return $keys;
@@ -761,8 +1171,17 @@ class ProvisioningController extends Controller
                 $lines = $device->lines ?? [];
                 $lineObj = collect($lines)->firstWhere('line_number', $line);
 
-                $label = $lineObj->display_name ?? null;
-                $value = $lineObj->auth_id ?? null;
+                if ($lineObj) {
+                    $hasExplicitLabel = trim((string) ($label ?? '')) !== '';
+
+                    if (!($device->device_vendor === 'yealink' && $this->isSharedLineValue($lineObj->shared_line ?? null) && ! $hasExplicitLabel)) {
+                        $label = $hasExplicitLabel ? $label : ($lineObj->display_name ?? $lineObj->auth_id ?? null);
+                    } else {
+                        $label = null;
+                    }
+
+                    $value = $lineObj->auth_id ?? null;
+                }
 
                 if ($device->device_vendor === 'grandstream') {
                     $line = $line - 1;
@@ -822,6 +1241,7 @@ class ProvisioningController extends Controller
 
             case 'grandstream':
                 $out['type'] = match ($t) {
+                    'sharedline' => 'sharedline',
                     'speed_dial' => 'speed dial',
                     '' => 'none',
                     'park' => 'monitored call park',
@@ -970,6 +1390,17 @@ class ProvisioningController extends Controller
         // suppress warnings; we'll check success explicitly
         $ok = $dom->loadXML($raw, LIBXML_NOERROR | LIBXML_NOWARNING);
         if (!$ok) {
+            $errors = collect(libxml_get_errors())
+                ->take(3)
+                ->map(fn($error) => trim($error->message))
+                ->filter()
+                ->values()
+                ->all();
+
+            provisioning_debug('ProvisioningController: rendered body looked like XML but could not be parsed', [
+                'errors' => $errors,
+            ]);
+
             libxml_clear_errors();
             libxml_use_internal_errors($prev);
             return null;
@@ -1021,6 +1452,54 @@ class ProvisioningController extends Controller
 
         // Other vendors: leave as-is (or extend with more mappings later)
         return $transport ?: null;
+    }
+
+    private function isSharedLineValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value === 1;
+        }
+
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on', 'sharedline'], true);
+    }
+
+    private function lineKeyTargetsSharedLine(Devices $device, array $key): bool
+    {
+        if (strtolower((string) $device->device_vendor) !== 'grandstream') {
+            return false;
+        }
+
+        if (strtolower((string) ($key['type'] ?? '')) !== 'line') {
+            return false;
+        }
+
+        return $this->deviceLineIsShared($device, ((int) ($key['line'] ?? 0)) + 1);
+    }
+
+    private function templateShouldLabelSharedLineKey(Devices $device, array $key): bool
+    {
+        if (strtolower((string) $device->device_vendor) !== 'yealink') {
+            return false;
+        }
+
+        if (strtolower((string) ($key['type'] ?? '')) !== 'line') {
+            return false;
+        }
+
+        $lineNumber = (int) ($key['line'] ?? 0);
+
+        return $this->deviceLineIsShared($device, $lineNumber)
+            || $this->deviceLineIsShared($device, $lineNumber + 1);
+    }
+
+    private function deviceLineIsShared(Devices $device, int $lineNumber): bool
+    {
+        $line = collect($device->lines ?? [])->firstWhere('line_number', $lineNumber);
+        return $line ? $this->isSharedLineValue($line->shared_line ?? null) : false;
     }
 
     private function normalizeProvisionText(string $raw): string

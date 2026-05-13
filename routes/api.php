@@ -1,16 +1,26 @@
 <?php
 
 use App\Http\Controllers\AccountSettingsController;
+use App\Http\Controllers\AppsController;
 use App\Http\Controllers\AccessControlController;
+use App\Http\Controllers\ActiveConferenceController;
 use App\Http\Controllers\Api\EmergencyCallController;
 use App\Http\Controllers\Api\HolidayHoursController;
 use App\Http\Controllers\Api\LocationsController;
 use App\Http\Controllers\Api\ProvisioningTemplateController;
+use App\Http\Controllers\BasicQueueController;
 use App\Http\Controllers\BusinessHoursController;
+use App\Http\Controllers\BridgeController;
+use App\Http\Controllers\CallBlockController;
 use App\Http\Controllers\CallFlowController;
 use App\Http\Controllers\CallTranscriptionController;
 use App\Http\Controllers\CdrsController;
 use App\Http\Controllers\CharPmsWebhookController;
+use App\Http\Controllers\ConferenceCenterController;
+use App\Http\Controllers\ConferenceController;
+use App\Http\Controllers\ConferenceControlController;
+use App\Http\Controllers\ConferenceProfileController;
+use App\Http\Controllers\ConferenceRoomController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceCloudProvisioningController;
@@ -26,6 +36,7 @@ use App\Http\Controllers\FaxesController;
 use App\Http\Controllers\FaxInboxController;
 use App\Http\Controllers\FaxLogController;
 use App\Http\Controllers\FaxSentController;
+use App\Http\Controllers\FirewallController;
 use App\Http\Controllers\GreetingsController;
 use App\Http\Controllers\GatewayController;
 use App\Http\Controllers\GroupsController;
@@ -35,6 +46,7 @@ use App\Http\Controllers\HotelRoomStatusController;
 use App\Http\Controllers\InboundWebhooksController;
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\MessageSettingsController;
+use App\Http\Controllers\MusicOnHoldController;
 use App\Http\Controllers\OrganizationController;
 use App\Http\Controllers\PaymentGatewayController;
 use App\Http\Controllers\PhoneNumbersController;
@@ -86,6 +98,23 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     // Email logs
     Route::resource('/email-logs', EmailLogsController::class);
     Route::post('/email-logs/retry', [EmailLogsController::class, 'retry'])->name('email-logs.retry');
+
+    // Basic Queue
+    Route::get('/basic-queues/queues/data', [BasicQueueController::class, 'getQueueData'])->name('basic-queues.queues.data');
+    Route::post('/basic-queues/queues', [BasicQueueController::class, 'storeQueue'])->name('basic-queues.queues.store');
+    Route::put('/basic-queues/queues/{queue}', [BasicQueueController::class, 'updateQueue'])->name('basic-queues.queues.update');
+    Route::post('/basic-queues/queues/item-options', [BasicQueueController::class, 'getQueueItemOptions'])->name('basic-queues.queues.item.options');
+    Route::post('/basic-queues/queues/select-all', [BasicQueueController::class, 'selectAllQueues'])->name('basic-queues.queues.select.all');
+    Route::post('/basic-queues/queues/bulk-delete', [BasicQueueController::class, 'bulkDeleteQueues'])->name('basic-queues.queues.bulk.delete');
+    Route::get('/basic-queues/agents/data', [BasicQueueController::class, 'getAgentData'])->name('basic-queues.agents.data');
+    Route::post('/basic-queues/agents', [BasicQueueController::class, 'storeAgent'])->name('basic-queues.agents.store');
+    Route::put('/basic-queues/agents/{agent}', [BasicQueueController::class, 'updateAgent'])->name('basic-queues.agents.update');
+    Route::post('/basic-queues/agents/item-options', [BasicQueueController::class, 'getAgentItemOptions'])->name('basic-queues.agents.item.options');
+    Route::post('/basic-queues/agents/select-all', [BasicQueueController::class, 'selectAllAgents'])->name('basic-queues.agents.select.all');
+    Route::post('/basic-queues/agents/bulk-delete', [BasicQueueController::class, 'bulkDeleteAgents'])->name('basic-queues.agents.bulk.delete');
+    Route::get('/basic-queues/agents/status/data', [BasicQueueController::class, 'getAgentStatusData'])->name('basic-queues.agents.status.data');
+    Route::post('/basic-queues/agents/status', [BasicQueueController::class, 'updateAgentStatus'])->name('basic-queues.agents.status.update');
+    Route::get('/active-basic-queues/data', [BasicQueueController::class, 'getActiveBasicQueueData'])->name('active-basic-queues.data');
 
     // Inbound Webhooks
     Route::resource('/inbound-webhooks', InboundWebhooksController::class);
@@ -206,6 +235,9 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     Route::post('/extensions/make-user', [ExtensionsController::class, 'makeUser'])->name('extensions.make.user');
     Route::post('/extensions/password', [ExtensionsController::class, 'updatePassword'])->name('extensions.password.update');
 
+    // Mobile Apps
+    Route::post('/apps/users/bulk-action', [AppsController::class, 'bulkUserAction'])->name('apps.users.bulk-action');
+
     // Extension statistics
     //Route::get('/extension-statistics/data', [ExtensionStatisticsController::class, 'getData'])->name('extension-statistics.data');
 
@@ -319,6 +351,107 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     Route::post('/call-flows/bulk-copy', [CallFlowController::class, 'bulkCopy'])->name('call-flows.bulk.copy');
     Route::post('/call-flows/bulk-toggle', [CallFlowController::class, 'bulkToggle'])->name('call-flows.bulk.toggle');
 
+    // Bridges
+    Route::post('bridges', [BridgeController::class, 'store'])->name('bridges.store');
+    Route::put('bridges/{bridge}', [BridgeController::class, 'update'])->name('bridges.update');
+    Route::get('/bridges/data', [BridgeController::class, 'getData'])->name('bridges.data');
+    Route::post('/bridges/item-options', [BridgeController::class, 'getItemOptions'])->name('bridges.item.options');
+    Route::post('/bridges/select-all', [BridgeController::class, 'selectAll'])->name('bridges.select.all');
+    Route::post('/bridges/bulk-copy', [BridgeController::class, 'bulkCopy'])->name('bridges.bulk.copy');
+    Route::post('/bridges/bulk-delete', [BridgeController::class, 'bulkDelete'])->name('bridges.bulk.delete');
+    Route::post('/bridges/bulk-toggle', [BridgeController::class, 'bulkToggle'])->name('bridges.bulk.toggle');
+
+    // Call Blocks
+    Route::post('call-blocks', [CallBlockController::class, 'store'])->name('call-blocks.store');
+    Route::put('call-blocks/{call_block}', [CallBlockController::class, 'update'])->name('call-blocks.update');
+    Route::get('/call-blocks/data', [CallBlockController::class, 'getData'])->name('call-blocks.data');
+    Route::post('/call-blocks/item-options', [CallBlockController::class, 'getItemOptions'])->name('call-blocks.item.options');
+    Route::post('/call-blocks/select-all', [CallBlockController::class, 'selectAll'])->name('call-blocks.select.all');
+    Route::post('/call-blocks/bulk-delete', [CallBlockController::class, 'bulkDelete'])->name('call-blocks.bulk.delete');
+    Route::post('/call-blocks/bulk-toggle', [CallBlockController::class, 'bulkToggle'])->name('call-blocks.bulk.toggle');
+
+    // Conference Centers
+    Route::post('conference-centers', [ConferenceCenterController::class, 'store'])->name('conference-centers.store');
+    Route::put('conference-centers/{conference_center}', [ConferenceCenterController::class, 'update'])->name('conference-centers.update');
+    Route::get('/conference-centers/data', [ConferenceCenterController::class, 'getData'])->name('conference-centers.data');
+    Route::post('/conference-centers/item-options', [ConferenceCenterController::class, 'getItemOptions'])->name('conference-centers.item.options');
+    Route::post('/conference-centers/select-all', [ConferenceCenterController::class, 'selectAll'])->name('conference-centers.select.all');
+    Route::post('/conference-centers/bulk-delete', [ConferenceCenterController::class, 'bulkDelete'])->name('conference-centers.bulk.delete');
+    Route::post('/conference-centers/bulk-toggle', [ConferenceCenterController::class, 'bulkToggle'])->name('conference-centers.bulk.toggle');
+
+    // Music on Hold
+    Route::post('music-on-hold', [MusicOnHoldController::class, 'store'])->name('music-on-hold.store');
+    Route::put('music-on-hold/{music_on_hold}', [MusicOnHoldController::class, 'update'])->name('music-on-hold.update');
+    Route::get('/music-on-hold/data', [MusicOnHoldController::class, 'getData'])->name('music-on-hold.data');
+    Route::post('/music-on-hold/item-options', [MusicOnHoldController::class, 'getItemOptions'])->name('music-on-hold.item.options');
+    Route::post('/music-on-hold/select-all', [MusicOnHoldController::class, 'selectAll'])->name('music-on-hold.select.all');
+    Route::post('/music-on-hold/bulk-delete', [MusicOnHoldController::class, 'bulkDelete'])->name('music-on-hold.bulk.delete');
+    Route::post('/music-on-hold/upload', [MusicOnHoldController::class, 'upload'])->name('music-on-hold.upload');
+    Route::post('/music-on-hold/files/delete', [MusicOnHoldController::class, 'deleteFile'])->name('music-on-hold.files.delete');
+    Route::post('/music-on-hold/reload', [MusicOnHoldController::class, 'reload'])->name('music-on-hold.reload');
+
+    // Conferences
+    Route::post('conferences', [ConferenceController::class, 'store'])->name('conferences.store');
+    Route::put('conferences/{conference}', [ConferenceController::class, 'update'])->name('conferences.update');
+    Route::get('/conferences/data', [ConferenceController::class, 'getData'])->name('conferences.data');
+    Route::post('/conferences/item-options', [ConferenceController::class, 'getItemOptions'])->name('conferences.item.options');
+    Route::post('/conferences/select-all', [ConferenceController::class, 'selectAll'])->name('conferences.select.all');
+    Route::post('/conferences/bulk-copy', [ConferenceController::class, 'bulkCopy'])->name('conferences.bulk.copy');
+    Route::post('/conferences/bulk-delete', [ConferenceController::class, 'bulkDelete'])->name('conferences.bulk.delete');
+    Route::post('/conferences/bulk-toggle', [ConferenceController::class, 'bulkToggle'])->name('conferences.bulk.toggle');
+
+    // Firewall
+    Route::get('/firewall/data', [FirewallController::class, 'getData'])->name('firewall.data');
+    Route::post('/firewall/block', [FirewallController::class, 'store'])->name('firewall.block');
+    Route::post('/firewall/unblock', [FirewallController::class, 'destroy'])->name('firewall.unblock');
+    Route::post('/firewall/select-all', [FirewallController::class, 'selectAll'])->name('firewall.select.all');
+
+    // Conference Controls
+    Route::post('/conference-controls', [ConferenceControlController::class, 'store'])->name('conference-controls.store');
+    Route::get('/conference-controls/data', [ConferenceControlController::class, 'getData'])->name('conference-controls.data');
+    Route::post('/conference-controls/item-options', [ConferenceControlController::class, 'getItemOptions'])->name('conference-controls.item.options');
+    Route::post('/conference-controls/select-all', [ConferenceControlController::class, 'selectAll'])->name('conference-controls.select.all');
+    Route::post('/conference-controls/bulk-copy', [ConferenceControlController::class, 'bulkCopy'])->name('conference-controls.bulk.copy');
+    Route::post('/conference-controls/bulk-delete', [ConferenceControlController::class, 'bulkDelete'])->name('conference-controls.bulk.delete');
+    Route::post('/conference-controls/bulk-toggle', [ConferenceControlController::class, 'bulkToggle'])->name('conference-controls.bulk.toggle');
+    Route::put('/conference-controls/{conference_control}', [ConferenceControlController::class, 'update'])->name('conference-controls.update');
+    Route::delete('/conference-controls/{conference_control}', [ConferenceControlController::class, 'destroy'])->name('conference-controls.destroy');
+    Route::post('/conference-controls/{conference_control}/details', [ConferenceControlController::class, 'storeDetail'])->name('conference-controls.details.store');
+    Route::post('/conference-controls/details/bulk-delete', [ConferenceControlController::class, 'bulkDeleteDetails'])->name('conference-controls.details.bulk.delete');
+    Route::post('/conference-controls/details/bulk-toggle', [ConferenceControlController::class, 'bulkToggleDetails'])->name('conference-controls.details.bulk.toggle');
+    Route::put('/conference-controls/details/{conference_control_detail}', [ConferenceControlController::class, 'updateDetail'])->name('conference-controls.details.update');
+    Route::delete('/conference-controls/details/{conference_control_detail}', [ConferenceControlController::class, 'destroyDetail'])->name('conference-controls.details.destroy');
+
+    // Conference Profiles
+    Route::post('/conference-profiles', [ConferenceProfileController::class, 'store'])->name('conference-profiles.store');
+    Route::get('/conference-profiles/data', [ConferenceProfileController::class, 'getData'])->name('conference-profiles.data');
+    Route::post('/conference-profiles/item-options', [ConferenceProfileController::class, 'getItemOptions'])->name('conference-profiles.item.options');
+    Route::post('/conference-profiles/select-all', [ConferenceProfileController::class, 'selectAll'])->name('conference-profiles.select.all');
+    Route::post('/conference-profiles/bulk-copy', [ConferenceProfileController::class, 'bulkCopy'])->name('conference-profiles.bulk.copy');
+    Route::post('/conference-profiles/bulk-delete', [ConferenceProfileController::class, 'bulkDelete'])->name('conference-profiles.bulk.delete');
+    Route::post('/conference-profiles/bulk-toggle', [ConferenceProfileController::class, 'bulkToggle'])->name('conference-profiles.bulk.toggle');
+    Route::put('/conference-profiles/{conference_profile}', [ConferenceProfileController::class, 'update'])->name('conference-profiles.update');
+    Route::delete('/conference-profiles/{conference_profile}', [ConferenceProfileController::class, 'destroy'])->name('conference-profiles.destroy');
+    Route::post('/conference-profiles/{conference_profile}/params', [ConferenceProfileController::class, 'storeParam'])->name('conference-profiles.params.store');
+    Route::post('/conference-profiles/params/bulk-delete', [ConferenceProfileController::class, 'bulkDeleteParams'])->name('conference-profiles.params.bulk.delete');
+    Route::post('/conference-profiles/params/bulk-toggle', [ConferenceProfileController::class, 'bulkToggleParams'])->name('conference-profiles.params.bulk.toggle');
+    Route::put('/conference-profiles/params/{conference_profile_param}', [ConferenceProfileController::class, 'updateParam'])->name('conference-profiles.params.update');
+    Route::delete('/conference-profiles/params/{conference_profile_param}', [ConferenceProfileController::class, 'destroyParam'])->name('conference-profiles.params.destroy');
+
+    // Conference Rooms
+    Route::post('conference-rooms', [ConferenceRoomController::class, 'store'])->name('conference-rooms.store');
+    Route::put('conference-rooms/{conference_room}', [ConferenceRoomController::class, 'update'])->name('conference-rooms.update');
+    Route::get('/conference-rooms/data', [ConferenceRoomController::class, 'getData'])->name('conference-rooms.data');
+    Route::post('/conference-rooms/item-options', [ConferenceRoomController::class, 'getItemOptions'])->name('conference-rooms.item.options');
+    Route::post('/conference-rooms/select-all', [ConferenceRoomController::class, 'selectAll'])->name('conference-rooms.select.all');
+    Route::post('/conference-rooms/bulk-delete', [ConferenceRoomController::class, 'bulkDelete'])->name('conference-rooms.bulk.delete');
+    Route::post('/conference-rooms/bulk-toggle', [ConferenceRoomController::class, 'bulkToggle'])->name('conference-rooms.bulk.toggle');
+
+    // Active Conferences
+    Route::get('/active-conferences/data', [ActiveConferenceController::class, 'getData'])->name('active-conferences.data');
+    Route::get('/active-conferences/{conference}/interactive/data', [ActiveConferenceController::class, 'getInteractiveData'])->name('active-conferences.interactive.data');
+    Route::post('/active-conferences/{conference}/interactive/action', [ActiveConferenceController::class, 'executeInteractiveAction'])->name('active-conferences.interactive.action');
+
     // Phone Numbers
     Route::post('phone-numbers', [PhoneNumbersController::class, 'store'])->name('phone-numbers.store');
     Route::put('phone-numbers/{phone_number}', [PhoneNumbersController::class, 'update'])->name('phone-numbers.update');
@@ -349,6 +482,7 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     Route::post('faxes/new-fax-options', [FaxesController::class, 'getNewFaxOptions'])->name('faxes.new.fax.options');
     Route::post('/faxes/bulk-delete', [FaxesController::class, 'bulkDelete'])->name('faxes.bulk.delete');
     Route::post('/faxes/bulk-update', [FaxesController::class, 'bulkUpdate'])->name('faxes.bulk.update');
+    Route::get('faxes/data', [FaxesController::class, 'getData'])->name('faxes.data');
     Route::get('faxes/recent-outbound', [FaxesController::class, 'getRecentOutbound'])->name('faxes.recent-outbound');
     Route::get('faxes/recent-inbound', [FaxesController::class, 'getRecentInbound'])->name('faxes.recent-inbound');
     Route::get('/faxes/newfax/create', [FaxesController::class, 'new'])->name('faxes.newfax');
@@ -369,6 +503,7 @@ Route::group(['middleware' => ['auth:sanctum', 'api.cookie.auth']], function () 
     Route::post('/fax/sent/bulk-delete', [FaxSentController::class, 'bulkDelete'])->name('fax-sent.bulk.delete');
     Route::post('/fax/sent/select-all', [FaxSentController::class, 'selectAll'])->name('fax-sent.select.all');
     Route::get('/fax/log/data', [FaxLogController::class, 'getData'])->name('fax-logs.data');
+    Route::post('/fax/log/{faxLog}/retry', [FaxLogController::class, 'retryOutbound'])->name('fax-logs.retry');
     Route::post('/fax/log/bulk-delete', [FaxLogController::class, 'bulkDelete'])->name('fax-logs.bulk.delete');
     Route::post('/fax/log/select-all', [FaxLogController::class, 'selectAll'])->name('fax-logs.select.all');
     // Route::get('/fax/sent/{faxQueue}/{status?}', [FaxesController::class, 'updateStatus'])->name('faxes.file.updateStatus');

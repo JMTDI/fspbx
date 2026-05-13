@@ -67,13 +67,51 @@
 
                 <TableColumnHeader v-if="filterData.showGlobal" header="Domain"
                     class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Number" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader v-if="permissions.context" header="Context"
-                    class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Order" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Enabled" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Description"
-                    class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
+                <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
+                    <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('dialplan_number')">
+                        <span class="mr-2">Number</span>
+                        <ChevronUpIcon v-if="sortData.name === 'dialplan_number' && sortData.order === 'asc'"
+                            class="h-4 w-4 text-gray-500" />
+                        <ChevronDownIcon v-else-if="sortData.name === 'dialplan_number' && sortData.order === 'desc'"
+                            class="h-4 w-4 text-gray-500" />
+                    </div>
+                </TableColumnHeader>
+                <TableColumnHeader v-if="permissions.context" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
+                    <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('dialplan_context')">
+                        <span class="mr-2">Context</span>
+                        <ChevronUpIcon v-if="sortData.name === 'dialplan_context' && sortData.order === 'asc'"
+                            class="h-4 w-4 text-gray-500" />
+                        <ChevronDownIcon v-else-if="sortData.name === 'dialplan_context' && sortData.order === 'desc'"
+                            class="h-4 w-4 text-gray-500" />
+                    </div>
+                </TableColumnHeader>
+                <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
+                    <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('dialplan_order')">
+                        <span class="mr-2">Order</span>
+                        <ChevronUpIcon v-if="sortData.name === 'dialplan_order' && sortData.order === 'asc'"
+                            class="h-4 w-4 text-gray-500" />
+                        <ChevronDownIcon v-else-if="sortData.name === 'dialplan_order' && sortData.order === 'desc'"
+                            class="h-4 w-4 text-gray-500" />
+                    </div>
+                </TableColumnHeader>
+                <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
+                    <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('dialplan_enabled')">
+                        <span class="mr-2">Enabled</span>
+                        <ChevronUpIcon v-if="sortData.name === 'dialplan_enabled' && sortData.order === 'asc'"
+                            class="h-4 w-4 text-gray-500" />
+                        <ChevronDownIcon v-else-if="sortData.name === 'dialplan_enabled' && sortData.order === 'desc'"
+                            class="h-4 w-4 text-gray-500" />
+                    </div>
+                </TableColumnHeader>
+                <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
+                    <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('dialplan_description')">
+                        <span class="mr-2">Description</span>
+                        <ChevronUpIcon v-if="sortData.name === 'dialplan_description' && sortData.order === 'asc'"
+                            class="h-4 w-4 text-gray-500" />
+                        <ChevronDownIcon v-else-if="sortData.name === 'dialplan_description' && sortData.order === 'desc'"
+                            class="h-4 w-4 text-gray-500" />
+                    </div>
+                </TableColumnHeader>
                 <TableColumnHeader header="" class="px-2 py-3.5 text-right text-sm font-semibold text-gray-900" />
             </template>
 
@@ -157,7 +195,9 @@
             <template #footer>
                 <Paginator :previous="data.prev_page_url" :next="data.next_page_url" :from="data.from" :to="data.to"
                     :total="data.total" :currentPage="data.current_page" :lastPage="data.last_page" :links="data.links"
-                    @pagination-change-page="renderRequestedPage" />
+                    :page-size="pagination.per_page" :page-size-options="pagination.per_page_options"
+                    :show-page-size-selector="true"
+                    @pagination-change-page="renderRequestedPage" @page-size-change="handlePageSizeChange" />
             </template>
         </DataTable>
     </div>
@@ -203,10 +243,15 @@ import {
 const props = defineProps({
     routes: Object,
     permissions: Object,
+    pagination: Object,
 });
 
 const routes = props.routes;
 const permissions = props.permissions;
+const pagination = ref({
+    per_page: props.pagination?.per_page ?? 50,
+    per_page_options: props.pagination?.per_page_options ?? [50, 100, 200, 500, 1000],
+});
 
 const loading = ref(false);
 const currentPage = ref(1);
@@ -368,6 +413,7 @@ const getData = (page = 1) => {
         params: {
             filter: filterData.value,
             page: currentPage.value,
+            per_page: pagination.value.per_page,
             sort,
         },
     })
@@ -400,6 +446,12 @@ const renderRequestedPage = (url) => {
     const urlObj = new URL(url, window.location.origin);
     const pageParam = urlObj.searchParams.get("page") ?? 1;
     getData(pageParam);
+};
+
+const handlePageSizeChange = (perPage) => {
+    pagination.value.per_page = perPage;
+    handleClearSelection();
+    getData(1);
 };
 
 const handleShowGlobal = () => {

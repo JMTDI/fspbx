@@ -81,6 +81,7 @@ class UpdateDeviceRequest extends FormRequest
             'device_lines.*.sip_port' => ['nullable'],
             'device_lines.*.sip_transport' => ['nullable'],
             'device_lines.*.register_expires' => ['nullable'],
+            'device_lines.*.shared_line' => ['nullable'],
             'device_lines.*.domain_uuid' => ['nullable'],
             'device_lines.*.device_line_uuid' => ['nullable'],
             'device_lines.*.user_id' => ['nullable'],
@@ -100,6 +101,7 @@ class UpdateDeviceRequest extends FormRequest
             'device_keys.*.key_area' => [
                 'nullable',
                 'string',
+                Rule::in(['main', 'multi_purpose', 'expansion']),
             ],
 
             'device_keys.*.key_type' => [
