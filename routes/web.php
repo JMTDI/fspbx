@@ -57,6 +57,7 @@ use App\Http\Controllers\SansayActiveCallsController;
 use App\Http\Controllers\SansayRegistrationsController;
 use App\Http\Controllers\SipStatusController;
 use App\Http\Controllers\SpeedDialController;
+use App\Http\Controllers\SwitchModuleController;
 use App\Http\Controllers\SystemController;
 use App\Http\Controllers\SystemSettingsController;
 use App\Http\Controllers\UserLogsController;
@@ -216,6 +217,9 @@ Route::group(['middleware' => 'auth'], function () {
         ->where('file', '[^/]+')
         ->name('music-on-hold.files.download');
 
+    // Modules
+    Route::get('modules', [SwitchModuleController::class, 'index'])->name('modules.index');
+
     // SIP Status
     Route::get('sip-status', [SipStatusController::class, 'index'])->name('sip-status.index');
 
@@ -257,6 +261,12 @@ Route::group(['middleware' => 'auth'], function () {
 
     // Account settings
     Route::get('account-settings', [AccountSettingsController::class, 'index'])->name('account-settings.index');
+
+    // Default settings
+    Route::get('default-settings', [\App\Http\Controllers\DefaultSettingsController::class, 'index'])->name('default-settings.index');
+
+    // Domain settings
+    Route::get('domains/{domain}/settings', [\App\Http\Controllers\DomainSettingsController::class, 'index'])->name('domains.settings.index');
 
     // Logs
     Route::get('logs', [LogsController::class, 'index'])->name('logs.index');
