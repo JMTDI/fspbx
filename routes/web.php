@@ -26,6 +26,7 @@ use App\Http\Controllers\CsrfTokenController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceCloudProvisioningController;
 use App\Http\Controllers\DeviceController;
+use App\Http\Controllers\DeviceImportExportController;
 use App\Http\Controllers\DeviceKeyTemplateController;
 use App\Http\Controllers\DialplanController;
 use App\Http\Controllers\DomainController;
@@ -48,6 +49,7 @@ use App\Http\Controllers\MessageSettingsController;
 use App\Http\Controllers\MusicOnHoldController;
 use App\Http\Controllers\PhoneNumbersController;
 use App\Http\Controllers\PolycomLogController;
+use App\Http\Controllers\PolycomProvisioningFileController;
 use App\Http\Controllers\ProFeaturesController;
 use App\Http\Controllers\ProvisioningController;
 use App\Http\Controllers\RecordingsController;
@@ -57,6 +59,7 @@ use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\RingGroupsController;
 use App\Http\Controllers\SansayActiveCallsController;
 use App\Http\Controllers\SansayRegistrationsController;
+use App\Http\Controllers\ScheduledAnnouncementController;
 use App\Http\Controllers\SipStatusController;
 use App\Http\Controllers\SpeedDialController;
 use App\Http\Controllers\SwitchVariableController;
@@ -129,6 +132,15 @@ Route::get('/mobile-app/qr-code', [AppsCredentialsController::class, 'showQrCode
     ->name('appsMobileAppQr');
 Route::get('/mobile-app/get-password/{token}', [AppsCredentialsController::class, 'getPasswordByToken'])->name('appsGetPasswordByToken');
 Route::post('/mobile-app/get-password/{token}', [AppsCredentialsController::class, 'retrievePasswordByToken'])->name('appsRetrievePasswordByToken');
+
+Route::match(['PUT', 'GET', 'HEAD'], '/prov/{bucket}/{id}-{kind}.{ext}', [PolycomProvisioningFileController::class, 'handle'])
+    ->whereIn('bucket', ['logs', 'phoneconfigs', 'directories', 'calls', 'corefiles'])
+    ->where('id', '[0-9A-Fa-f]{12}')
+    ->where('kind', '[A-Za-z0-9_-]+')
+    ->where('ext', '[A-Za-z0-9]+')
+    ->middleware(['throttle:provision', 'provision.digest'])
+    ->withoutMiddleware(['auth', 'web'])
+    ->name('provision.polycom-files');
 
 Route::match(['GET', 'HEAD'], '/prov/{path}', [ProvisioningController::class, 'serve'])
     ->where('path', '.*')
@@ -297,6 +309,9 @@ Route::group(['middleware' => 'auth'], function () {
     //Devices
     Route::get('devices', [DeviceController::class, 'index'])->name('devices.index');
     Route::post('devices/duplicate', [DeviceController::class, 'duplicate'])->name('devices.duplicate');
+    Route::get('/devices/template/download', [DeviceImportExportController::class, 'downloadTemplate'])->name('devices.template.download');
+    Route::post('/devices/import', [DeviceImportExportController::class, 'importPreview'])->name('devices.import.preview');
+    Route::post('/devices/import/commit', [DeviceImportExportController::class, 'importCommit'])->name('devices.import.commit');
     Route::get('device-key-templates', [DeviceKeyTemplateController::class, 'index'])->name('device-key-templates.index');
 
     //Phone Numbers
@@ -307,6 +322,9 @@ Route::group(['middleware' => 'auth'], function () {
 
     //Wakeup Calls
     Route::get('wakeup-calls', [WakeupCallsController::class, 'index'])->name('wakeup-calls.index');
+
+    // Scheduled Announcements
+    Route::get('scheduled-announcements', [ScheduledAnnouncementController::class, 'index'])->name('scheduled-announcements.index');
 
 
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -411,9 +429,7 @@ Route::group(['middleware' => 'auth'], function () {
     Route::post('/call-routing-options', [CallRoutingOptionsController::class, 'getRoutingOptions'])->name('routing.options');
 
     // Registrations
-    Route::resource('registrations', RegistrationsController::class);
-    Route::post('/registrations/select-all', [RegistrationsController::class, 'selectAll'])->name('registrations.select.all');
-    Route::post('/registrations/action', [RegistrationsController::class, 'handleAction'])->name('registrations.action');
+    Route::get('registrations', [RegistrationsController::class, 'index'])->name('registrations.index');
 
     // Sansay Registrations
     Route::resource('sansay/registrations', SansayRegistrationsController::class)->names([

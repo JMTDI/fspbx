@@ -49,6 +49,8 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - Native provisioning renders `provisioning_templates.content` from the database, not the resource file directly. Changes under `resources/provisioning/.../template.blade.php` require reseeding default templates with `php artisan prov:templates:seed` or manually updating custom template content.
 - Custom provisioning templates do not inherit default template changes automatically.
 - When changing default provisioning templates, bump the Blade front-matter `version:` so the seeder can update the database row clearly.
+- The provisioning template seeder keys default rows by `vendor + folder name + type`. When renaming a default template folder, add an update step before `prov:templates:seed` runs that renames the existing `provisioning_templates.name` row and any custom `base_template` references, otherwise the seeder will create a second default row under the new folder name.
+- Provisioning preview should render through the same code path as live provisioning but must not touch `/prov`, digest auth, or device last-contact metadata. Treat generated previews as credential-bearing output and gate them with a dedicated action permission.
 - The old provisioning URL delegates modern `device_keys` overlay behavior to `fspbx_apply_new_keys_override()` in `app/helpers.php`. Key Template support for that old path should stay in helpers where possible.
 - `device_key_templates.enabled` is stored as the string `'true'`, not a boolean. Legacy SQL helpers should compare it as `t.enabled = 'true'`.
 - If the old `provision.php` path must participate in a new behavior, remember `public/` is not tracked. Make the runtime file change for the working server, then add or update an update class to download/replace the file for deployed systems.
@@ -97,6 +99,19 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - Deleting a stream should delete the whole generated stream folder under `/usr/share/freeswitch/sounds/music/{domain-or-global}/{stream-name}`, not just individual DB rows. Keep deletion guarded so it cannot remove the music root or a domain root.
 - Avoid icons that look like playback unless the action actually starts playback. For file selection rows, prefer an audio/file icon; reserve play icons for buttons that open or start the player.
 
+## Scheduled Announcements
+
+- Scheduled Announcements are broader than school bells. Keep naming and UI copy generic enough for bells, tones, and periodic announcements.
+- The schedule is the main object. It owns one recording, one selected-extension list, optional start/end dates, events, and exclusions. Events are simple day/time rows; their presence means they run. Do not add event names or per-event enabled flags unless the product scope changes.
+- Exclusions are simple date/comment rows on the schedule. A matching exclusion skips that schedule for that local date. Do not model alternate schedules or exception types unless explicitly requested.
+- Use VueForm for all create/update modal controls and mirror existing Ring Group recording controls for recording select/play/edit/delete/upload behavior.
+- Keep Scheduled Announcements controllers thin. Put validation and normalization in FormRequest classes, and keep schedule persistence/execution behavior in services.
+- Do not use FreeSWITCH `sched_api` or pre-schedule FreeSWITCH jobs. Laravel finds due events and executes at fire time through `FreeswitchEslService`.
+- Real-time behavior is "on time or missed, never late." Respect the configured fire window; events found after the window should be logged as missed rather than played late.
+- Redundant-server execution is guarded by authoritative DNS active-node checks before claim and before ESL execution. If active status, DNS, local node IPs, or FreeSWITCH health are uncertain, fail closed and log a skipped/missed run rather than risking duplicates.
+- Busy extension behavior is schedule-scoped. `skip` should check active FreeSWITCH channels and leave busy extensions alone; `force` may originate with auto-answer even if a phone is already on a call. `page.lua` is a useful reference for busy-extension detection, but scheduled playback should stay in the Laravel/ESL path.
+- Playback should include a short silence lead-in before the recording to avoid clipped audio on auto-answer endpoints.
+
 ## Fax Jobs And Retention
 
 - New outbound fax state lives in `outbound_faxes`; do not use legacy `v_fax_queue` for current outbound fax alerts or status decisions.
@@ -122,7 +137,7 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
   - `*_view_self_records`
 - Do not repurpose legacy permissions unless there is a concrete existing use that proves the meaning.
 - Add durable permissions to `database/seeders/DatabaseSeeder.php`; it runs as part of updates.
-- If adding permissions to an already-versioned release, also add them to the current or next update class so deployed systems receive them without relying on a fresh seed.
+- Do not manually add permissions in update classes unless the normal update flow is bypassing the seeder for that release.
 
 ## Updates
 
