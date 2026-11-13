@@ -2,11 +2,10 @@
 
 namespace App\Models;
 
+use App\Services\PhoneNumberService;
 use Carbon\Carbon;
-use libphonenumber\PhoneNumberUtil;
 use libphonenumber\PhoneNumberFormat;
 use Illuminate\Database\Eloquent\Model;
-use libphonenumber\NumberParseException;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class CDR extends Model
@@ -55,18 +54,25 @@ class CDR extends Model
 
     public function getCallerIdNumberFormattedAttribute()
     {
-        return $this->caller_id_number ? formatPhoneNumber($this->caller_id_number) : null;
+        return $this->caller_id_number ? app(PhoneNumberService::class)->formatForDomain(
+            $this->caller_id_number,
+            $this->domain_uuid,
+            PhoneNumberFormat::NATIONAL
+        ) : null;
     }
 
     public function getCallerIdNameFormattedAttribute()
     {
-        // If the "name" looks like a US +1 number, normalize it
-        if (preg_match('/^(?:\+?1)?[2-9]\d{9}$/', $this->caller_id_name)) {
-            return formatPhoneNumber($this->caller_id_name);
+        // Preserve names: libphonenumber can also interpret letters as vanity numbers.
+        if (!preg_match('/^\+?[0-9\s().-]+$/D', trim((string) $this->caller_id_name))) {
+            return $this->caller_id_name;
         }
 
-        // Otherwise return as-is (because it's likely a real name)
-        return $this->caller_id_name;
+        return app(PhoneNumberService::class)->formatForDomain(
+            $this->caller_id_name,
+            $this->domain_uuid,
+            PhoneNumberFormat::NATIONAL
+        );
     }
 
     public function getCallerDestinationFormattedAttribute()
@@ -74,7 +80,11 @@ class CDR extends Model
         if ($this->caller_destination === null || $this->caller_destination === '') {
             return null;
         }
-        return formatPhoneNumber($this->caller_destination);
+        return app(PhoneNumberService::class)->formatForDomain(
+            $this->caller_destination,
+            $this->domain_uuid,
+            PhoneNumberFormat::NATIONAL
+        );
     }
 
     public function getDestinationNumberFormattedAttribute()
@@ -83,7 +93,11 @@ class CDR extends Model
             return null;
         }
 
-        return formatPhoneNumber($this->destination_number);
+        return app(PhoneNumberService::class)->formatForDomain(
+            $this->destination_number,
+            $this->domain_uuid,
+            PhoneNumberFormat::NATIONAL
+        );
     }
 
     public function getStartDateAttribute()
@@ -98,6 +112,20 @@ class CDR extends Model
         if (!$this->start_epoch || !$this->domain_uuid) return null;
         $timeZone = get_local_time_zone($this->domain_uuid);
         return Carbon::createFromTimestamp($this->start_epoch, 'UTC')->setTimezone($timeZone)->format('g:i:s A');
+    }
+
+    public function getAnswerTimeAttribute()
+    {
+        if (!$this->answer_epoch || !$this->domain_uuid) return null;
+        $timeZone = get_local_time_zone($this->domain_uuid);
+        return Carbon::createFromTimestamp($this->answer_epoch, 'UTC')->setTimezone($timeZone)->format('g:i:s A');
+    }
+
+    public function getEndTimeAttribute()
+    {
+        if (!$this->end_epoch || !$this->domain_uuid) return null;
+        $timeZone = get_local_time_zone($this->domain_uuid);
+        return Carbon::createFromTimestamp($this->end_epoch, 'UTC')->setTimezone($timeZone)->format('g:i:s A');
     }
 
     public function getDurationFormattedAttribute()
@@ -151,22 +179,35 @@ class CDR extends Model
 
     public function getCcResultAttribute()
     {
+        $outcome = \App\Services\QueueCallOutcome::fromAttributes($this->attributes);
+        if ($outcome !== null) {
+            return \App\Services\QueueCallOutcome::label($outcome);
+        }
+
+        if (($this->attributes['status'] ?? null) === 'callback_requested') {
+            return __('Callback requested');
+        }
+
         if ($this->cc_cause == 'answered') {
-            return 'Answered';
+            return __('Answered');
+        }
+
+        if ($this->cc_cause === 'TIMEOUT') {
+            return __('Queue timeout reached');
         }
 
         if ($this->cc_cause == 'cancel') {
             switch ($this->cc_cancel_reason) {
                 case 'NONE':
-                    return "No specific reason";
+                    return __("No specific reason");
                 case 'NO_AGENT_TIMEOUT':
-                    return "No agents in queue";
+                    return __("No agents in queue");
                 case 'BREAK_OUT':
-                    return "Abandoned";
+                    return __("Abandoned");
                 case 'EXIT_WITH_KEY':
-                    return "The caller pressed the exit key";
+                    return __("The caller pressed the exit key");
                 case 'TIMEOUT':
-                    return "Queue timeout reached";
+                    return __("Queue timeout reached");
             }
         }
         return null;
@@ -174,25 +215,12 @@ class CDR extends Model
 
     public function getStatusAttribute($value)
     {
-        // 1. Missed call condition
-        $status = $value;
+        return \App\Services\CdrStatus::fromAttributes($this->attributes);
+    }
 
-        if ($this->voicemail_message == false && $this->missed_call == true && $this->hangup_cause == "NORMAL_CLEARING") {
-            $status = "missed call";
-        }
-
-        // 2. Abandoned call upgrades missed call
-        if (
-            isset($this->cc_cancel_reason) &&
-            isset($this->cc_cause) &&
-            $status === "missed call" &&
-            $this->cc_cancel_reason == "BREAK_OUT" &&
-            $this->cc_cause == "cancel"
-        ) {
-            $status = "abandoned";
-        }
-
-        return $status;
+    public function getCcResultReasonAttribute(): ?string
+    {
+        return \App\Services\QueueCallOutcome::reason($this->attributes);
     }
 
     public function getFormattedDuration($value)
@@ -243,28 +271,6 @@ class CDR extends Model
     public function callTranscription()
     {
         return $this->hasOne(CallTranscription::class, 'xml_cdr_uuid', 'xml_cdr_uuid');
-    }
-
-    public function formatPhoneNumber($value)
-    {
-        //Get libphonenumber object
-        $phoneNumberUtil = PhoneNumberUtil::getInstance();
-
-        //try to convert phone number to National format
-        try {
-            $phoneNumberObject = $phoneNumberUtil->parse($value, 'US');
-            if ($phoneNumberUtil->isValidNumber($phoneNumberObject)) {
-                $number_formatted = $phoneNumberUtil
-                    ->format($phoneNumberObject, PhoneNumberFormat::NATIONAL);
-            } else {
-                $number_formatted = $value;
-            }
-        } catch (NumberParseException $e) {
-            // Do nothing and leave the numbner as is
-            $number_formatted = $value;
-        }
-
-        return $number_formatted;
     }
 
     public function relatedQueueCalls()

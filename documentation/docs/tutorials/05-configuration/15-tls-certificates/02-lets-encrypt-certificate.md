@@ -15,30 +15,26 @@ This certificate is separate from the Nginx certificate used by the FS PBX web i
 
 Make sure that:
 
+- FS PBX 1.9.1 or later is installed.
 - FreeSWITCH 1.11.1 or later is installed.
 - Public DNS for every requested hostname points to the correct FS PBX server.
 - TCP port 80 is open from the internet to every server named on the certificate.
 - Nginx serves `/.well-known/acme-challenge/` from the configured ACME webroot.
 - You have an email address for the Let's Encrypt account.
 
-Existing installations must upgrade FreeSWITCH separately from the normal FS PBX update:
+:::important FreeSWITCH version
+
+Check the currently running FreeSWITCH version:
 
 ```bash
-cd /var/www/fspbx
-sudo bash install/install_freeswitch.sh
-```
-
-After the upgrade finishes, restart the FreeSWITCH service:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart freeswitch
 sudo fs_cli -x version
 ```
 
-Installing the new FreeSWITCH files does not replace the process that is already running. Until the service is restarted, the server continues running the old FreeSWITCH version and `reloadcert` may remain unavailable. A FreeSWITCH service restart interrupts active calls, so plan a maintenance window. New FS PBX installations already install the supported version.
+If the reported version is earlier than 1.11.1, follow the [FreeSWITCH upgrade or reinstall guide](../../04-freeswitch-upgrade.md). The required service restart interrupts active calls, so plan a maintenance window.
 
-After this one-time upgrade and restart, certificate issuance and renewal use `reloadcert`, so future certificate updates do not require restarting FreeSWITCH or interrupting calls.
+If FreeSWITCH 1.11.1 or later is already running, no upgrade or service restart is needed. That version can load certificate updates without interrupting calls.
+
+:::
 
 ## Enable TLS on the SIP profiles
 
@@ -121,6 +117,8 @@ After staging succeeds, turn off **Use staging (test) directory** and click **Is
 For a redundant or clustered installation:
 
 - List the failover or proxy hostname first, followed by each server's direct hostname (see [Choosing the hostnames](#choosing-the-hostnames-sans)).
+- Failover CNAMEs, including Azure Traffic Manager, are supported. Every authoritative DNS server must agree on the resolved destination throughout the CNAME chain. Missing or conflicting records prevent automatic renewal.
+- A server behind NAT discovers its outgoing public IP to identify itself. That address must match its direct hostname; verify this before enabling auto-renew if incoming and outgoing traffic use different public IPs.
 - Open TCP port 80 to every listed server. Let's Encrypt may validate any hostname from outside your network.
 - Set a **Peer push secret** (use **Rotate** to generate and save one). It authorizes certificate replication between servers and is stored in FS PBX settings. If your database is replicated across nodes it applies to every server automatically; otherwise set the same value on each server.
 - Issue from the server the failover record currently points to. It coordinates the HTTP-01 challenge and replicates the resulting certificate to the other servers. If replication to any server fails, issuance fails so the servers never serve mismatched certificates — fix the unreachable server and issue again.

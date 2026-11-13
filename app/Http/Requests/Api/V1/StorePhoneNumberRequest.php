@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Api\V1;
 
+use App\Services\PhoneNumberService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -42,21 +43,7 @@ class StorePhoneNumberRequest extends FormRequest
             'routing_options' => ['nullable', 'array'],
             'routing_options.*.type' => [
                 'required_with:routing_options',
-                Rule::in([
-                    'extensions',
-                    'ring_groups',
-                    'ivrs',
-                    'business_hours',
-                    'contact_centers',
-                    'bridges',
-                    'faxes',
-                    'conferences',
-                    'call_flows',
-                    'voicemails',
-                    'company_directory',
-                    'check_voicemail',
-                    'hangup',
-                ]),
+                Rule::in(\App\Services\CallRoutingOptionsService::destinationTypes()),
             ],
             'routing_options.*.extension' => [
                 'present',
@@ -64,7 +51,7 @@ class StorePhoneNumberRequest extends FormRequest
                     $type = data_get($this->input(), str_replace('.extension', '.type', $attribute));
 
                     // These types don't require extension digits
-                    if (in_array($type, ['hangup'], true)) {
+                    if (! \App\Services\CallRoutingOptionsService::requiresTarget((string) $type)) {
                         return;
                     }
 
@@ -73,7 +60,7 @@ class StorePhoneNumberRequest extends FormRequest
                         return;
                     }
 
-                    if ($type === 'bridges') {
+                    if (in_array(\App\Services\CallRoutingOptionsService::destinationHandler((string) $type), ['bridge', 'recording'], true)) {
                         return;
                     }
 
@@ -82,18 +69,21 @@ class StorePhoneNumberRequest extends FormRequest
                     }
                 },
             ],
+            'routing_options.*.bridge_uuid' => [
+                'nullable',
+                'uuid',
+                Rule::exists('v_bridges', 'bridge_uuid')
+                    ->where(fn ($query) => $query->where('domain_uuid', $domainUuid)),
+            ],
         ];
     }
 
     public function prepareForValidation(): void
     {
-        // normalize destination_number: keep digits only (and optional leading +), then strip +1 if present
-        if ($this->has('destination_number')) {
-            $v = preg_replace('/[^\d+]+/', '', (string) $this->input('destination_number'));
-            $v = ltrim($v);
-            if (str_starts_with($v, '+1')) $v = substr($v, 2);
-            $v = ltrim($v, '+'); // store as digits only, like your example
-            $this->merge(['destination_number' => $v]);
+        if (is_string($this->input('destination_number'))) {
+            $this->merge(app(PhoneNumberService::class)->destinationParts(
+                $this->input('destination_number'), $this->input('destination_prefix'), (string) $this->route('domain_uuid')
+            ));
         }
 
 
@@ -177,6 +167,10 @@ class StorePhoneNumberRequest extends FormRequest
             'routing_options.*.extension' => [
                 'description' => 'Digits target for this routing type (extension or external).',
                 'example' => '9000',
+            ],
+            'routing_options.*.bridge_uuid' => [
+                'description' => 'Optional bridge UUID used to keep the route synchronized when the bridge changes.',
+                'example' => '9a458dfd-a989-4e77-ab1d-711f5ecd35cb',
             ],
         ];
     }

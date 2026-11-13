@@ -1,7 +1,5 @@
 <?php
 
-use Illuminate\Support\Str;
-
 return [
 
     /*
@@ -48,16 +46,12 @@ return [
     | Horizon Redis Prefix
     |--------------------------------------------------------------------------
     |
-    | This prefix will be used when storing all Horizon data in Redis. You
-    | may modify the prefix when you are running multiple installations
-    | of Horizon on the same server so that they don't have problems.
+    | This fixed prefix keeps Horizon data and worker discovery independent
+    | of the application name and environment prefix settings.
     |
     */
 
-    'prefix' => env(
-        'HORIZON_PREFIX',
-        Str::slug(env('APP_NAME', 'laravel'), '_').'_horizon:'
-    ),
+    'prefix' => 'fs_pbx_horizon:',
 
     /*
     |--------------------------------------------------------------------------
@@ -86,6 +80,7 @@ return [
     'waits' => [
         'redis:default' => 60,
         'redis:dialer' => 60,
+        'redis:webhooks' => 60,
     ],
 
     /*
@@ -166,9 +161,21 @@ return [
     */
 
     'defaults' => [
+        'ringotel' => [
+            'connection' => 'ringotel', 'queue' => ['ringotel'],
+            'balance' => 'auto', 'minProcesses' => 1, 'maxProcesses' => 2,
+            'maxTime' => 3600, 'maxJobs' => 1000, 'memory' => 128,
+            'tries' => 5, 'timeout' => 120, 'nice' => 0,
+        ],
+        'scheduled-jobs' => [
+            'connection' => 'scheduled-jobs', 'queue' => ['scheduled-jobs'],
+            'balance' => 'auto', 'minProcesses' => 1, 'maxProcesses' => 2,
+            'maxTime' => 3600, 'maxJobs' => 1000, 'memory' => 256,
+            'tries' => 2, 'timeout' => 600, 'nice' => 0,
+        ],
         'supervisor-1' => [
             'connection' => 'redis',
-            'queue' => ['default', 'emails', 'faxes', 'slack', 'messages', 'voicemails', 'ztp', 'stripe', 'transcriptions', 'dialer'],
+            'queue' => ['default', 'emails', 'faxes', 'slack', 'messages', 'voicemails', 'ztp', 'stripe', 'transcriptions', 'dialer', 'webhooks'],
             'balance' => 'auto',
             'minProcesses' => 1,
             'maxProcesses' => 100,
@@ -183,6 +190,8 @@ return [
 
     'environments' => [
         'production' => [
+            'ringotel' => ['maxProcesses' => 2],
+            'scheduled-jobs' => ['maxProcesses' => 2],
             'supervisor-1' => [
                 'maxProcesses' => 10,
                 'balanceMaxShift' => 1,
@@ -191,8 +200,10 @@ return [
         ],
 
         'local' => [
+            'ringotel' => ['maxProcesses' => 1],
+            'scheduled-jobs' => ['maxProcesses' => 2],
             'supervisor-1' => [
-                'queue' => ['default', 'emails', 'faxes', 'slack', 'messages', 'voicemails', 'ztp', 'stripe', 'transcriptions', 'dialer'],
+                'queue' => ['default', 'emails', 'faxes', 'slack', 'messages', 'voicemails', 'ztp', 'stripe', 'transcriptions', 'dialer', 'webhooks'],
                 'balance' => 'auto',
                 'processes' => 8,
                 'tries' => 3,

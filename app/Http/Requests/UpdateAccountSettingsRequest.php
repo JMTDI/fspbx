@@ -2,7 +2,10 @@
 
 namespace App\Http\Requests;
 
+use App\Services\Settings\AccountSettingsSchema;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Support\Localization\ValidationMessages;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Auth;
 
@@ -15,7 +18,9 @@ class UpdateAccountSettingsRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return Auth::check();
+        return Auth::check()
+            && userCheckPermission('account_settings_list_view')
+            && $this->input('domain_uuid') === session('domain_uuid');
     }
 
     public function rules(): array
@@ -37,21 +42,52 @@ class UpdateAccountSettingsRequest extends FormRequest
                 'present',
                 'boolean',
             ],
-            'updatedSettings' => [
+            'settings' => [
                 'present',
                 'array',
             ],
-            'newSettings' => [
-                'present',
-                'array',
+            'settings.*' => [
+                'nullable',
+                'string',
             ],
         ];
+    }
+
+    /**
+     * Validate the submitted settings map against the account settings
+     * schema: every key must be a known field, and a value for a field
+     * backed by a fixed list (e.g. language) must be one of that list's
+     * values. Open fields (e.g. time_zone) are only checked as strings.
+     */
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            $schema = app(AccountSettingsSchema::class);
+            $keys = collect($schema->fields())->pluck('key')->all();
+            $allowed = $schema->allowedValues();
+
+            foreach ((array) $this->input('settings', []) as $key => $value) {
+                if (! in_array($key, $keys, true)) {
+                    $validator->errors()->add("settings.{$key}", __('Unknown setting.'));
+                    continue;
+                }
+
+                if ($value === null || $value === '') {
+                    continue;
+                }
+
+                if (isset($allowed[$key]) && ! in_array($value, $allowed[$key], true)) {
+                    $validator->errors()->add("settings.{$key}", __('The selected value is invalid.'));
+                }
+            }
+        });
     }
 
 
     public function messages(): array
     {
         return [
+            ...ValidationMessages::common(),
         ];
     }
 
@@ -85,5 +121,22 @@ class UpdateAccountSettingsRequest extends FormRequest
         $input = preg_replace('/[^\x20-\x7E]/', '', $input);
 
         return $input;
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'domain_uuid' => __('Account'),
+            'domain_name' => __('Domain'),
+            'domain_description' => __('Account Name'),
+            'domain_enabled' => __('Account Status'),
+            'settings' => __('Settings'),
+            'settings.*' => __('Setting'),
+            'settings.time_zone' => __('Time Zone'),
+            'settings.language' => __('Language'),
+            'settings.menu' => __('Account Menu'),
+            'settings.line_display_name_format' => __('Line Display Name'),
+            'settings.blf_label_format' => __('BLF Label'),
+        ];
     }
 }

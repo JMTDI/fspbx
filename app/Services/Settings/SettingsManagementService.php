@@ -6,6 +6,8 @@ use App\Models\DefaultSettings;
 use App\Models\Domain;
 use App\Models\DomainSettings;
 use App\Models\FusionCache;
+use App\Services\FlagFeature;
+use App\Services\FlagRuntimeService;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -24,6 +26,20 @@ class SettingsManagementService
         'text' => 'Text',
         'uuid' => 'UUID',
     ];
+
+    public static function typeLabels(): array
+    {
+        return [
+            'array' => __('Array'),
+            'boolean' => __('Boolean'),
+            'code' => __('Code'),
+            'dir' => __('Dir'),
+            'name' => __('Name'),
+            'numeric' => __('Numeric'),
+            'text' => __('Text'),
+            'uuid' => __('UUID'),
+        ];
+    }
 
     public function effectiveDomainSettings(Domain $domain, array $filters = [], ?string $sort = null, int $page = 1, int $perPage = 50): LengthAwarePaginator
     {
@@ -286,6 +302,7 @@ class SettingsManagementService
     public function saveDefault(array $data, ?DefaultSettings $setting = null): DefaultSettings
     {
         return DB::transaction(function () use ($data, $setting) {
+            $wasFlagSetting = FlagFeature::isSetting($setting);
             $setting ??= new DefaultSettings();
             $setting->forceFill([
                 'default_setting_uuid' => $setting->default_setting_uuid ?: Str::uuid()->toString(),
@@ -297,6 +314,10 @@ class SettingsManagementService
                 'default_setting_enabled' => (bool) $data['default_setting_enabled'],
                 'default_setting_description' => $data['default_setting_description'] ?? null,
             ])->save();
+
+            if ($wasFlagSetting || FlagFeature::isSetting($setting)) {
+                app(FlagRuntimeService::class)->reconcile();
+            }
 
             $this->applySettingSideEffects('default', [
                 'category' => $setting->default_setting_category,
@@ -340,20 +361,26 @@ class SettingsManagementService
 
     public function toggleDefault(array $uuids): int
     {
-        $settings = DefaultSettings::query()->whereIn('default_setting_uuid', $uuids)->get();
-        $settings->each(function (DefaultSettings $setting) {
-            $setting->default_setting_enabled = ! $this->boolValue($setting->default_setting_enabled);
-            $setting->save();
+        return DB::transaction(function () use ($uuids) {
+            $settings = DefaultSettings::query()->whereIn('default_setting_uuid', $uuids)->get();
+            $settings->each(function (DefaultSettings $setting) {
+                $setting->default_setting_enabled = ! $this->boolValue($setting->default_setting_enabled);
+                $setting->save();
+            });
+
+            if ($settings->contains(fn ($setting) => FlagFeature::isSetting($setting))) {
+                app(FlagRuntimeService::class)->reconcile();
+            }
+
+            $settings->each(fn (DefaultSettings $setting) => $this->applySettingSideEffects('default', [
+                'category' => $setting->default_setting_category,
+                'subcategory' => $setting->default_setting_subcategory,
+                'name' => $setting->default_setting_name,
+                'value' => $setting->default_setting_value,
+            ]));
+
+            return $settings->count();
         });
-
-        $settings->each(fn (DefaultSettings $setting) => $this->applySettingSideEffects('default', [
-            'category' => $setting->default_setting_category,
-            'subcategory' => $setting->default_setting_subcategory,
-            'name' => $setting->default_setting_name,
-            'value' => $setting->default_setting_value,
-        ]));
-
-        return $settings->count();
     }
 
     public function toggleDomain(Domain $domain, array $uuids): int
@@ -382,19 +409,25 @@ class SettingsManagementService
 
     public function deleteDefaults(array $uuids): int
     {
-        $settings = DefaultSettings::query()->whereIn('default_setting_uuid', $uuids)->get();
-        $count = $settings->count();
+        return DB::transaction(function () use ($uuids) {
+            $settings = DefaultSettings::query()->whereIn('default_setting_uuid', $uuids)->get();
+            $count = $settings->count();
 
-        DefaultSettings::query()->whereIn('default_setting_uuid', $settings->pluck('default_setting_uuid'))->delete();
+            DefaultSettings::query()->whereIn('default_setting_uuid', $settings->pluck('default_setting_uuid'))->delete();
 
-        $settings->each(fn (DefaultSettings $setting) => $this->applySettingSideEffects('default', [
-            'category' => $setting->default_setting_category,
-            'subcategory' => $setting->default_setting_subcategory,
-            'name' => $setting->default_setting_name,
-            'value' => $setting->default_setting_value,
-        ]));
+            if ($settings->contains(fn ($setting) => FlagFeature::isSetting($setting))) {
+                app(FlagRuntimeService::class)->reconcile();
+            }
 
-        return $count;
+            $settings->each(fn (DefaultSettings $setting) => $this->applySettingSideEffects('default', [
+                'category' => $setting->default_setting_category,
+                'subcategory' => $setting->default_setting_subcategory,
+                'name' => $setting->default_setting_name,
+                'value' => $setting->default_setting_value,
+            ]));
+
+            return $count;
+        });
     }
 
     public function revertDomain(Domain $domain, array $uuids): int
@@ -612,7 +645,7 @@ class SettingsManagementService
             'category_label' => $this->formatCategory((string) $category),
             'subcategory' => $subcategory,
             'type' => $name,
-            'type_label' => self::TYPE_OPTIONS[strtolower((string) $name)] ?? ucfirst((string) $name),
+            'type_label' => self::typeLabels()[strtolower((string) $name)] ?? ucfirst((string) $name),
             'default_value' => $default?->default_setting_value,
             'override_value' => $override?->domain_setting_value,
             'effective_value' => $override ? $override->domain_setting_value : $default?->default_setting_value,
@@ -620,7 +653,7 @@ class SettingsManagementService
             'override_enabled' => $override ? $this->boolValue($override->domain_setting_enabled) : null,
             'enabled' => $override ? $this->boolValue($override->domain_setting_enabled) : $this->boolValue($default?->default_setting_enabled),
             'source' => $override ? ($default ? 'override' : 'custom') : 'default',
-            'source_label' => $override ? ($default ? 'Domain Override' : 'Domain Only') : 'Default',
+            'source_label' => $override ? ($default ? __('Domain Override') : __('Domain Only')) : __('Default'),
             'description' => $override?->domain_setting_description ?? $default?->default_setting_description,
             'order' => $override?->domain_setting_order ?? $default?->default_setting_order,
             'is_secret' => $this->isSecret((string) $subcategory),
@@ -648,7 +681,7 @@ class SettingsManagementService
             'category_label' => $this->formatCategory((string) $row->default_setting_category),
             'subcategory' => $row->default_setting_subcategory,
             'type' => $row->default_setting_name,
-            'type_label' => self::TYPE_OPTIONS[strtolower((string) $row->default_setting_name)] ?? ucfirst((string) $row->default_setting_name),
+            'type_label' => self::typeLabels()[strtolower((string) $row->default_setting_name)] ?? ucfirst((string) $row->default_setting_name),
             'value' => $row->default_setting_value,
             'enabled' => $this->boolValue($row->default_setting_enabled),
             'description' => $row->default_setting_description,

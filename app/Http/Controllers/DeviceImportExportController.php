@@ -34,7 +34,7 @@ class DeviceImportExportController extends Controller
             if (! $file) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['file' => ['Please select a CSV file.']],
+                    'errors' => ['file' => [__('Please select a CSV file.')]],
                 ], 422);
             }
 
@@ -52,8 +52,9 @@ class DeviceImportExportController extends Controller
                     'success' => false,
                     'errors' => [
                         'server' => [
-                            'Template and key template assignments are selected after upload. Remove these columns: '
-                                . implode(', ', $forbiddenHeadings),
+                            __('Template and key template assignments are selected after upload. Remove these columns: :columns', [
+                                'columns' => implode(', ', $forbiddenHeadings),
+                            ]),
                         ],
                     ],
                 ], 422);
@@ -66,7 +67,11 @@ class DeviceImportExportController extends Controller
                 $errors = [];
                 foreach ($import->failures() as $failure) {
                     foreach ($failure->errors() as $message) {
-                        $errors[] = "Row {$failure->row()}, '{$failure->attribute()}': {$message}";
+                        $errors[] = __("Row :row, ':attribute': :message", [
+                            'row' => $failure->row(),
+                            'attribute' => $failure->attribute(),
+                            'message' => $message,
+                        ]);
                     }
                 }
 
@@ -122,7 +127,7 @@ class DeviceImportExportController extends Controller
                     $normalized = strtolower(preg_replace('/[^0-9a-f]/i', '', (string) $value));
 
                     if (strlen($normalized) !== 12) {
-                        $fail('The MAC address is invalid.');
+                        $fail(__('The MAC address is invalid.'));
                     }
                 },
             ],
@@ -146,7 +151,7 @@ class DeviceImportExportController extends Controller
 
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => [count($validated['items']) . ' devices imported successfully.']],
+                'messages' => ['success' => [__(':count devices imported successfully.', ['count' => count($validated['items'])])]],
             ], 200);
         } catch (\InvalidArgumentException $e) {
             DB::rollBack();
@@ -246,7 +251,7 @@ class DeviceImportExportController extends Controller
                 ->first();
 
             if (! $template) {
-                throw new \InvalidArgumentException('Selected template was not found.');
+                throw new \InvalidArgumentException(__('Selected template was not found.'));
             }
 
             return [
@@ -281,7 +286,7 @@ class DeviceImportExportController extends Controller
         }
 
         if (! userCheckPermission('device_key_template_assign')) {
-            throw new \InvalidArgumentException('Access denied for assigning key templates.');
+            throw new \InvalidArgumentException(__('Access denied for assigning key templates.'));
         }
 
         $template = DeviceKeyTemplate::query()
@@ -290,7 +295,7 @@ class DeviceImportExportController extends Controller
             ->first();
 
         if (! $template) {
-            throw new \InvalidArgumentException('Selected key template was not found.');
+            throw new \InvalidArgumentException(__('Selected key template was not found.'));
         }
 
         return $template->device_key_template_uuid;
@@ -311,10 +316,10 @@ class DeviceImportExportController extends Controller
             'server_address_secondary' => get_domain_setting('server_address_secondary', $domainUuid),
             'outbound_proxy_primary' => get_domain_setting('outbound_proxy_primary', $domainUuid),
             'outbound_proxy_secondary' => get_domain_setting('outbound_proxy_secondary', $domainUuid),
-            'display_name' => $extension->extension,
+            'display_name' => null,
             'user_id' => $extension->extension,
             'auth_id' => $extension->extension,
-            'label' => $extension->extension,
+            'label' => null,
             'password' => $extension->password,
             'sip_port' => get_domain_setting('line_sip_port', $domainUuid),
             'sip_transport' => get_domain_setting('line_sip_transport', $domainUuid),
@@ -337,6 +342,11 @@ class DeviceImportExportController extends Controller
 
         $linePayload['device_uuid'] = $device->device_uuid;
         $linePayload['device_line_uuid'] = $existingLine?->device_line_uuid;
+
+        // Re-importing the same extension keeps a name typed on the line.
+        if ($existingLine && (string) $existingLine->auth_id === (string) $linePayload['auth_id']) {
+            unset($linePayload['display_name'], $linePayload['label']);
+        }
 
         $line = $existingLine ?: new DeviceLines();
         $line->fill($linePayload);

@@ -3,9 +3,11 @@
 namespace App\Exceptions;
 
 use Throwable;
+use App\Http\Middleware\SetApplicationLocale;
 use Illuminate\Http\Request;
 use App\Data\Api\V1\ErrorData;
 use App\Data\Api\V1\ErrorResponseData;
+use App\Services\EmailDeliveryFailureReporter;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Validation\ValidationException;
 
@@ -14,11 +16,32 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 
 class Handler extends ExceptionHandler
 {
     public function register(): void
     {
+        // Keep the original exception for queue retries and Horizon, but log
+        // expected mail delivery errors once without Laravel's stack trace.
+        $this->reportable(function (TransportExceptionInterface $e) {
+            $this->container->make(EmailDeliveryFailureReporter::class)->report($e);
+
+            return false;
+        });
+
+        // CSRF and throttling can stop a web request before locale middleware runs.
+        // Keep Laravel's response/status/headers; only resolve its display language.
+        $this->renderable(function (HttpExceptionInterface $e, Request $request) {
+            if (in_array($e->getStatusCode(), [419, 429], true) && ! $request->is('api/*')) {
+                app(SetApplicationLocale::class)->handle($request, fn () => null);
+            }
+
+            return null;
+        });
+
         // 1) Validation (FormRequest / validator)
         $this->renderable(function (ValidationException $e, Request $request) {
             if (! $request->is('api/v1/*')) return null;
@@ -33,7 +56,6 @@ class Handler extends ExceptionHandler
                     'message' => $message,
                     'code'    => 'invalid_parameter',
                     'param'   => $param,
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -41,7 +63,7 @@ class Handler extends ExceptionHandler
         });
 
         // 2) Authorization (policies/gates OR FormRequest->authorize() = false)
-        $this->renderable(function (AuthorizationException $e, Request $request) {
+        $this->renderable(function (AuthorizationException | AccessDeniedHttpException $e, Request $request) {
             if (! $request->is('api/v1/*')) return null;
 
             $payload = ErrorResponseData::from([
@@ -49,7 +71,6 @@ class Handler extends ExceptionHandler
                     'type'    => 'invalid_request_error',
                     'message' => $e->getMessage() ?: 'Forbidden.',
                     'code'    => 'forbidden',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -65,7 +86,6 @@ class Handler extends ExceptionHandler
                     'type'    => 'authentication_error',
                     'message' => 'Unauthenticated.',
                     'code'    => 'unauthenticated',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -81,7 +101,6 @@ class Handler extends ExceptionHandler
                     'type'    => 'forbidden_method',
                     'message' => $e->getMessage(),
                     'code'    => 'forbidden',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -102,7 +121,6 @@ class Handler extends ExceptionHandler
                     'message' => "{$resource} not found.",
                     'code'    => 'resource_missing',
                     'param'   => '',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -120,7 +138,6 @@ class Handler extends ExceptionHandler
                     'message' => "Resource not found.",
                     'code'    => 'resource_not_found',
                     'param'   => '',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -137,7 +154,6 @@ class Handler extends ExceptionHandler
                     'message' => $e->getMessage(),
                     'code'    => $e->error_code,
                     'param'   => $e->param,
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 
@@ -148,13 +164,14 @@ class Handler extends ExceptionHandler
         $this->renderable(function (Throwable $e, Request $request) {
             if (! $request->is('api/v1/*')) return null;
 
-            logger()->error('Unhandled API exception', ['exception' => $e]);
+            if (! $e instanceof TransportExceptionInterface) {
+                logger()->error('Unhandled API exception', ['exception' => $e]);
+            }
 
             $payload = ErrorResponseData::from([
                 'error' => ErrorData::from([
                     'type'    => 'api_error',
                     'message' => 'An unexpected error occurred.',
-                    'doc_url' => 'https://www.fspbx.com/docs/api/v1/errors/',
                 ]),
             ]);
 

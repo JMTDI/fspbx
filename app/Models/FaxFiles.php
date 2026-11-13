@@ -55,17 +55,18 @@ class FaxFiles extends Model
 
         return Carbon::createFromTimestamp($this->fax_epoch, 'UTC')
             ->setTimezone($timeZone)
-            ->format('g:i:s A M d, Y');
+            ->locale(app()->getLocale())
+            ->translatedFormat('g:i:s A M d, Y');
     }
 
     public function getFaxCallerIdNumberFormattedAttribute()
     {
-        return formatPhoneNumber($this->fax_caller_id_number, 'US', PhoneNumberFormat::NATIONAL);
+        return app(\App\Services\PhoneNumberService::class)->formatForDomain($this->fax_caller_id_number, $this->domain_uuid, PhoneNumberFormat::NATIONAL);
     }
 
     public function getFaxDestinationFormattedAttribute()
     {
-        return formatPhoneNumber($this->fax_destination, 'US', PhoneNumberFormat::NATIONAL);
+        return app(\App\Services\PhoneNumberService::class)->formatForDomain($this->fax_destination, $this->domain_uuid, PhoneNumberFormat::NATIONAL);
     }
 
     /**

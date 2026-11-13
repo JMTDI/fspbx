@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use App\Models\CallCenterQueues;
 use App\Services\CdrDataService;
+use App\Services\PhoneNumberService;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Storage;
 use App\Services\CallRecordingUrlService;
@@ -82,6 +83,7 @@ class CdrsController extends Controller
                     'current_page' => route('cdrs.index'),
                     'export' => route('cdrs.export'),
                     'item_options' => route('cdrs.item.options'),
+                    'sip_trace' => route('cdrs.sip-trace'),
                     'data_route' => route('cdrs.data'),
                     'entities_route' => route('cdrs.entities'),
                     'call_recording_route' => route('cdrs.recording.options'),
@@ -123,13 +125,13 @@ class CdrsController extends Controller
                     'caller_id_name',
                     'caller_id_number',
                     'caller_destination',
+                    'destination_number',
                     'start_epoch',
                     'answer_epoch',
                     'end_epoch',
                     'duration',
                     'billsec',
                     'waitsec',
-                    'call_flow',
                     'voicemail_message',
                     'missed_call',
                     'hangup_cause',
@@ -137,8 +139,13 @@ class CdrsController extends Controller
                     'call_center_queue_uuid',
                     'cc_cancel_reason',
                     'cc_cause',
+                    'cc_side',
+                    'cc_agent_bridged',
                     'sip_hangup_disposition',
                     'status',
+                    'record_name',
+                    'record_path',
+                    ...$this->cdrDataService->timelineSelectColumns(),
 
                 ])
                 ->first();
@@ -147,12 +154,26 @@ class CdrsController extends Controller
 
             // If item doesn't exist throw and error 
             if (!$item) {
-                throw new \Exception("Failed to fetch item details. Item not found");
+                throw new \Exception(__("Failed to fetch item details. Item not found"));
             }
 
             $this->item_domain_uuid = $item->domain_uuid;
 
-            $item->call_flow = $this->cdrDataService->buildCallFlowSummary($item);
+            $item->callback_timeline = $this->cdrDataService->isCallbackCdr($item);
+
+            $item->append(['answer_time', 'end_time']);
+
+            // Phone-number steps show the dialed number in the account's national format.
+            $item->call_flow = $this->cdrDataService->buildCallFlowSummary($item)
+                ->map(function ($row) use ($item) {
+                    if (in_array($row['dialplan_app_type'] ?? null, ['inbound_call', 'outbound_call', 'misc_destination'], true)) {
+                        $row['destination_number_formatted'] = app(PhoneNumberService::class)->formatForDomain(
+                            (string) $row['destination_number'],
+                            $item->domain_uuid
+                        );
+                    }
+                    return $row;
+                });
 
             // logger($callFlowSummary->all());
 
@@ -170,7 +191,7 @@ class CdrsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -208,7 +229,7 @@ class CdrsController extends Controller
 
             // If item doesn't exist throw and error 
             if (!$item) {
-                throw new \Exception("Failed to fetch item details. Item not found");
+                throw new \Exception(__("Failed to fetch item details. Item not found"));
             }
 
             // Add a temporary URL for the audio file (S3 or Local)
@@ -268,7 +289,7 @@ class CdrsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -290,7 +311,7 @@ class CdrsController extends Controller
 
         $entities = [
             [
-                'groupLabel' => 'Extensions',
+                'groupLabel' => __('Extensions'),
                 'groupOptions' => $extensions->map(function ($extension) {
                     return [
                         'value' => $extension->extension_uuid,
@@ -301,7 +322,7 @@ class CdrsController extends Controller
                 })->toArray(),
             ],
             [
-                'groupLabel' => 'Contact Centers',
+                'groupLabel' => __('Contact Centers'),
                 'groupOptions' => $queues->map(function ($queue) {
                     return [
                         'value' => $queue->call_center_queue_uuid,
@@ -328,7 +349,7 @@ class CdrsController extends Controller
         } catch (ModelNotFoundException $e) {
             // Handle the case when the model is not found
             // For example, return a response or redirect
-            return response()->json(['error' => 'Record not found'], 404);
+            return response()->json(['error' => __('Record not found')], 404);
         }
 
         //-----For local files------
@@ -532,20 +553,20 @@ class CdrsController extends Controller
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['Report is being generated in the background. We\'ll email you a link when it\'s ready to download.']],
+                'messages' => ['success' => [__('Report is being generated in the background. We\'ll email you a link when it\'s ready to download.')]],
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage());
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to export items']]
+                'errors' => ['server' => [__('Failed to export items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
 
         return response()->json([
             'success' => false,
-            'errors' => ['server' => ['Failed to export']]
+            'errors' => ['server' => [__('Failed to export')]]
         ], 500); // 500 Internal Server Error for any other errors
     }
 
@@ -554,6 +575,8 @@ class CdrsController extends Controller
         $permissions = [];
         $permissions['all_cdr_view'] = userCheckPermission('xml_cdr_domain');
         $permissions['cdr_mos_view'] = userCheckPermission('xml_cdr_mos');
+        $permissions['cdr_pcap'] = \App\Services\HomerApiService::canView()
+            && app(\App\Services\HomerApiService::class)->settings()->enabled;
         $permissions['call_recording_play'] = userCheckPermission('call_recording_play');
         $permissions['call_recording_download'] = userCheckPermission('call_recording_download');
         $permissions['transcription_summary'] = userCheckPermission('transcription_summary');

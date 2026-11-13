@@ -2,7 +2,10 @@
 
 namespace App\Http\Requests;
 
+use App\Services\PhoneNumberService;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
+use libphonenumber\PhoneNumberFormat;
 
 class BulkUpdateExtensionRequest extends FormRequest
 {
@@ -27,6 +30,8 @@ class BulkUpdateExtensionRequest extends FormRequest
             'call_timeout' => ['nullable', 'string'],
             'outbound_caller_id_number' => ['nullable', 'string'],
             'emergency_caller_id_number' => ['nullable', 'string'],
+            'emergency_location' => ['sometimes', 'nullable', 'string', 'max:60', 'not_regex:/[$\x00-\x1f\x7f]/u',
+                Rule::prohibitedIf(! userCheckPermission('emergency_caller_id_number'))],
 
             'forward_all_enabled' => ['nullable', 'string'],
             'forward_all_action' => ['required_if:forward_all_enabled,true'],
@@ -130,6 +135,10 @@ class BulkUpdateExtensionRequest extends FormRequest
 
     public function prepareForValidation(): void
     {
+        if ($this->exists('emergency_location') && is_string($this->input('emergency_location'))) {
+            $this->merge(['emergency_location' => trim($this->input('emergency_location'))]);
+        }
+
         $normalizeBoolean = function ($value) {
             if (is_bool($value)) {
                 return $value ? 'true' : 'false';
@@ -166,6 +175,19 @@ class BulkUpdateExtensionRequest extends FormRequest
             $this->merge([
                 'voicemail_mail_to' => strtolower((string) $this->input('voicemail_mail_to')),
             ]);
+        }
+
+        $phoneNumbers = app(PhoneNumberService::class);
+        foreach (['outbound_caller_id_number', 'emergency_caller_id_number'] as $field) {
+            if (array_key_exists($field, $this->all())) {
+                $this->merge([
+                    $field => $phoneNumbers->formatForDomain(
+                        $this->input($field),
+                        session('domain_uuid'),
+                        PhoneNumberFormat::E164
+                    ),
+                ]);
+            }
         }
 
         $normalizePhoneLoose = function (?string $value): ?string {

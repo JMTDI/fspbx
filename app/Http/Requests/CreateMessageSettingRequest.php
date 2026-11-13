@@ -4,11 +4,12 @@ namespace App\Http\Requests;
 
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Auth;
-use libphonenumber\PhoneNumberFormat;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Support\Localization\ValidationMessages;
 
 class CreateMessageSettingRequest extends FormRequest
 {
+    use Concerns\ValidatesMessageWebhookRouting;
     /**
      * Determine if the user is authorized to make this request.
      *
@@ -16,7 +17,7 @@ class CreateMessageSettingRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return Auth::check();
+        return \App\Services\Messaging\MessageSettingsAccess::canManage(session('domain_uuid'));
     }
 
     /**
@@ -29,15 +30,21 @@ class CreateMessageSettingRequest extends FormRequest
         // logger('validation');
         // logger(request()->all());
         return [
+            ...$this->webhookRules(),
+            'opt_out_enabled' => ['sometimes', 'boolean'],
             'destination' => [
                 'required',
+                'string',
             ],
             'carrier' => [
                 'nullable',
             ],
             'chatplan_detail_data' => [
                 'nullable',
+                Rule::exists('v_extensions', 'extension')->where('domain_uuid', session('domain_uuid')),
             ],
+            'allowed_extension_uuids' => ['sometimes', 'array'],
+            'allowed_extension_uuids.*' => ['uuid', 'distinct', Rule::exists('v_extensions', 'extension_uuid')->where('domain_uuid', session('domain_uuid'))],
             'email' => [
                 'nullable',
                 'email:rfc,dns'
@@ -48,6 +55,7 @@ class CreateMessageSettingRequest extends FormRequest
             ],
             'domain_uuid' => [
                 'required',
+                Rule::in([session('domain_uuid')]),
             ],
             'enabled' => [
                 'nullable',
@@ -58,6 +66,7 @@ class CreateMessageSettingRequest extends FormRequest
     public function messages(): array
     {
         return [
+            ...ValidationMessages::common(),
             // 'device_profile_uuid.required' => 'Profile is required',
             // 'device_template.required' => 'Template is required'
         ];
@@ -75,10 +84,19 @@ class CreateMessageSettingRequest extends FormRequest
             $merge['enabled'] = "true";
         }
 
-        if ($this->has('destination')) {
-            $merge['destination'] = formatPhoneNumber($this->input('destination'),'US', PhoneNumberFormat::E164);
-        }
-
         $this->merge($merge);
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'destination' => __('Phone Number'),
+            'carrier' => __('Message Provider'),
+            'chatplan_detail_data' => __('Extension'),
+            'email' => __('Email'),
+            'description' => __('Description'),
+            'domain_uuid' => __('Account'),
+            'enabled' => __('Enabled'),
+        ];
     }
 }

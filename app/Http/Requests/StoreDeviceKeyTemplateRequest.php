@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use App\Support\Localization\ValidationMessages;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
@@ -20,7 +21,7 @@ class StoreDeviceKeyTemplateRequest extends FormRequest
             'description' => ['nullable', 'string'],
             'enabled' => ['required', Rule::in(['true', 'false'])],
             'keys' => ['nullable', 'array'],
-            'keys.*.key_area' => ['nullable', 'string', Rule::in(['main', 'multi_purpose', 'expansion'])],
+            'keys.*.key_area' => ['nullable', 'string', Rule::in(['main', 'side', 'multi_purpose', 'expansion'])],
             'keys.*.key_index' => ['required', 'integer', 'min:1'],
             'keys.*.key_type' => ['nullable', 'string', 'max:50'],
             'keys.*.key_value' => ['nullable', 'string', 'max:64'],
@@ -48,13 +49,33 @@ class StoreDeviceKeyTemplateRequest extends FormRequest
 
                 $composite = $area . ':' . $idx;
                 if (isset($indexes[$composite])) {
-                    $validator->errors()->add("keys.{$i}.key_index", 'Duplicate key.');
+                    $validator->errors()->add("keys.{$i}.key_index", __('Duplicate key.'));
                     continue;
                 }
 
                 $indexes[$composite] = true;
             }
         });
+    }
+
+    public function messages(): array
+    {
+        return ValidationMessages::common();
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'name' => __('Name'),
+            'description' => __('Description'),
+            'enabled' => __('Enabled'),
+            'keys' => __('Keys'),
+            'keys.*.key_area' => __('Key area'),
+            'keys.*.key_index' => __('Key number'),
+            'keys.*.key_type' => __('Key type'),
+            'keys.*.key_value' => __('Key value'),
+            'keys.*.key_label' => __('Key label'),
+        ];
     }
 
     protected function prepareForValidation(): void

@@ -11,6 +11,9 @@ use App\Models\FusionCache;
 use Illuminate\Support\Str;
 use App\Traits\ChecksLimits;
 use Illuminate\Http\Request;
+use App\Models\FlagOverride;
+use App\Observers\RingGroupObserver;
+use App\Services\FlagService;
 use App\Services\RingGroupService;
 use Illuminate\Support\Facades\DB;
 use Spatie\QueryBuilder\QueryBuilder;
@@ -50,6 +53,8 @@ class RingGroupsController extends Controller
             return redirect('/');
         }
 
+        abort_unless(session('domain_uuid'), 403);
+
         return Inertia::render(
             $this->viewName,
             [
@@ -63,6 +68,7 @@ class RingGroupsController extends Controller
                     'item_options' => route('ring-groups.item.options'),
                     'bulk_delete' => route('ring-groups.bulk.delete'),
                     'select_all' => route('ring-groups.select.all'),
+                    'duplicate' => route('ring-groups.duplicate'),
                 ]
             ]
         );
@@ -73,11 +79,13 @@ class RingGroupsController extends Controller
      */
     public function getData()
     {
+        abort_unless(userCheckPermission('ring_group_view') && session('domain_uuid'), 403);
+
         $perPage = fspbx_pagination_per_page();
         $currentDomain = session('domain_uuid');
 
         $items = QueryBuilder::for(RingGroups::class)
-            // only voicemails in the current domain
+            // Only ring groups in the current account.
             ->where('domain_uuid', $currentDomain)
             ->select(
                 'ring_group_uuid',
@@ -135,31 +143,38 @@ class RingGroupsController extends Controller
 
     public function getItemOptions()
     {
+        $domain_uuid = session('domain_uuid');
+        $item_uuid = request('item_uuid');
+
+        abort_unless($domain_uuid && userCheckPermission($item_uuid ? 'ring_group_edit' : 'ring_group_add'), 403);
+        abort_if(request('domain_uuid') !== null && request('domain_uuid') !== $domain_uuid, 403);
+
+        // Resolve ownership before loading editor options or entering the generic error handler.
+        $item = $item_uuid
+            ? $this->model::where('domain_uuid', $domain_uuid)->whereKey($item_uuid)->firstOrFail()
+            : $this->model;
+
         try {
-
-            $domain_uuid = request('domain_uuid') ?? session('domain_uuid');
-            $item_uuid = request('item_uuid'); // Retrieve item_uuid from the request
-
             $call_distributions = [
                 [
                     'value' => 'enterprise',
-                    'label' => 'Advanced',
+                    'label' => __('Advanced'),
                 ],
                 [
                     'value' => 'simultaneous',
-                    'label' => 'Simultaneous Ring',
+                    'label' => __('Simultaneous Ring'),
                 ],
                 [
                     'value' => 'sequence',
-                    'label' => 'Sequential Ring',
+                    'label' => __('Sequential Ring'),
                 ],
                 [
                     'value' => 'random',
-                    'label' => 'Random Ring',
+                    'label' => __('Random Ring'),
                 ],
                 [
                     'value' => 'rollover',
-                    'label' => 'Rollover',
+                    'label' => __('Rollover'),
                 ],
 
             ];
@@ -190,7 +205,7 @@ class RingGroupsController extends Controller
 
             $memberOptions = [
                 [
-                    'groupLabel' => 'Extensions',
+                    'groupLabel' => __('Extensions'),
                     'groupOptions' => $extensions->map(function ($extension) {
                         return [
                             'value' => $extension->extension_uuid,
@@ -202,7 +217,7 @@ class RingGroupsController extends Controller
                     })->toArray(),
                 ],
                 [
-                    'groupLabel' => 'Ring Groups',
+                    'groupLabel' => __('Ring Groups'),
                     'groupOptions' => $ringGroups->map(function ($group) {
                         return [
                             'value' => $group->ring_group_uuid,
@@ -226,9 +241,7 @@ class RingGroupsController extends Controller
 
             // Check if item_uuid exists to find an existing model
             if ($item_uuid) {
-                // Find existing item by item_uuid
-                $item = $this->model::where($this->model->getKeyName(), $item_uuid)
-                    ->with(['destinations' => function ($query) {
+                $item->load(['destinations' => function ($query) {
                         $query
                             ->leftJoin('v_extensions', function ($join) {
                                 $join->on('v_ring_group_destinations.destination_number', '=', 'v_extensions.extension')
@@ -252,14 +265,7 @@ class RingGroupsController extends Controller
                             // same deterministic order here
                             ->orderBy('v_ring_group_destinations.destination_delay', 'asc')
                             ->orderBy('v_ring_group_destinations.ring_group_destination_uuid', 'asc');
-                    }])
-
-                    ->first();
-
-                // If a model exists, use it; otherwise, create a new one
-                if (!$item) {
-                    throw new \Exception("Failed to fetch item details. Item not found");
-                }
+                    }]);
 
                 $item->append([
                     'timeout_target_uuid',
@@ -294,7 +300,6 @@ class RingGroupsController extends Controller
 
 
                 // Create a new model if item_uuid is not provided
-                $item = $this->model;
                 $item->ring_group_extension = $item->generateUniqueSequenceNumber();
 
                 $routes = array_merge($routes, [
@@ -324,12 +329,12 @@ class RingGroupsController extends Controller
 
             // Define the instructions for recording a voicemail greeting using a phone call
             $phoneCallInstructions = [
-                'Dial <strong>*732</strong> from your phone.',
-                'Enter the ring group extension number when prompted and press <strong>#</strong>.',
-                'Follow the prompts to record your greeting.',
+                __('Dial <strong>*732</strong> from your phone.'),
+                __('Enter the ring group extension number when prompted and press <strong>#</strong>.'),
+                __('Follow the prompts to record your greeting.'),
             ];
 
-            $sampleMessage = 'Thank you for contacting the Sales Department. Please hold the line; a representative will be with you shortly.';
+            $sampleMessage = __('Thank you for contacting the Sales Department. Please hold the line; a representative will be with you shortly.');
 
             $ring_back_tones = getRingBackTonesCollectionGrouped(session('domain_uuid'));
 
@@ -351,6 +356,11 @@ class RingGroupsController extends Controller
                 'sample_message' => $sampleMessage,
                 'greetings' => $greetingsArray,
                 'ring_back_tones' => $ring_back_tones,
+                'default_ring_time' => get_domain_setting('ring_group_ring_time', session('domain_uuid')) ?? '25',
+                'flag_options' => $permissions['manage_flags'] ? app(FlagService::class)->flagOptions($domain_uuid) : [],
+                'flag_overrides' => $permissions['manage_flags'] && $item->exists
+                    ? app(FlagService::class)->overrideFormRows($item->flagOverrides()->get(), $domain_uuid)
+                    : [],
                 // Define options for other fields as needed
             ];
             // logger($itemOptions);
@@ -364,7 +374,7 @@ class RingGroupsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -388,6 +398,7 @@ class RingGroupsController extends Controller
         $permissions['manage_missed_call'] = userCheckPermission('ring_group_missed_call');
         $permissions['manage_greeting'] = userCheckPermission('ring_group_prompt');
         $permissions['is_superadmin'] = isSuperAdmin();
+        $permissions['manage_flags'] = app(\App\Services\FlagFeature::class)->canAssign('ring_group_edit');
 
         return $permissions;
     }
@@ -420,7 +431,7 @@ class RingGroupsController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Ring group saved']],
+                'messages' => ['success' => [__('Ring group saved')]],
                 'ring_group_uuid' => $ringGroup->ring_group_uuid,
             ]);
         } catch (\Throwable $e) {
@@ -428,7 +439,7 @@ class RingGroupsController extends Controller
             logger('RingGroup update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while saving.']]
+                'messages' => ['error' => [__('Something went wrong while saving.')]]
             ], 500);
         }
     }
@@ -445,7 +456,7 @@ class RingGroupsController extends Controller
     {
         if (!userCheckPermission('ring_group_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -454,11 +465,23 @@ class RingGroupsController extends Controller
         $domain_uuid = session('domain_uuid');
         $domain_name = session('domain_name');
 
+        abort_unless($ringGroup->domain_uuid === $domain_uuid, 404);
+
         try {
             DB::transaction(function () use ($validated, $domain_uuid, $domain_name, $ringGroup) {
 
                 // Build model update payload (includes derived fields)
                 $updateData = app(RingGroupService::class)->buildUpdateData($validated, $domain_name);
+
+                if (array_key_exists('flag_overrides', $validated)) {
+                    app(FlagService::class)->syncOverrides(
+                        FlagOverride::OWNER_RING_GROUP,
+                        $ringGroup->ring_group_uuid,
+                        $domain_uuid,
+                        $validated['flag_overrides'] ?? [],
+                        $domain_name
+                    );
+                }
 
                 $ringGroup->update($updateData);
 
@@ -504,14 +527,19 @@ class RingGroupsController extends Controller
                 }
             });
 
+            if (array_key_exists('flag_overrides', $validated)) {
+                // A flag-only change leaves the ring group row clean, so the observer would not run.
+                (new RingGroupObserver())->generateDialPlanXML($ringGroup->fresh());
+            }
+
             return response()->json([
-                'messages' => ['success' => ['Ring group updated']]
+                'messages' => ['success' => [__('Ring group updated')]]
             ]);
         } catch (\Throwable $e) {
             logger('RingGroup update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while updating.']]
+                'messages' => ['error' => [__('Something went wrong while updating.')]]
             ], 500);
         }
     }
@@ -526,9 +554,11 @@ class RingGroupsController extends Controller
     {
         if (!userCheckPermission('ring_group_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
+
+        abort_unless(session('domain_uuid'), 403);
 
         try {
             DB::beginTransaction();
@@ -549,43 +579,43 @@ class RingGroupsController extends Controller
                     Dialplans::where('dialplan_uuid', $ringGroup->dialplan_uuid)->delete();
                 }
 
+                app(FlagService::class)->deleteOverrides(FlagOverride::OWNER_RING_GROUP, [$ringGroup->ring_group_uuid], $domain_uuid);
+
                 // Delete ring group itself
                 $ringGroup->delete();
             }
 
             // Reload XML from FreeSWITCH
-            $freeSwitchService = new FreeswitchEslService();
+            $freeSwitchService = app(FreeswitchEslService::class);
             $command = 'bgapi reloadxml';
             $result = $freeSwitchService->executeCommand($command);
 
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Selected ring group(s) were deleted successfully.']]
+                'messages' => ['success' => [__('Selected ring group(s) were deleted successfully.')]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('RingGroups bulkDelete error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting the selected ring group(s).']]
+                'messages' => ['error' => [__('An error occurred while deleting the selected ring group(s).')]]
             ], 500);
         }
     }
 
     public function selectAll()
     {
+        abort_unless(userCheckPermission('ring_group_view') && session('domain_uuid'), 403);
+
         try {
-            if (request()->get('showGlobal')) {
-                $uuids = $this->model::get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            } else {
-                $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
-                    ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            }
+            $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
+                ->pluck($this->model->getKeyName());
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
@@ -593,7 +623,7 @@ class RingGroupsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -606,6 +636,8 @@ class RingGroupsController extends Controller
      */
     public function duplicate(Request $request)
     {
+        abort_unless(session('domain_uuid'), 403);
+
         // 1. Validate Input
         $request->validate([
             'uuid' => 'required|uuid|exists:v_ring_groups,ring_group_uuid',
@@ -614,7 +646,7 @@ class RingGroupsController extends Controller
         // 2. Permission Check
         if (!userCheckPermission('ring_group_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -646,10 +678,21 @@ class RingGroupsController extends Controller
                 $newDestination->save();
             }
 
+            app(FlagService::class)->copyOverrides(
+                FlagOverride::OWNER_RING_GROUP,
+                $original->ring_group_uuid,
+                $newRingGroup->ring_group_uuid,
+                session('domain_uuid')
+            );
+            (new RingGroupObserver())->generateDialPlanXML($newRingGroup->fresh());
+
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Ring Group duplicated successfully', 'New Extension: ' . $newRingGroup->ring_group_extension]],
+                'messages' => ['success' => [
+                    __('Ring Group duplicated successfully'),
+                    __('New Extension: :extension', ['extension' => $newRingGroup->ring_group_extension]),
+                ]],
                 'ring_group_uuid' => $newRingGroup->ring_group_uuid
             ], 201);
         } catch (\Throwable $e) {
@@ -658,7 +701,7 @@ class RingGroupsController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to duplicate ring group.']]
+                'errors' => ['server' => [__('Failed to duplicate ring group.')]]
             ], 500);
         }
     }

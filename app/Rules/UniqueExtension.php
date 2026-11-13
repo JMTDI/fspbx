@@ -2,12 +2,15 @@
 
 namespace App\Rules;
 
+use App\Models\AiAgent;
 use App\Models\BusinessHour;
 use Closure;
 use App\Models\Faxes;
 use App\Models\IvrMenus;
 use App\Models\CallFlows;
 use App\Models\Extensions;
+use App\Models\DynamicRoute;
+use App\Models\PagingGroup;
 use App\Models\RingGroups;
 use App\Models\Voicemails;
 use App\Models\Conferences;
@@ -39,7 +42,7 @@ class UniqueExtension implements ValidationRule
     {
         // Add validation for 911 as a reserved value
         if ($value == '911') {
-            $fail('Extension 911 is reserved for emergency services and cannot be used.');
+            $fail(__('Extension 911 is reserved for emergency services and cannot be used.'));
             return;
         }
 
@@ -127,6 +130,27 @@ class UniqueExtension implements ValidationRule
             ->where('domain_uuid', $this->domainUuid)
             ->when($this->currentUuid, function ($query) {
                 return $query->where('uuid', '!=', $this->currentUuid);
+                });
+
+        $subqueries[] = AiAgent::select('extension')
+            ->where('extension', $value)
+            ->where('domain_uuid', $this->domainUuid)
+            ->when($this->currentUuid, function ($query) {
+                return $query->where('ai_agent_uuid', '!=', $this->currentUuid);
+            });
+
+        $subqueries[] = DynamicRoute::select('extension')
+            ->where('extension', $value)
+            ->where('domain_uuid', $this->domainUuid)
+            ->when($this->currentUuid, function ($query) {
+                return $query->where('dynamic_route_uuid', '!=', $this->currentUuid);
+            });
+
+        $subqueries[] = PagingGroup::select('extension')
+            ->where('extension', $value)
+            ->where('domain_uuid', $this->domainUuid)
+            ->when($this->currentUuid, function ($query) {
+                return $query->where('uuid', '!=', $this->currentUuid);
             });
 
         // Combine all subqueries using UNION
@@ -136,7 +160,7 @@ class UniqueExtension implements ValidationRule
         }
 
         if ($combinedQuery->exists()) {
-            $fail('This extension number is already in use.');
+            $fail(__('This extension number is already in use.'));
             return;
         }
     }

@@ -53,14 +53,14 @@ class CallBlockController extends Controller
             $callBlock = $service->save($request->validated(), $request->parsedAction());
 
             return response()->json([
-                'messages' => ['success' => ['Call block created successfully.']],
+                'messages' => ['success' => [__('Call block created successfully.')]],
                 'call_block_uuid' => $callBlock->call_block_uuid,
             ], 201);
         } catch (\Throwable $e) {
             logger('CallBlockController@store error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to create call block.']],
+                'messages' => ['error' => [__('Failed to create call block.')]],
             ], 500);
         }
     }
@@ -69,7 +69,7 @@ class CallBlockController extends Controller
     {
         if (! $this->canAccessCallBlock($call_block)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -77,13 +77,13 @@ class CallBlockController extends Controller
             $service->save($request->validated(), $request->parsedAction(), $call_block);
 
             return response()->json([
-                'messages' => ['success' => ['Call block updated successfully.']],
+                'messages' => ['success' => [__('Call block updated successfully.')]],
             ]);
         } catch (\Throwable $e) {
             logger('CallBlockController@update error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to update call block.']],
+                'messages' => ['error' => [__('Failed to update call block.')]],
             ], 500);
         }
     }
@@ -94,11 +94,11 @@ class CallBlockController extends Controller
         $sourceCdrUuid = $request->input('source_cdr_uuid');
 
         if ($itemUuid && ! userCheckPermission('call_block_edit')) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         if (! $itemUuid && ! userCheckPermission('call_block_add')) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         if ($itemUuid) {
@@ -108,7 +108,7 @@ class CallBlockController extends Controller
                 ->firstOrFail();
 
             if (! $this->canAccessCallBlock($item)) {
-                return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+                return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
             }
         } else {
             $item = new CallBlock([
@@ -139,7 +139,7 @@ class CallBlockController extends Controller
     public function getData(Request $request)
     {
         if (! $this->canViewRecords()) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         return $this->scopedCallBlocks($request)
@@ -177,7 +177,7 @@ class CallBlockController extends Controller
     public function selectAll(Request $request): JsonResponse
     {
         if (! $this->canViewRecords()) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         $items = $this->scopedCallBlocks($request)
@@ -187,19 +187,19 @@ class CallBlockController extends Controller
 
         return response()->json([
             'items' => $items,
-            'messages' => ['success' => ['All matching call blocks selected.']],
+            'messages' => ['success' => [__('All matching call blocks selected.')]],
         ]);
     }
 
     public function bulkDelete(Request $request, CallBlockService $service): JsonResponse
     {
         if (! userCheckPermission('call_block_delete')) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         $uuids = $this->validatedUuids($request);
         if (empty($uuids)) {
-            return response()->json(['messages' => ['error' => ['No call blocks selected.']]], 422);
+            return response()->json(['messages' => ['error' => [__('No call blocks selected.')]]], 422);
         }
 
         $items = $this->scopedCallBlocks(new Request())
@@ -209,19 +209,19 @@ class CallBlockController extends Controller
         $deleted = $service->delete($items);
 
         return response()->json([
-            'messages' => ['success' => ["Deleted {$deleted} call block(s)."]],
+            'messages' => ['success' => [__('Deleted :count call block(s).', ['count' => $deleted])]],
         ]);
     }
 
     public function bulkToggle(Request $request, CallBlockService $service): JsonResponse
     {
         if (! userCheckPermission('call_block_edit')) {
-            return response()->json(['messages' => ['error' => ['Access denied.']]], 403);
+            return response()->json(['messages' => ['error' => [__('Access denied.')]]], 403);
         }
 
         $uuids = $this->validatedUuids($request);
         if (empty($uuids)) {
-            return response()->json(['messages' => ['error' => ['No call blocks selected.']]], 422);
+            return response()->json(['messages' => ['error' => [__('No call blocks selected.')]]], 422);
         }
 
         $items = $this->scopedCallBlocks(new Request())
@@ -231,7 +231,7 @@ class CallBlockController extends Controller
         $service->toggle($items);
 
         return response()->json([
-            'messages' => ['success' => ['Call block status toggled.']],
+            'messages' => ['success' => [__('Call block status toggled.')]],
         ]);
     }
 
@@ -265,13 +265,9 @@ class CallBlockController extends Controller
                         return;
                     }
 
-                    // Numeric-only: remove all non-digits
-                    $digits = preg_replace('/\D+/', '', $s);
-
-                    // If 11 digits and starts with 1 (covers +1 once stripped), drop leading 1
-                    if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
-                        $digits = substr($digits, 1);
-                    }
+                    // Resolve the national digits using the account or explicit country code.
+                    $parts = app(\App\Services\PhoneNumberService::class)->destinationParts($s, null, session('domain_uuid'));
+                    $digits = preg_replace('/\D+/', '', $parts['destination_number']);
 
                     if ($digits === '') {
                         return;
@@ -334,7 +330,7 @@ class CallBlockController extends Controller
             ->all();
 
         if (userCheckPermission('call_block_view_all_records')) {
-            array_unshift($options, ['label' => 'All extensions', 'value' => '']);
+            array_unshift($options, ['label' => __('All extensions'), 'value' => '']);
         }
 
         return $options;
@@ -343,12 +339,12 @@ class CallBlockController extends Controller
     private function actionOptions(): array
     {
         $options = [
-            ['label' => 'Reject', 'value' => 'reject:'],
-            ['label' => 'Busy', 'value' => 'busy:'],
+            ['label' => __('Reject'), 'value' => 'reject:'],
+            ['label' => __('Busy'), 'value' => 'busy:'],
         ];
 
         if (userCheckPermission('call_block_voicemail')) {
-            $options[] = ['label' => 'Voicemail', 'value' => 'voicemail'];
+            $options[] = ['label' => __('Voicemail'), 'value' => 'voicemail'];
         }
 
         return $options;
@@ -375,7 +371,7 @@ class CallBlockController extends Controller
             ->map(fn (Voicemails $voicemail) => [
                 'label' => $voicemail->extension
                     ? $voicemail->extension->name_formatted
-                    : $voicemail->voicemail_id . ' - Team Voicemail',
+                    : __(':id - Team Voicemail', ['id' => $voicemail->voicemail_id]),
                 'value' => (string) $voicemail->voicemail_id,
             ])
             ->values()
@@ -409,10 +405,9 @@ class CallBlockController extends Controller
             $callerIdName = '';
         }
 
-        $description = 'Created from call history';
-        if ($cdr->start_date && $cdr->start_time) {
-            $description .= ' on ' . $cdr->start_date . ' at ' . $cdr->start_time;
-        }
+        $description = ($cdr->start_date && $cdr->start_time)
+            ? __('Created from call history on :date at :time', ['date' => $cdr->start_date, 'time' => $cdr->start_time])
+            : __('Created from call history');
 
         $item->forceFill([
             'call_block_direction' => $direction,

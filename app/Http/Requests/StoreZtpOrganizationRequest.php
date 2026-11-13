@@ -2,8 +2,11 @@
 
 namespace App\Http\Requests;
 
+use App\Support\Localization\ValidationMessages;
+
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreZtpOrganizationRequest extends FormRequest
 {
@@ -19,6 +22,7 @@ class StoreZtpOrganizationRequest extends FormRequest
 
     public function rules(): array
     {
+        $isYealink = strtolower((string) $this->input('provider')) === 'yealink';
         $dhcpOption60TypeList = ['ASCII', 'BINARY'];
         $dhcpBootServerOptionList = ['OPTION66', 'CUSTOM', 'STATIC', 'CUSTOM_OPTION66'];
         $locales = [
@@ -44,18 +48,18 @@ class StoreZtpOrganizationRequest extends FormRequest
         ];
 
         return [
-            'provider' => 'present',
-            'enabled' => 'required|boolean',
-            'name' => 'required|string|max:100',
+            'provider' => ['required', 'string', Rule::in(['polycom', 'yealink'])],
+            'enabled' => [$isYealink ? 'nullable' : 'required', 'boolean'],
+            'name' => ['required', 'string', 'max:100'],
             'software' => 'nullable|string|max:100',
             'bootServerOption' => 'nullable|string|in:' . implode(',', $dhcpBootServerOptionList),
             'option60Type' => 'nullable|string|in:' . implode(',', $dhcpOption60TypeList),
             'localization' => 'nullable|string|in:' . implode(',', $locales),
-            'address' => 'required|string|max:255',
-            'prov_un' => 'required|string|max:64',
-            'prov_pw' => 'required|string|max:64',
-            'username' => 'nullable|string|max:64',
-            'password' => 'nullable|string|max:64',
+            'address' => $isYealink ? 'required|string|url|max:512' : 'required|string|max:255',
+            'prov_un' => 'required|string|max:' . ($isYealink ? 32 : 64),
+            'prov_pw' => 'required|string|max:' . ($isYealink ? 32 : 64),
+            'username' => 'nullable|string|max:' . ($isYealink ? 32 : 64),
+            'password' => 'nullable|string|max:' . ($isYealink ? 32 : 64),
             'quickSetup' => 'nullable|boolean',
             'polling' => 'nullable|boolean',
             'ucs' => 'nullable|string',
@@ -64,11 +68,11 @@ class StoreZtpOrganizationRequest extends FormRequest
 
     public function messages(): array
     {
-        return [
-            'address.required' => 'Address is required.',
-            'prov_un.required' => 'Username is required.',
-            'prov_pw.required' => 'Password is required.',
-        ];
+        return array_merge(ValidationMessages::common(), [
+            'address.required' => __('Address is required.'),
+            'prov_un.required' => __('Username is required.'),
+            'prov_pw.required' => __('Password is required.'),
+        ]);
     }
 
 
@@ -108,5 +112,26 @@ class StoreZtpOrganizationRequest extends FormRequest
                 'password' => $this->input('prov_pw'),
             ]);
         }
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'provider' => __('Provider'),
+            'enabled' => __('Enabled'),
+            'name' => __('Name'),
+            'software' => __('Software'),
+            'bootServerOption' => __('Boot Server Option'),
+            'option60Type' => __('Option 60 Type'),
+            'localization' => __('Language'),
+            'address' => __('Address'),
+            'prov_un' => __('Username'),
+            'prov_pw' => __('Password'),
+            'username' => __('Username'),
+            'password' => __('Password'),
+            'quickSetup' => __('Quick Setup'),
+            'polling' => __('Polling'),
+            'ucs' => __('UCS'),
+        ];
     }
 }

@@ -1,5 +1,5 @@
 <template>
-    <PageWithSideMenu title="Logs" :navigation="navigation" :pages="pages" :header-icon="DocumentTextIcon"
+    <PageWithSideMenu :title="$t('Logs')" :navigation="navigation" :pages="pages" :header-icon="DocumentTextIcon"
         :initial-menu-option="initialMenuOption" @update-selected-menu-option="handleUpdateSelectedMenuOption">
 
         <template #default="{ selectedMenuOption }">
@@ -7,36 +7,54 @@
             <section v-show="selectedMenuOption === 'emails'">
                 <div class="flex items-start justify-between gap-3">
                     <Vueform class="min-w-0">
-                        <StaticElement name="locations_title" tag="h4" content="Emails" />
+                        <StaticElement name="locations_title" tag="h4" :content="$t('Emails')" />
                     </Vueform>
 
                     <button v-if="permissions?.email_test_send" type="button"
                         class="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
                         @click="openTestEmailModal">
                         <EnvelopeIcon class="h-4 w-4" />
-                        Send Test Email
+                        {{ $t('Send Test Email') }}
                     </button>
                 </div>
 
                 <EmailLogs :trigger="emailsTrigger" :startPeriod="startPeriod" :endPeriod="endPeriod"
                     :timezone="timezone" :routes="routes" :permissions="permissions" :domain-options="domainOptions"
+                    :selected-domain-uuid="selectedDomainUuid" :features="features" />
+            </section>
+
+            <!-- AI AGENTS -->
+            <section v-if="permissions?.ai_agent_view" v-show="selectedMenuOption === 'ai_agent_logs'">
+                <Vueform>
+                    <StaticElement name="ai_agent_logs_title" tag="h4" :content="$t('AI Agents')" />
+                </Vueform>
+
+                <AiAgentLogs :trigger="aiAgentLogsTrigger" :startPeriod="startPeriod" :endPeriod="endPeriod"
+                    :timezone="timezone" :routes="routes" :domain-options="domainOptions"
                     :selected-domain-uuid="selectedDomainUuid" />
             </section>
 
             <!-- WEBHOOKS -->
             <section v-show="selectedMenuOption === 'inbound_webhooks'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Inbound Webhooks" />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Inbound Webhooks')" />
                 </Vueform>
 
                 <InboundWebhooks :trigger="inboundWebhooksTrigger" :startPeriod="startPeriod" :endPeriod="endPeriod"
                     :timezone="timezone" :routes="routes" :permissions="permissions" />
             </section>
 
+            <section v-if="permissions?.outbound_webhooks_view" v-show="selectedMenuOption === 'outbound_webhooks'">
+                <h4 class="text-lg font-semibold text-gray-900">{{ $t('Outbound Webhooks') }}</h4>
+                <OutboundWebhooks :trigger="outboundWebhooksTrigger" :start-period="startPeriod" :end-period="endPeriod"
+                    :timezone="timezone" :routes="routes" :domain-options="domainOptions"
+                    :selected-domain-uuid="selectedDomainUuid" />
+            </section>
+
             <!-- Messages -->
             <section v-show="selectedMenuOption === 'message_logs'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Messages" />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Messages')" />
                 </Vueform>
 
                 <MessageLogs :trigger="messageLogsTrigger" :startPeriod="startPeriod" :endPeriod="endPeriod"
@@ -46,7 +64,7 @@
             <!-- FAXES -->
             <section v-show="selectedMenuOption === 'fax_logs'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Faxes" />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Faxes')" />
                 </Vueform>
 
                 <FaxLogs :trigger="faxLogsTrigger" :startPeriod="startPeriod" :endPeriod="endPeriod"
@@ -64,6 +82,7 @@
                     :trigger="freeswitchLogsTrigger"
                     :routes="routes"
                     :permissions="permissions"
+                    :features="features"
                     @success="showSuccessNotification"
                     @error="showErrorNotification"
                 />
@@ -72,7 +91,7 @@
             <!-- NGINX -->
             <section v-show="selectedMenuOption === 'nginx_logs'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Web service" />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Web service')" />
                 </Vueform>
 
                 <NginxLogs
@@ -114,16 +133,16 @@
 
             <ConfirmationModal :show="showDeleteLocationConfirmationModal"
                 @close="showDeleteLocationConfirmationModal = false" @confirm="confirmDeleteLocationAction"
-                :header="'Confirm Deletion'" :loading="isDeleteLocationLoading"
-                :text="'This action will permanently delete the selected location. Are you sure you want to proceed?'"
-                confirm-button-label="Delete" cancel-button-label="Cancel" />
+                :header="$t('Confirm Deletion')" :loading="isDeleteLocationLoading"
+                :text="$t('This action will permanently delete the selected location. Are you sure you want to proceed?')"
+                :confirm-button-label="$t('Delete')" :cancel-button-label="$t('Cancel')" />
 
-            <AddEditItemModal :show="showTestEmailModal" header="Send Test Email" :loading="testEmailLoading"
+            <AddEditItemModal :show="showTestEmailModal" :header="$t('Send Test Email')" :loading="testEmailLoading"
                 @close="closeTestEmailModal">
                 <template #modal-body>
                     <form class="space-y-4" @submit.prevent="sendTestEmail">
                         <div>
-                            <label for="test_email_address" class="block text-sm font-medium text-gray-700">Email address</label>
+                            <label for="test_email_address" class="block text-sm font-medium text-gray-700">{{ $t('Email address') }}</label>
                             <input id="test_email_address" v-model.trim="testEmailForm.email" type="email" required
                                 autocomplete="email" placeholder="name@example.com"
                                 class="mt-1 block w-full rounded-md border-0 py-1.5 text-sm text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600" />
@@ -134,12 +153,12 @@
                             <button type="button"
                                 class="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
                                 @click="closeTestEmailModal">
-                                Cancel
+                                {{ $t('Cancel') }}
                             </button>
                             <button type="submit" :disabled="testEmailLoading"
                                 class="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60">
                                 <EnvelopeIcon class="h-4 w-4" />
-                                {{ testEmailLoading ? 'Sending...' : 'Send' }}
+                                {{ testEmailLoading ? $t('Sending...') : $t('Send') }}
                             </button>
                         </div>
                     </form>
@@ -151,13 +170,16 @@
 </template>
 
 <script setup>
+import { trans } from '@i18n';
 import { computed, reactive, ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import PageWithSideMenu from '../Layouts/PageWithSideMenu.vue'
 import Notification from "./components/notifications/Notification.vue";
 import EmailLogs from "./components/EmailLogs.vue";
+import AiAgentLogs from "./components/AiAgentLogs.vue";
 import TigerTmsLogs from "./components/TigerTmsLogs.vue";
 import InboundWebhooks from "./components/InboundWebhooks.vue";
+import OutboundWebhooks from "./components/OutboundWebhooks.vue";
 import MessageLogs from "./components/MessageLogs.vue";
 import FaxLogs from "./components/FaxLogs.vue";
 import FreeSwitchLogs from "./components/FreeSwitchLogs.vue";
@@ -169,12 +191,14 @@ import AddEditItemModal from "./components/modal/AddEditItemModal.vue";
 import {
     EnvelopeIcon,
     InboxArrowDownIcon,
+    ArrowUpTrayIcon,
     BuildingOffice2Icon,
     DocumentTextIcon,
     ChatBubbleLeftRightIcon,
     PrinterIcon,
     ServerStackIcon,
     GlobeAltIcon,
+    CpuChipIcon,
 } from '@heroicons/vue/24/outline'
 
 const props = defineProps({
@@ -199,8 +223,10 @@ const isDeleteLocationLoading = ref(false)
 const showDeleteLocationConfirmationModal = ref(false)
 const confirmDeleteLocationAction = ref(null);
 const emailsTrigger = ref(false)
+const aiAgentLogsTrigger = ref(false)
 const tigerTmsLogsTrigger = ref(false)
 const inboundWebhooksTrigger = ref(false)
+const outboundWebhooksTrigger = ref(false)
 const messageLogsTrigger = ref(false)
 const faxLogsTrigger = ref(false)
 const freeswitchLogsTrigger = ref(false)
@@ -216,15 +242,17 @@ const testEmailForm = reactive({
 const testEmailRefreshTimers = []
 
 
-const pages = [
-    { name: 'Dashboard', href: props.routes.dashboard_route, current: true },
-    { name: 'Logs', href: '#', current: true },
-]
+const pages = computed(() => [
+    { name: trans('Dashboard'), href: props.routes.dashboard_route, current: true },
+    { name: trans('Logs'), href: '#', current: true },
+])
 
 const handleUpdateSelectedMenuOption = (key) => {
     if (key === 'emails') emailsTrigger.value = !emailsTrigger.value
+    if (key === 'ai_agent_logs') aiAgentLogsTrigger.value = !aiAgentLogsTrigger.value
     if (key === 'tigertms_logs') tigerTmsLogsTrigger.value = !tigerTmsLogsTrigger.value
     if (key === 'inbound_webhooks') inboundWebhooksTrigger.value = !inboundWebhooksTrigger.value
+    if (key === 'outbound_webhooks') outboundWebhooksTrigger.value = !outboundWebhooksTrigger.value
     if (key === 'message_logs') messageLogsTrigger.value = !messageLogsTrigger.value
     if (key === 'fax_logs') faxLogsTrigger.value = !faxLogsTrigger.value
     if (key === 'freeswitch_logs') freeswitchLogsTrigger.value = !freeswitchLogsTrigger.value
@@ -234,19 +262,27 @@ const handleUpdateSelectedMenuOption = (key) => {
 
 const navigation = computed(() => {
     const items = [
-        { key: 'emails', name: 'Emails', icon: EnvelopeIcon },
-        { key: 'message_logs', name: 'Messages', icon: ChatBubbleLeftRightIcon },
+        { key: 'emails', name: trans('Emails'), icon: EnvelopeIcon },
     ]
 
-    items.push({ key: 'inbound_webhooks', name: 'Inbound Webhooks', icon: InboxArrowDownIcon })
+    if (props.permissions?.ai_agent_view) {
+        items.push({ key: 'ai_agent_logs', name: trans('AI Agents'), icon: CpuChipIcon })
+    }
+
+    items.push({ key: 'message_logs', name: trans('Messages'), icon: ChatBubbleLeftRightIcon })
+
+    items.push({ key: 'inbound_webhooks', name: trans('Inbound Webhooks'), icon: InboxArrowDownIcon })
+    if (props.permissions?.outbound_webhooks_view) {
+        items.push({ key: 'outbound_webhooks', name: trans('Outbound Webhooks'), icon: ArrowUpTrayIcon })
+    }
 
     if (props.permissions?.fax_log_view) {
-        items.push({ key: 'fax_logs', name: 'Faxes', icon: PrinterIcon })
+        items.push({ key: 'fax_logs', name: trans('Faxes'), icon: PrinterIcon })
     }
 
     if (props.permissions?.log_view) {
         items.push({ key: 'freeswitch_logs', name: 'FreeSWITCH', icon: ServerStackIcon })
-        items.push({ key: 'nginx_logs', name: 'Web service', icon: GlobeAltIcon })
+        items.push({ key: 'nginx_logs', name: trans('Web service'), icon: GlobeAltIcon })
         items.push({ key: 'laravel_logs', name: 'Laravel', icon: DocumentTextIcon })
     }
 
@@ -329,7 +365,7 @@ const sendTestEmail = () => {
         notificationType.value = 'error'
         notificationMessages.value = error.response?.data?.messages
             ?? error.response?.data?.errors
-            ?? { error: ['Unable to send the test email.'] }
+            ?? { error: [trans('Unable to send the test email.')] }
         notificationShow.value = true
     }).finally(() => {
         testEmailLoading.value = false

@@ -73,11 +73,11 @@ class GatewayController extends Controller
             $service->sync(collect([$gateway->profile]));
             $startResponse = $gateway->enabled === 'true'
                 ? $service->executeGatewayCommand('start', $gateway)
-                : 'Skipped: gateway is disabled.';
+                : __('Skipped: gateway is disabled.');
 
             return response()->json([
                 'messages' => ['success' => array_filter([
-                    'Gateway created successfully.',
+                    __('Gateway created successfully.'),
                     $startResponse ? "FreeSWITCH: {$startResponse}" : null,
                 ])],
                 'gateway_uuid' => $gateway->gateway_uuid,
@@ -88,7 +88,7 @@ class GatewayController extends Controller
             logger('GatewayController@store error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to create gateway.']],
+                'messages' => ['error' => [__('Failed to create gateway.')]],
             ], 500);
         }
     }
@@ -97,13 +97,18 @@ class GatewayController extends Controller
     {
         if (!$this->canModifyGateway($gateway)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         $oldProfile = $gateway->profile;
+        $beforeRuntime = $service->runtimeState($gateway);
         $validated = $request->validated();
         $data = $service->saveData($validated, $gateway);
+
+        // Must be read BEFORE saving: getDirty() comes back empty afterwards.
+        $gateway->fill($data);
+        $changed = $gateway->getDirty();
 
         try {
             DB::beginTransaction();
@@ -114,17 +119,29 @@ class GatewayController extends Controller
             DB::commit();
 
             $accessControlService->sync();
-            $service->sync(collect([$oldProfile, $gateway->profile]));
+
+            // Before the rescan: a rescan alone does not reload the credentials
+            // of an already loaded gateway, so a password change had no effect.
+            $reloadSucceeded = $service->reloadRegistration($gateway, $changed, $beforeRuntime);
+            $syncSucceeded = $service->sync(collect([$oldProfile, $gateway->profile]));
+            $runtimeSynchronized = $reloadSucceeded && $syncSucceeded;
+
+            $messages = ['success' => [__('Gateway updated successfully.')]];
+
+            if (! $runtimeSynchronized) {
+                $messages['error'] = [__('FreeSWITCH returned an error.')];
+            }
 
             return response()->json([
-                'messages' => ['success' => ['Gateway updated successfully.']],
+                'messages' => $messages,
+                'runtime_synchronized' => $runtimeSynchronized,
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('GatewayController@update error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to update gateway.']],
+                'messages' => ['error' => [__('Failed to update gateway.')]],
             ], 500);
         }
     }
@@ -133,7 +150,7 @@ class GatewayController extends Controller
     {
         if (!userCheckPermission('gateway_view')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -195,13 +212,13 @@ class GatewayController extends Controller
 
         if ($itemUuid && !userCheckPermission('gateway_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         if (!$itemUuid && !userCheckPermission('gateway_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -210,7 +227,7 @@ class GatewayController extends Controller
 
             if (!$this->canViewGateway($item)) {
                 return response()->json([
-                    'messages' => ['error' => ['Access denied.']],
+                    'messages' => ['error' => [__('Access denied.')]],
                 ], 403);
             }
 
@@ -254,7 +271,7 @@ class GatewayController extends Controller
     {
         if (!userCheckPermission('gateway_view')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -277,7 +294,7 @@ class GatewayController extends Controller
 
         return response()->json([
             'items' => $items,
-            'messages' => ['success' => ['All matching gateways selected.']],
+            'messages' => ['success' => [__('All matching gateways selected.')]],
         ]);
     }
 
@@ -285,7 +302,7 @@ class GatewayController extends Controller
     {
         if (!userCheckPermission('gateway_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -293,7 +310,7 @@ class GatewayController extends Controller
 
         if ($gateways->isEmpty()) {
             return response()->json([
-                'messages' => ['error' => ['No gateways selected.']],
+                'messages' => ['error' => [__('No gateways selected.')]],
             ], 422);
         }
 
@@ -315,14 +332,14 @@ class GatewayController extends Controller
             $service->sync($profiles);
 
             return response()->json([
-                'messages' => ['success' => ["Deleted {$gateways->count()} gateway(s)."]],
+                'messages' => ['success' => [__('Deleted :count gateway(s).', ['count' => $gateways->count()])]],
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('GatewayController@bulkDelete error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting the selected gateways.']],
+                'messages' => ['error' => [__('An error occurred while deleting the selected gateways.')]],
             ], 500);
         }
     }
@@ -331,7 +348,7 @@ class GatewayController extends Controller
     {
         if (!userCheckPermission('gateway_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -339,7 +356,7 @@ class GatewayController extends Controller
 
         if ($gateways->isEmpty()) {
             return response()->json([
-                'messages' => ['error' => ['No gateways selected.']],
+                'messages' => ['error' => [__('No gateways selected.')]],
             ], 422);
         }
 
@@ -349,7 +366,7 @@ class GatewayController extends Controller
             foreach ($gateways as $gateway) {
                 $copy = $gateway->replicate();
                 $copy->gateway_uuid = (string) Str::uuid();
-                $copy->description = trim(($gateway->description ?? '') . ' (copy)');
+                $copy->description = trim(($gateway->description ?? '') . ' (' . __('copy') . ')');
                 $copy->channels = $gateway->channels ?: 0;
                 $copy->expire_seconds = $gateway->expire_seconds ?: '800';
                 $copy->retry_seconds = $gateway->retry_seconds ?: '30';
@@ -363,14 +380,14 @@ class GatewayController extends Controller
             $service->sync($gateways->pluck('profile'));
 
             return response()->json([
-                'messages' => ['success' => ["Copied {$gateways->count()} gateway(s)."]],
+                'messages' => ['success' => [__('Copied :count gateway(s).', ['count' => $gateways->count()])]],
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('GatewayController@bulkCopy error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while copying the selected gateways.']],
+                'messages' => ['error' => [__('An error occurred while copying the selected gateways.')]],
             ], 500);
         }
     }
@@ -379,7 +396,7 @@ class GatewayController extends Controller
     {
         if (!userCheckPermission('gateway_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -387,7 +404,7 @@ class GatewayController extends Controller
 
         if ($gateways->isEmpty()) {
             return response()->json([
-                'messages' => ['error' => ['No gateways selected.']],
+                'messages' => ['error' => [__('No gateways selected.')]],
             ], 422);
         }
 
@@ -404,33 +421,33 @@ class GatewayController extends Controller
             $service->sync($gateways->pluck('profile'));
 
             return response()->json([
-                'messages' => ['success' => ['Gateway enabled state toggled.']],
+                'messages' => ['success' => [__('Gateway enabled state toggled.')]],
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('GatewayController@bulkToggle error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while toggling the selected gateways.']],
+                'messages' => ['error' => [__('An error occurred while toggling the selected gateways.')]],
             ], 500);
         }
     }
 
     public function bulkStart(Request $request, GatewayService $service): JsonResponse
     {
-        return $this->bulkGatewayCommand($request, $service, 'start', 'Gateway(s) started.');
+        return $this->bulkGatewayCommand($request, $service, 'start', __('Gateway(s) started.'));
     }
 
     public function bulkStop(Request $request, GatewayService $service): JsonResponse
     {
-        return $this->bulkGatewayCommand($request, $service, 'stop', 'Gateway(s) stopped.');
+        return $this->bulkGatewayCommand($request, $service, 'stop', __('Gateway(s) stopped.'));
     }
 
     private function bulkGatewayCommand(Request $request, GatewayService $service, string $action, string $message): JsonResponse
     {
         if (!userCheckPermission('gateway_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -438,7 +455,7 @@ class GatewayController extends Controller
 
         if ($gateways->isEmpty()) {
             return response()->json([
-                'messages' => ['error' => ['No gateways selected.']],
+                'messages' => ['error' => [__('No gateways selected.')]],
             ], 422);
         }
 
@@ -448,7 +465,7 @@ class GatewayController extends Controller
 
         $responses = $gateways
             ->mapWithKeys(fn(Gateways $gateway) => [
-                $gateway->gateway => $service->executeGatewayCommand($action, $gateway) ?: 'No response from FreeSWITCH.',
+                $gateway->gateway => $service->executeGatewayCommand($action, $gateway) ?: __('No response from FreeSWITCH.'),
             ]);
 
         $responseMessages = $responses
@@ -460,7 +477,7 @@ class GatewayController extends Controller
 
         if ($errors->isNotEmpty()) {
             return response()->json([
-                'messages' => ['error' => array_merge(["Unable to {$action} selected gateway(s)."], $responseMessages)],
+                'messages' => ['error' => array_merge([$action === 'start' ? __('Unable to start selected gateway(s).') : __('Unable to stop selected gateway(s).')], $responseMessages)],
                 'responses' => $responses,
             ], 422);
         }
@@ -476,6 +493,13 @@ class GatewayController extends Controller
         $validated = $request->validate([
             'items' => ['required', 'array'],
             'items.*' => ['required', 'uuid'],
+        ], [
+            'required' => __('The :attribute field is required.'),
+            'array' => __('The :attribute must be an array.'),
+            'uuid' => __('The :attribute must be a valid UUID.'),
+        ], [
+            'items' => __('Gateways'),
+            'items.*' => __('Gateway'),
         ]);
 
         return Gateways::query()
@@ -511,6 +535,7 @@ class GatewayController extends Controller
                         ->orWhere('proxy', 'ilike', "%{$needle}%")
                         ->orWhere('register_proxy', 'ilike', "%{$needle}%")
                         ->orWhere('outbound_proxy', 'ilike', "%{$needle}%")
+                        ->orWhere('hostname', 'ilike', "%{$needle}%")
                         ->orWhere('description', 'ilike', "%{$needle}%");
                 });
             }),
@@ -570,7 +595,7 @@ private function domainOptions(): array
             return [];
         }
 
-        return collect([['value' => '', 'label' => 'Global']])
+        return collect([['value' => '', 'label' => __('Global')]])
             ->merge(
                 Domain::query()
                     ->orderBy('domain_name')

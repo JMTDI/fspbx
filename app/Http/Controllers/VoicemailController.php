@@ -10,7 +10,6 @@ use App\Models\Domain;
 use App\Models\Extensions;
 use App\Models\VmNotifyProfile;
 use App\Models\VmNotifyProfileRecipient;
-use App\Models\VoicemailDestinations;
 use App\Models\VoicemailGreetings;
 use App\Models\Voicemails;
 use App\Services\OpenAIService;
@@ -110,8 +109,10 @@ class VoicemailController extends Controller
                             // Search related extenion
                             ->orWhereHas('extension', function ($q2) use ($value, $currentDomain) {
                                 $q2->where('domain_uuid', $currentDomain)
-                                    ->where('extension', 'ilike', "%{$value}%")
-                                    ->orWhere('effective_caller_id_name', 'ilike', "%{$value}%");
+                                    ->where(function ($q3) use ($value) {
+                                        $q3->where('extension', 'ilike', "%{$value}%")
+                                            ->orWhere('effective_caller_id_name', 'ilike', "%{$value}%");
+                                    });
                             });
                         // Add more fields if needed
                     });
@@ -142,6 +143,7 @@ class VoicemailController extends Controller
     public function store(StoreVoicemailRequest $request)
     {
         $inputs = $request->validated();
+        $inputs['domain_uuid'] = session('domain_uuid');
         $inputs = $this->syncVoicemailAttachFile($inputs);
 
         // If blank, generate
@@ -170,23 +172,13 @@ class VoicemailController extends Controller
             // Save the model instance to the database
             $this->model->save();
 
-            // Check if voicemail_copies is present and is an array
             if (isset($inputs['voicemail_copies']) && is_array($inputs['voicemail_copies'])) {
-                // Prepare data for VoicemailDestinations
-                foreach ($inputs['voicemail_copies'] as $copyUuid) {
-                    // Create a new VoicemailDestinations instance and set the fields
-                    $voicemailDestination = new VoicemailDestinations();
-                    $voicemailDestination->voicemail_uuid = $this->model->voicemail_uuid; // Set the parent voicemail UUID
-                    $voicemailDestination->voicemail_uuid_copy = $copyUuid; // Set the copy UUID
-
-                    // Save the VoicemailDestinations instance
-                    $voicemailDestination->save();
-                }
+                $this->model->syncCopies($inputs['voicemail_copies']);
             }
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['New item created']]
+                'messages' => ['success' => [__('New item created')]]
             ], 201);
         } catch (\Exception $e) {
             // Log the error message
@@ -196,7 +188,7 @@ class VoicemailController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to create new item']]
+                'errors' => ['server' => [__('Failed to create new item')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -208,7 +200,10 @@ class VoicemailController extends Controller
 
         try {
             DB::transaction(function () use ($inputs, $uuid) {
-                $voicemail = $this->model->findOrFail($uuid);
+                $voicemail = $this->model::where('domain_uuid', session('domain_uuid'))
+                    ->whereKey($uuid)
+                    ->firstOrFail();
+                $inputs['domain_uuid'] = $voicemail->domain_uuid;
 
                 // Update voicemail
                 $voicemail->insert_date = date('Y-m-d H:i:s');
@@ -216,14 +211,8 @@ class VoicemailController extends Controller
                 $voicemail->fill($inputs);
                 $voicemail->save();
 
-                // Update voicemail copies
-                VoicemailDestinations::where('voicemail_uuid', $voicemail->voicemail_uuid)->delete();
-
-                foreach (($inputs['voicemail_copies'] ?? []) as $copyUuid) {
-                    VoicemailDestinations::create([
-                        'voicemail_uuid' => $voicemail->voicemail_uuid,
-                        'voicemail_uuid_copy' => $copyUuid,
-                    ]);
+                if (array_key_exists('voicemail_copies', $inputs)) {
+                    $voicemail->syncCopies($inputs['voicemail_copies'] ?? []);
                 }
 
                 // Update voicemail escalation profile
@@ -297,20 +286,17 @@ class VoicemailController extends Controller
                     }
                 }
 
-                if (isset($_SESSION['destinations']['array'])) {
-                    unset($_SESSION['destinations']['array']);
-                }
             });
 
             return response()->json([
-                'messages' => ['success' => ['Item updated successfully']]
+                'messages' => ['success' => [__('Item updated successfully')]]
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update item']]
+                'errors' => ['server' => [__('Failed to update item')]]
             ], 500);
         }
     }
@@ -322,6 +308,7 @@ class VoicemailController extends Controller
      */
     public function uploadVoicemailGreeting(Request $request, Voicemails $voicemail)
     {
+        $this->authorizeVoicemailManagement($voicemail);
 
         $domain = Domain::where('domain_uuid', $voicemail->domain_uuid)->first();
 
@@ -344,7 +331,7 @@ class VoicemailController extends Controller
         if (!Storage::disk('voicemail')->exists($path)) {
             return response()->json([
                 'error' => 401,
-                'message' => 'Failed to upload file'
+                'message' => __('Failed to upload file')
             ]);
         }
 
@@ -375,7 +362,7 @@ class VoicemailController extends Controller
             'status' => "success",
             'voicemail' => $voicemail->voicemail_id,
             'filename' => $filename,
-            'message' => 'Greeting uploaded successfully'
+            'message' => __('Greeting uploaded successfully')
         ]);
     }
 
@@ -387,6 +374,7 @@ class VoicemailController extends Controller
      */
     public function downloadVoicemailGreeting(Voicemails $voicemail, string $filename)
     {
+        $this->authorizeVoicemailManagement($voicemail);
 
         $path = session('domain_name') . '/' . $voicemail->voicemail_id . '/' . $filename;
 
@@ -410,6 +398,7 @@ class VoicemailController extends Controller
      */
     public function deleteVoicemailGreeting(Voicemails $voicemail, string $filename)
     {
+        $this->authorizeVoicemailManagement($voicemail);
 
         $path = session('domain_name') . '/' . $voicemail->voicemail_id . '/' . $filename;
 
@@ -418,7 +407,7 @@ class VoicemailController extends Controller
         if (Storage::disk('voicemail')->exists($path)) {
             return response()->json([
                 'error' => 401,
-                'message' => 'Failed to delete file'
+                'message' => __('Failed to delete file')
             ]);
         }
 
@@ -438,7 +427,7 @@ class VoicemailController extends Controller
             'status' => "success",
             'voicemail' => $voicemail->voicemail_id,
             'filename' => 'greeting_1.wav',
-            'message' => 'Greeting deleted successfully'
+            'message' => __('Greeting deleted successfully')
         ]);
     }
 
@@ -453,13 +442,11 @@ class VoicemailController extends Controller
             DB::beginTransaction();
 
             // Retrieve all items at once
-            $items = $this->model::whereIn('voicemail_uuid', request('items'))
-                ->get(['voicemail_uuid']);
+            $items = $this->model::where('domain_uuid', session('domain_uuid'))
+                ->whereIn('voicemail_uuid', request('items'))
+                ->get(['voicemail_uuid', 'voicemail_id', 'domain_uuid']);
 
             foreach ($items as $item) {
-                // Delete related voicemail destinations
-                $item->voicemail_destinations()->delete();
-
                 // Delete related voicemail messages
                 $item->messages()->delete();
 
@@ -482,7 +469,7 @@ class VoicemailController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['All selected items have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected items have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             // Rollback Transaction if any error occurs
@@ -492,7 +479,7 @@ class VoicemailController extends Controller
             logger($e);
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while deleting the selected items.']]
+                'errors' => ['server' => [__('Server returned an error while deleting the selected items.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -502,7 +489,7 @@ class VoicemailController extends Controller
     {
         try {
 
-            $domain_uuid = request('domain_uuid') ?? session('domain_uuid');
+            $domain_uuid = session('domain_uuid');
             $item_uuid = request('item_uuid'); // Retrieve item_uuid from the request
 
             $voicemails =  $this->model::where($this->model->getTable() . '.domain_uuid', $domain_uuid)
@@ -523,7 +510,10 @@ class VoicemailController extends Controller
             $voicemailOptions = $voicemails->map(function ($voicemail) {
                 return [
                     'value' => $voicemail->voicemail_uuid,
-                    'label' => $voicemail->extension ? $voicemail->extension->name_formatted : $voicemail->voicemail_id . ' - Team Voicemail',
+                    'label' => $voicemail->extension
+                        ? $voicemail->extension->name_formatted
+                        : __(':id - Team voicemail', ['id' => $voicemail->voicemail_id])
+                        . ($voicemail->voicemail_description ? " ({$voicemail->voicemail_description})" : ''),
                 ];
             })->toArray();
 
@@ -540,7 +530,7 @@ class VoicemailController extends Controller
 
             $escalationMemberOptions = [
                 [
-                    'groupLabel' => 'Extensions',
+                    'groupLabel' => __('Extensions'),
                     'groupOptions' => $extensions->map(function ($extension) {
                         return [
                             'value' => $extension->extension_uuid,
@@ -665,30 +655,32 @@ class VoicemailController extends Controller
 
             // Define the instructions for recording a voicemail greeting using a phone call
             $phoneCallInstructions = [
-                'Dial <strong>*98</strong> from your phone.',
-                'Enter the mailbox number and press <strong>#</strong>.',
-                'Enter the voicemail password and press <strong>#</strong>.',
-                'Press <strong>5</strong> for mailbox options.',
-                'Press <strong>1</strong> to record an unavailable message.',
-                'Choose a greeting number (1-9) to record, then follow the prompts.',
+                __('Dial <strong>*98</strong> from your phone.'),
+                __('Enter the mailbox number and press <strong>#</strong>.'),
+                __('Enter the voicemail password and press <strong>#</strong>.'),
+                __('Press <strong>5</strong> for mailbox options.'),
+                __('Press <strong>1</strong> to record an unavailable message.'),
+                __('Choose a greeting number (1-9) to record, then follow the prompts.'),
             ];
 
             // Define the instructions for recording a name using a phone call
             $phoneCallInstructionsForName = [
-                'Dial <strong>*98</strong> from your phone.',
-                'Enter the mailbox number and press <strong>#</strong>.',
-                'Enter the voicemail password and press <strong>#</strong>.',
-                'Press <strong>5</strong> for mailbox options.',
-                'Press <strong>3</strong> to record your name, then follow the prompts.',
+                __('Dial <strong>*98</strong> from your phone.'),
+                __('Enter the mailbox number and press <strong>#</strong>.'),
+                __('Enter the voicemail password and press <strong>#</strong>.'),
+                __('Press <strong>5</strong> for mailbox options.'),
+                __('Press <strong>3</strong> to record your name, then follow the prompts.'),
             ];
 
-            $sampleMessage = 'Thank you for calling. Please, leave us a message and will call you back as soon as possible';
+            $sampleMessage = __('Thank you for calling. Please, leave us a message and will call you back as soon as possible');
 
             $openAiService = app(\App\Services\OpenAIService::class);
 
             $routes = array_merge($routes, [
                 'store_route' => route('voicemails.store'),
             ]);
+
+            $hasCustomRecordedName = Storage::disk('voicemail')->exists(session('domain_name') . '/' . $voicemail->voicemail_id . '/recorded_name.wav');
 
             // Construct the itemOptions object
             $itemOptions = [
@@ -703,7 +695,8 @@ class VoicemailController extends Controller
                 'phone_call_instructions' => $phoneCallInstructions,
                 'phone_call_instructions_for_name' => $phoneCallInstructionsForName,
                 'sample_message' => $sampleMessage,
-                'recorded_name' => Storage::disk('voicemail')->exists(session('domain_name') . '/' . $voicemail->voicemail_id . '/recorded_name.wav') ? 'Custom recording' : 'System Default',
+                'recorded_name' => $hasCustomRecordedName ? __('Custom recording') : __('System Default'),
+                'has_custom_recorded_name' => $hasCustomRecordedName,
                 'escalation_member_options' => $escalationMemberOptions,
                 'vm_notify_profile' => $vmNotifyProfile,
                 // Define options for other fields as needed
@@ -718,7 +711,7 @@ class VoicemailController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -726,17 +719,20 @@ class VoicemailController extends Controller
     public function getGreetings($item_uuid)
     {
         try {
-            $domain_uuid = request('domain_uuid') ?? session('domain_uuid');
+            $domain_uuid = session('domain_uuid');
 
             $voicemail = Voicemails::with(['greetings' => function ($query) use ($domain_uuid) {
                 $query->select('voicemail_id', 'greeting_id', 'greeting_name', 'greeting_description')
                     ->where('domain_uuid', $domain_uuid);
-            }])->where('voicemail_uuid', $item_uuid)->first();
+            }])
+                ->where('domain_uuid', $domain_uuid)
+                ->where('voicemail_uuid', $item_uuid)
+                ->first();
 
             if (!$voicemail) {
                 return response()->json([
-                    ['value' => '0', 'label' => 'None'],
-                    ['value' => '-1', 'label' => 'System Default']
+                    ['value' => '0', 'label' => __('None')],
+                    ['value' => '-1', 'label' => __('System Default')]
                 ]);
             }
 
@@ -758,8 +754,8 @@ class VoicemailController extends Controller
 
             array_unshift(
                 $greetingsArray,
-                ['value' => '0', 'label' => 'None'],
-                ['value' => '-1', 'label' => 'System Default']
+                ['value' => '0', 'label' => __('None')],
+                ['value' => '-1', 'label' => __('System Default')]
             );
 
             return response()->json($greetingsArray);
@@ -767,8 +763,8 @@ class VoicemailController extends Controller
             logger('Error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                ['value' => '0', 'label' => 'None'],
-                ['value' => '-1', 'label' => 'System Default']
+                ['value' => '0', 'label' => __('None')],
+                ['value' => '-1', 'label' => __('System Default')]
             ]);
         }
     }
@@ -903,13 +899,17 @@ class VoicemailController extends Controller
 
     public function serveVoicemailFile($domain, $voicemail_id, $file)
     {
+        if ($domain !== session('domain_name')) {
+            abort(403);
+        }
+
         $filePath = "{$domain}/{$voicemail_id}/{$file}";
 
         if (!Storage::disk('voicemail')->exists($filePath)) {
             // File not found
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => 'File not found']
+                'errors' => ['server' => __('File not found')]
             ], 500);  // 500 Internal Server Error for any other errors
         }
 
@@ -930,7 +930,10 @@ class VoicemailController extends Controller
         try {
             $domain = session('domain_name');
 
-            $voicemail = Voicemails::find(request('voicemail_uuid'));
+            $voicemail = Voicemails::query()
+                ->where('domain_uuid', session('domain_uuid'))
+                ->where('voicemail_uuid', request('voicemail_uuid'))
+                ->first();
 
             if (!$voicemail) {
                 abort(404);
@@ -944,7 +947,7 @@ class VoicemailController extends Controller
                 // File not found
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['File not found']]
+                    'errors' => ['server' => [__('File not found')]]
                 ], 500);  // 500 Internal Server Error for any other errors
             }
 
@@ -975,7 +978,7 @@ class VoicemailController extends Controller
             if (!Storage::disk('voicemail')->move($filePath, $newFilePath)) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['Failed to save the file']]
+                    'errors' => ['server' => [__('Failed to save the file')]]
                 ], 500);
             }
 
@@ -1002,7 +1005,7 @@ class VoicemailController extends Controller
                 'greeting_id' => $newGreetingId,
                 'greeting_name' => "AI Greeting " . date('Ymd_His'),
                 'description' => $sanitizedDescription,
-                'messages' => ['success' => ['Your AI-generated greeting has been saved and successfully activated.']]
+                'messages' => ['success' => [__('Your AI-generated greeting has been saved and successfully activated.')]]
             ], 200);
         } catch (\Exception $e) {
             // Log the error message
@@ -1019,6 +1022,9 @@ class VoicemailController extends Controller
     public function applyVoicemailFileForName($domain, Voicemails $voicemail, $file)
     {
         $this->authorizeVoicemailManagement($voicemail);
+        if ($domain !== session('domain_name')) {
+            abort(403);
+        }
 
         try {
             $filePath = "{$domain}/{$voicemail->voicemail_id}/{$file}";
@@ -1031,7 +1037,7 @@ class VoicemailController extends Controller
                 // File not found
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['File not found']]
+                    'errors' => ['server' => [__('File not found')]]
                 ], 500);  // 500 Internal Server Error for any other errors
             }
 
@@ -1046,13 +1052,13 @@ class VoicemailController extends Controller
             if (!Storage::disk('voicemail')->move($filePath, $newFilePath)) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['Failed to save the file']]
+                    'errors' => ['server' => [__('Failed to save the file')]]
                 ], 500);
             }
 
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => ['Your AI-generated recorded name has been saved and set as a default recorded name']]
+                'messages' => ['success' => [__('Your AI-generated recorded name has been saved and set as a default recorded name')]]
             ], 200);
         } catch (\Exception $e) {
             // Log the error message
@@ -1092,7 +1098,7 @@ class VoicemailController extends Controller
 
             // Check if the greeting exists
             if (!$greeting) {
-                throw new \Exception('File not found');
+                throw new \Exception(__('File not found'));
             }
 
             // Generate the file URL using the defined route
@@ -1130,7 +1136,7 @@ class VoicemailController extends Controller
             $greeting = $voicemail->greetings()->where('greeting_id', $greetingId)->first();
 
             if (!$greeting) {
-                throw new \Exception('Greeting not found');
+                throw new \Exception(__('Greeting not found'));
             }
 
             $filePath = session('domain_name') . '/' . $voicemail->voicemail_id . '/' . $greeting->greeting_filename;
@@ -1148,7 +1154,7 @@ class VoicemailController extends Controller
             // Return a successful JSON response
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => ['Greeting has been removed.']]
+                'messages' => ['success' => [__('Greeting has been removed.')]]
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -1241,7 +1247,7 @@ class VoicemailController extends Controller
                     'success' => true,
                     'greeting_id' => $nextId,
                     'greeting_name' => "Uploaded File " . date('Ymd_His'),
-                    'messages' => ['success' => ['Your greeting has been uploaded and set as the default greeting.']]
+                    'messages' => ['success' => [__('Your greeting has been uploaded and set as the default greeting.')]]
                 ], 200);
             } else {
                 // Log the error message if conversion failed
@@ -1252,7 +1258,7 @@ class VoicemailController extends Controller
                     'success' => false,
                     'greeting_id' => $nextId,
                     'greeting_name' => "Uploaded File " . date('Ymd_His'),
-                    'messages' => ['success' => ['File uploaded, but conversion failed. Original file has been retained.']]
+                    'messages' => ['success' => [__('File uploaded, but conversion failed. Original file has been retained.')]]
                 ], 200); // Return 200 to indicate partial success
             }
         } catch (\Exception $e) {
@@ -1275,7 +1281,7 @@ class VoicemailController extends Controller
             $filePath = session('domain_name') . '/' . $voicemail->voicemail_id . '/recorded_name.wav';
 
             if (!Storage::disk('voicemail')->exists($filePath)) {
-                throw new \Exception('File not found');
+                throw new \Exception(__('File not found'));
             }
 
             $fileUrl = route('voicemail.file.serve', [
@@ -1302,14 +1308,14 @@ class VoicemailController extends Controller
             $filePath = session('domain_name') . '/' . $voicemail->voicemail_id . '/recorded_name.wav';
 
             if (!Storage::disk('voicemail')->exists($filePath)) {
-                throw new \Exception('File not found');
+                throw new \Exception(__('File not found'));
             }
 
             Storage::disk('voicemail')->delete($filePath);
 
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => ['Recorded name has been deleted.']]
+                'messages' => ['success' => [__('Recorded name has been deleted.')]]
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -1367,7 +1373,7 @@ class VoicemailController extends Controller
                 // Return a successful JSON response
                 return response()->json([
                     'success' => true,
-                    'messages' => ['success' => ['New recorded name has been uploaded and and set as the default recorded name.']]
+                    'messages' => ['success' => [__('New recorded name has been uploaded and and set as the default recorded name.')]]
                 ], 200);
             } else {
                 // Log the error message if conversion failed
@@ -1376,7 +1382,7 @@ class VoicemailController extends Controller
                 // Return a JSON response indicating conversion failure
                 return response()->json([
                     'success' => true,
-                    'messages' => ['success' => ['File uploaded, but conversion failed. Original file has been retained.']]
+                    'messages' => ['success' => [__('File uploaded, but conversion failed. Original file has been retained.')]]
                 ], 200); // Return 200 to indicate partial success
             }
         } catch (\Exception $e) {
@@ -1397,16 +1403,12 @@ class VoicemailController extends Controller
     public function selectAll()
     {
         try {
-            if (request()->get('showGlobal')) {
-                $uuids = $this->model::get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            } else {
-                $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
-                    ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            }
+            $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
+                ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
@@ -1414,7 +1416,7 @@ class VoicemailController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -1434,7 +1436,10 @@ class VoicemailController extends Controller
 
     private function authorizeVoicemailManagement(Voicemails $voicemail): void
     {
-        if (userCheckPermission('voicemail_edit') || userCheckPermission('extension_voicemail_settings')) {
+        if (
+            $voicemail->domain_uuid === session('domain_uuid')
+            && (userCheckPermission('voicemail_edit') || userCheckPermission('extension_voicemail_settings'))
+        ) {
             return;
         }
 

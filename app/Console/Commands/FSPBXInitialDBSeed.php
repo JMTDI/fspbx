@@ -3,7 +3,9 @@
 namespace App\Console\Commands;
 
 use App\Services\Install\InstallSchema;
-use App\Models\DefaultSettings;
+use Database\Seeders\FreeswitchSettingsSeeder;
+use Database\Seeders\FreeswitchModulesSeeder;
+use Database\Seeders\MusicOnHoldSeeder;
 use App\Models\User;
 use App\Models\UserSetting;
 use App\Models\Domain;
@@ -32,6 +34,23 @@ class FSPBXInitialDBSeed extends Command
         $this->info("Ensuring FS PBX install schemas...");
         $installSchema->ensureSchemas();
         $this->info("FS PBX install schemas are ready.");
+
+        // Directory settings belong to FS PBX and must exist before any legacy
+        // domain/default upgrades, without requiring a running FreeSWITCH.
+        $this->info('Initializing FreeSWITCH directory settings...');
+        if ($this->call('db:seed', ['--class' => FreeswitchSettingsSeeder::class, '--force' => true]) !== self::SUCCESS) {
+            return self::FAILURE;
+        }
+
+        $this->info('Initializing FreeSWITCH modules...');
+        if ($this->call('db:seed', ['--class' => FreeswitchModulesSeeder::class, '--force' => true]) !== self::SUCCESS) {
+            return self::FAILURE;
+        }
+
+        $this->info('Initializing Music on Hold streams...');
+        if ($this->call('db:seed', ['--class' => MusicOnHoldSeeder::class, '--force' => true]) !== self::SUCCESS) {
+            return self::FAILURE;
+        }
 
         // Step 2: Create the Admin Domain
         $domain = Domain::firstOrCreate(
@@ -136,29 +155,18 @@ class FSPBXInitialDBSeed extends Command
         Artisan::call('prov:templates:seed');
         $this->info("Provisioning templates seeded successfully.");
 
+        $this->info("Seeding email templates...");
+        Artisan::call('email:templates:seed');
+        $this->info("Email templates seeded successfully.");
+
         // Step 13: Install & Build Frontend (NPM)
-        $this->installAndBuildNpm();
-
-        // Step 14: Set Correct Permissions
-        $this->updatePermissions();
-
-        // Step 15: Migrate SQLite to RAM
-        $this->info("Migrating SQLite to RAM...");
-        $this->call('fs:migrate-sqlite-to-ram');
-        $this->info("SQLite migration to RAM completed.");
+        $this->installFrontendAssets();
 
         // Step 16: Set App version
         Artisan::call('version:set', ['version' => config('version.release'), '--force' => true]);
         Artisan::call('config:cache');
         $this->info("App version is " . config('version.release') . ".");
 
-        // Step 17: Restart FreeSWITCH
-        $this->restartFreeSwitch();
-
-        // Step 17a: Restart Supervisor
-        $this->restartSupervisorJobs();
-
-        DefaultSettings::where('default_setting_category', 'switch')->delete();
         $this->runUpgradeDefaults();
         $this->runUpgradeDomains();
 
@@ -171,6 +179,21 @@ class FSPBXInitialDBSeed extends Command
         $this->info("Seeding recommended settings...");
         Artisan::call('db:seed', ['--class' => 'DeviceVendorsSeeder', '--force' => true]);
         $this->info("Recommended settings seeded successfully.");
+
+        // Finalize storage and generated XML after all settings have been seeded.
+        // Fresh setup must also work before FreeSWITCH/ESL is running.
+        $this->info("Migrating SQLite to RAM...");
+        if ($this->call('fs:migrate-sqlite-to-ram', ['--no-restart-reminder' => true]) !== self::SUCCESS) {
+            $this->error('FreeSWITCH configuration preparation failed. FreeSWITCH was not restarted.');
+
+            return self::FAILURE;
+        }
+
+        // Root-run setup can create logs and caches. Hand ownership back only
+        // after all preparation, before services run as www-data.
+        $this->updatePermissions();
+        $this->restartFreeSwitch();
+        $this->restartSupervisorJobs();
 
         // Step 20: Display Installation Summary
         $this->displayCompletionMessage($username, $password);
@@ -320,14 +343,18 @@ class FSPBXInitialDBSeed extends Command
 
     private function restartSupervisorJobs()
     {
-        $this->info("Restarting Supervisor processes...");
+        $this->info("Loading Supervisor configuration and restarting processes...");
 
-        $process = new Process(['/usr/bin/supervisorctl', 'restart', 'all']);
-        $process->setTimeout(300);
-        $process->run();
+        // Load newly installed configurations after setup is complete. Opt-in
+        // programs use numprocs=0, so restart all cannot activate them.
+        foreach ([['reread'], ['update'], ['restart', 'all']] as $arguments) {
+            $process = new Process(['/usr/bin/supervisorctl', ...$arguments]);
+            $process->setTimeout(300);
+            $process->run();
 
-        if (!$process->isSuccessful()) {
-            throw new ProcessFailedException($process);
+            if (!$process->isSuccessful()) {
+                throw new ProcessFailedException($process);
+            }
         }
 
         $this->info("Supervisor processes restarted successfully.");
@@ -354,40 +381,12 @@ class FSPBXInitialDBSeed extends Command
         $this->info("Upgrade domains executed successfully.");
     }
 
-    private function installAndBuildNpm()
+    private function installFrontendAssets()
     {
-        $this->info("Installing NPM dependencies...");
-        $installProcess = new Process(['npm', 'install'], base_path());
-        $installProcess->setTimeout(300);
-        $installProcess->run();
-
-        if (!$installProcess->isSuccessful()) {
-            throw new ProcessFailedException($installProcess);
+        $this->info('Installing prebuilt frontend assets...');
+        if ($this->call('frontend:install') !== 0) {
+            throw new \RuntimeException('Frontend assets could not be installed. No npm build was started.');
         }
-
-        $this->info("✅ NPM dependencies installed successfully.\n");
-
-        // Start the spinner for progress indication
-        $this->info("🚀 Building frontend assets... (This may take a while)");
-
-        $spinnerChars = ['-', '\\', '|', '/']; // Spinner animation characters
-        $index = 0;
-
-        $buildProcess = new Process(['npm', 'run', 'build'], base_path());
-        $buildProcess->setTimeout(300);
-        $buildProcess->start();
-
-        while ($buildProcess->isRunning()) {
-            echo "\r\e[36m" . $spinnerChars[$index % 4] . " Building frontend assets... \e[0m";
-            usleep(250000); // Update every 250ms
-            $index++;
-        }
-
-        if (!$buildProcess->isSuccessful()) {
-            throw new ProcessFailedException($buildProcess);
-        }
-
-        echo "\r✅ Frontend assets built successfully!          \n";
     }
 
     private function updatePermissions()
@@ -398,7 +397,9 @@ class FSPBXInitialDBSeed extends Command
 
         $this->info("Updating ownership for $directory...");
 
-        shell_exec("chown -R www-data:www-data " . escapeshellarg($directory));
+        $process = new Process(['chown', '-R', 'www-data:www-data', $directory]);
+        $process->setTimeout(300);
+        $process->mustRun();
 
         if (is_dir($scriptsTarget)) {
             shell_exec("chown -R www-data:www-data " . escapeshellarg($scriptsTarget));

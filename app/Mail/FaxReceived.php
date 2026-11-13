@@ -5,7 +5,6 @@ namespace App\Mail;
 use App\Models\DomainSettings;
 use App\Models\DefaultSettings;
 use Illuminate\Mail\Mailables\Content;
-use Illuminate\Mail\Mailables\Attachment;
 
 class FaxReceived extends BaseMailable
 {
@@ -21,8 +20,15 @@ class FaxReceived extends BaseMailable
         $attributes['email_subject'] = $attributes['email_subject']
             ?? 'Fax received from ' . $sender
                 . ($pages !== '' ? ' (' . $pages . ' page' . ((string) $pages === '1' ? '' : 's') . ')' : '');
-
+        $attributes['caller_display'] = trim(
+            ($attributes['caller_id_name'] ?? '').
+            (filled($attributes['caller_id_number'] ?? null) ? ' <'.$attributes['caller_id_number'].'>' : '')
+        ) ?: 'Unknown sender';
+        $attributes['fax_destination'] = $attributes['fax_destination']
+            ?? $attributes['fax_extension']
+            ?? 'your fax line';
         parent::__construct($attributes);
+        $this->useEmailTemplate('fax', 'received');
     }
 
     private function withFaxSenderSettings(array $attributes): array
@@ -82,10 +88,10 @@ class FaxReceived extends BaseMailable
 
     public function content(): Content
     {
-        return new Content(
-            view: 'emails.fax.received',
-            text: 'emails.fax.received-text',
-        );
+        return $this->databaseTemplateContent(new Content(
+            view: 'emails.en-us.fax.received',
+            text: 'emails.en-us.fax.received-text',
+        ));
     }
 
     public function attachments(): array
@@ -93,13 +99,13 @@ class FaxReceived extends BaseMailable
         $path = $this->attributes['attachment_path'] ?? null;
 
         if (!$path || !is_file($path)) {
-            return [];
+            return $this->attachmentsFromReferences([]);
         }
 
-        return [
-            Attachment::fromPath($path)
-                ->as($this->attributes['attachment_name'] ?? basename($path))
-                ->withMime($this->attributes['attachment_mime'] ?? 'application/octet-stream'),
-        ];
+        return $this->attachmentsFromReferences([[
+            'path' => $path,
+            'name' => $this->attributes['attachment_name'] ?? basename($path),
+            'mime' => $this->attributes['attachment_mime'] ?? 'application/octet-stream',
+        ]]);
     }
 }

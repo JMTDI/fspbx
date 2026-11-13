@@ -4,33 +4,40 @@ namespace App\Http\Controllers;
 
 use Inertia\Inertia;
 use Inertia\Response;
-use App\Models\Domain;
-use Illuminate\Support\Str;
 use Illuminate\Http\Request;
-use App\Models\DomainSettings;
 use App\Models\PaymentGateway;
 use App\Models\DefaultSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Routing\Redirector;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Contracts\Foundation\Application;
-use App\Http\Requests\UpdateAccountSettingsRequest;
+use App\Http\Requests\UpdateSipCaptureSettingsRequest;
+use App\Http\Requests\UpdateSystemSettingsRequest;
+use App\Http\Requests\UpdateMessagingSettingsRequest;
+use App\Services\Messaging\PhotoCompressionSettings;
+use App\Services\Messaging\PhotoCompressionService;
+use App\Services\Settings\SettingsManagementService;
+use App\Services\Settings\SystemSettingsSchema;
+use App\Services\SipCaptureService;
 
 class SystemSettingsController extends Controller
 {
     public $model;
     protected $viewName = 'SystemSettings';
 
-    public function __construct()
-    {
+    public function __construct(
+        private readonly SettingsManagementService $settings,
+        private readonly SystemSettingsSchema $schema,
+        private readonly SipCaptureService $sipCapture,
+    ) {
         $this->model = new DefaultSettings();
     }
 
     /**
      * Display a listing of the resource.
      *
-     * @param  Request  $request
      * @return Redirector|Response|RedirectResponse|Application
      */
     public function index()
@@ -42,13 +49,19 @@ class SystemSettingsController extends Controller
         return Inertia::render(
             $this->viewName,
             [
-                // 'data' => function () {
-                //     return $this->getData();
-                // },
-
                 'routes' => [
                     'dashboard_route' => route('dashboard'),
                     'settings_update' => route('system-settings.update'),
+                    'messaging_update' => route('system-settings.messaging.update'),
+                    'number_translations' => [
+                        'index' => route('number-translations.index'),
+                        'store' => route('number-translations.store'),
+                        'item' => route('number-translations.show', ['number_translation' => '__UUID__']),
+                        'sync' => route('number-translations.sync'),
+                    ],
+                    'sip_capture_update' => route('system-settings.sip_capture.update'),
+                    'homer_api_update' => route('homer-api.update'),
+                    'homer_api_test' => route('homer-api.test'),
                     'payment_gateways' => route('system-settings.payment_gateways'),
                     'payment_gateway_update' => route('gateway.update'),
                     'payment_gateway_deactivate' => route('gateway.deactivate'),
@@ -60,6 +73,32 @@ class SystemSettingsController extends Controller
                     'assemblyai_route' => route('call-transcription.assemblyai'),
                     'assemblyai_store_route' => route('call-transcription.assemblyai.store'),
                 ],
+                // Schema-driven General tab. These are the global default_settings
+                // values every account inherits unless it sets its own.
+                'settings_schema' => $this->schema->fields(),
+                'settings_options' => function () {
+                    return $this->schema->options();
+                },
+                'settings_values' => function () {
+                    return $this->schema->values();
+                },
+                'sip_capture' => function () {
+                    return $this->canViewSipCapture()
+                        ? $this->sipCapture->settings()
+                        : null;
+                },
+                'homer_api' => fn () => \App\Services\HomerApiService::canManage()
+                    ? app(\App\Services\HomerApiService::class)->publicSettings() : null,
+                'messagingSettings' => function () {
+                    return userCheckPermission('default_setting_view') ? [
+                        ...app(\App\Services\Messaging\MessagingPageSettings::class)->props(),
+                    ] : null;
+                },
+                'scheduled_jobs' => function () {
+                    return userCheckPermission('scheduled_jobs_manage')
+                        ? app(ScheduledJobCoordinationController::class)->controlProps()
+                        : null;
+                },
                 'permissions' => function () {
                     return $this->getUserPermissions();
                 },
@@ -67,123 +106,128 @@ class SystemSettingsController extends Controller
         );
     }
 
+    public function updateMessaging(UpdateMessagingSettingsRequest $request, PhotoCompressionSettings $settings): JsonResponse
+    {
+        return response()->json([
+            ...app(\App\Services\Messaging\MessagingPageSettings::class)->save(null, $request->validated()),
+            'available' => app(PhotoCompressionService::class)->available(),
+            'messages' => ['success' => [__('Messaging settings saved.')]],
+        ]);
+    }
 
+    public function updateSipCapture(UpdateSipCaptureSettingsRequest $request): JsonResponse
+    {
+        if (! $this->canEditSipCapture()) {
+            return response()->json(['errors' => ['authorization' => [__('Access denied.')]]], 403);
+        }
 
+        try {
+            $result = $this->sipCapture->save($request->validated());
+            $messages = ['success' => [__('SIP capture settings saved.')]];
+
+            if (! $result['runtime_synchronized']) {
+                $messages['error'] = [__(
+                    __('The settings were saved, but FreeSWITCH could not apply them live. Check the event socket and rescan the affected SIP profiles.')
+                )];
+            }
+
+            return response()->json([
+                'messages' => $messages,
+                'runtime_synchronized' => $result['runtime_synchronized'],
+                'server_hostname' => $result['server_hostname'],
+                'capture_id' => $result['capture_id'],
+            ]);
+        } catch (ValidationException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            logger('SystemSettingsController@updateSipCapture: ' . $e->getMessage()
+                . ' at ' . $e->getFile() . ':' . $e->getLine());
+
+            return response()->json([
+                'errors' => ['server' => [__('Server returned an error while saving SIP capture settings.')]],
+            ], 500);
+        }
+    }
 
     /**
-     * Update the specified resource in storage.
-     *
-     * @param  UpdateAccountSettingsRequest  $request
-     * @return JsonResponse
+     * Update the global default settings shown on the General tab.
      */
-    public function update(UpdateAccountSettingsRequest $request)
+    public function update(UpdateSystemSettingsRequest $request): JsonResponse
     {
+        if (!userCheckPermission('default_setting_edit')) {
+            return response()->json(['errors' => ['authorization' => [__('Access denied.')]]], 403);
+        }
+
         try {
-            // Begin Transaction
             DB::beginTransaction();
-            // Retrieve validated data
-            $data = $request->validated();
 
-            // Update domain details
-            $domain = Domain::where('domain_uuid', $data['domain_uuid'])->first();
+            $this->applyDefaults($request->validated()['settings'] ?? []);
 
-            if (!$domain) {
-                throw new \Exception('Domain not found.');
-            }
-
-            $domain->update([
-                'domain_name'        => $data['domain_name'],
-                'domain_description' => $data['domain_description'],
-                'domain_enabled'     => $data['domain_enabled'],
-            ]);
-
-            // Apply all existing‐row updates
-            if (!empty($data['updatedSettings'])) {
-                foreach ($data['updatedSettings'] as $s) {
-                    // if the new value is NULL, we disable this setting
-                    $enabled = is_null($s['domain_setting_value'])
-                        ? false
-                        : $s['domain_setting_enabled'];
-
-                    DomainSettings::where('domain_setting_uuid', $s['domain_setting_uuid'])
-                        ->update([
-                            'domain_setting_value'   => $s['domain_setting_value'],
-                            'domain_setting_enabled' => $enabled,
-                        ]);
-                }
-            }
-
-            // 3️⃣ Prepare and insert brand‐new settings in one go
-            if (!empty($data['newSettings'])) {
-                // extract the subcategories to look up
-                $subs = collect($data['newSettings'])
-                    ->pluck('domain_setting_subcategory')
-                    ->unique()
-                    ->all();
-
-                // single query to get their default definitions
-                $defaults = DB::table('v_default_settings')
-                    ->whereIn('default_setting_subcategory', $subs)
-                    ->get()
-                    ->keyBy('default_setting_subcategory');
-
-                foreach ($data['newSettings'] as $new) {
-                    $sub = $new['domain_setting_subcategory'];
-
-                    // skip any subcategory we couldn't find in defaults
-                    if (! isset($defaults[$sub])) {
-                        logger("No default_setting found for subcategory: {$sub}");
-                        continue;
-                    }
-
-                    $def = $defaults[$sub];
-
-                    // create the new override
-                    $domain->settings()->create([
-                        'domain_setting_uuid'        => Str::uuid()->toString(),
-                        'domain_setting_category'    => $def->default_setting_category,
-                        'domain_setting_subcategory' => $sub,
-                        'domain_setting_name'        => $def->default_setting_name,
-                        'domain_setting_value'       => $new['domain_setting_value'],
-                        'domain_setting_enabled'     => true,
-                        'domain_setting_description' => $def->default_setting_description,
-                    ]);
-                }
-            }
-
-
-            // Commit Transaction
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['Settings updated successfully.']],
+                'messages' => ['server' => [__('Settings updated successfully.')]],
             ], 200);
         } catch (\Exception $e) {
-            // Rollback Transaction if any error occurs
             DB::rollBack();
 
-            // Log the error message
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while processing your request.']]
-            ], 500); // 500 Internal Server Error for any other errors
+                'errors' => ['server' => [__('Server returned an error while processing your request.')]]
+            ], 500);
         }
     }
 
+    /**
+     * Persist the submitted {key: value} map against the schema's default
+     * settings. The schema carries each field's category/subcategory/name.
+     * A default is the root of the inheritance chain, so an empty value is
+     * never written (it would leave nothing to fall back to); an unchanged
+     * value is skipped; a changed value updates the default in place.
+     *
+     * @param array<string, mixed> $submitted
+     */
+    private function applyDefaults(array $submitted): void
+    {
+        $fields = collect($this->schema->fields())->keyBy('key');
+
+        foreach ($submitted as $key => $value) {
+            $field = $fields->get($key);
+            if (! $field) {
+                continue; // validated already; defensive
+            }
+
+            $value = is_string($value) ? trim($value) : $value;
+            if ($value === null || $value === '') {
+                continue; // never blank a global default
+            }
+
+            $row = DefaultSettings::query()
+                ->where('default_setting_category', $field['category'])
+                ->where('default_setting_subcategory', $field['subcategory'])
+                ->where('default_setting_name', $field['name'])
+                ->first();
+            if ($row && (string) $row->default_setting_value === (string) $value) {
+                continue; // unchanged
+            }
+
+            $this->settings->saveDefault([
+                'default_setting_category' => $field['category'],
+                'default_setting_subcategory' => $field['subcategory'],
+                'default_setting_name' => $field['name'],
+                'default_setting_value' => $value,
+                'default_setting_order' => $row?->default_setting_order,
+                'default_setting_enabled' => $row ? (bool) $row->default_setting_enabled : true,
+                'default_setting_description' => $row?->default_setting_description,
+            ], $row);
+        }
+    }
 
     public function getPaymentGatewayData(Request $request)
     {
-        // 1) Permission check (adjust the permission slug as needed)
-        // if (! userCheckPermission('system_settings_view')) {
-        //     return response()->json([
-        //         'messages' => ['error' => ['Access denied.']],
-        //     ], 403);
-        // }
-
         try {
-            // 2) Fetch + transform
             $gateways = PaymentGateway::with('settings')->get()
                 ->map(function ($gw) {
                     return [
@@ -195,10 +239,8 @@ class SystemSettingsController extends Controller
                     ];
                 });
 
-            // 3) Success response
             return response()->json($gateways);
         } catch (\Throwable $e) {
-            // 4) Log & error response
             logger(
                 'PaymentGateway fetch error: '
                     . $e->getMessage()
@@ -207,7 +249,7 @@ class SystemSettingsController extends Controller
             );
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while loading payment gateways.']],
+                'messages' => ['error' => [__('Something went wrong while loading payment gateways.')]],
             ], 500);
         }
     }
@@ -215,9 +257,31 @@ class SystemSettingsController extends Controller
     public function getUserPermissions()
     {
         $permissions = [];
+        $permissions['scheduled_jobs_manage'] = userCheckPermission('scheduled_jobs_manage');
         $permissions['payment_gateways_view'] = userCheckPermission('payment_gateways_view');
         $permissions['call_transcription_settings_view'] = userCheckPermission('call_transcription_settings_view');
+        $permissions['default_setting_view'] = userCheckPermission('default_setting_view');
+        $permissions['default_setting_edit'] = userCheckPermission('default_setting_edit');
+        foreach (['view', 'add', 'edit', 'delete'] as $action) {
+            $permissions['number_translation_' . $action] = userCheckPermission('number_translation_' . $action);
+        }
+        $permissions['sip_capture_view'] = $this->canViewSipCapture();
+        $permissions['sip_capture_edit'] = $this->canEditSipCapture();
+        $permissions['homer_api_manage'] = \App\Services\HomerApiService::canManage();
 
         return $permissions;
+    }
+
+    private function canViewSipCapture(): bool
+    {
+        return userCheckPermission('sofia_global_setting_view')
+            && userCheckPermission('sip_profile_view');
+    }
+
+    private function canEditSipCapture(): bool
+    {
+        return userCheckPermission('sofia_global_setting_edit')
+            && userCheckPermission('sip_profile_setting_add')
+            && userCheckPermission('sip_profile_setting_edit');
     }
 }

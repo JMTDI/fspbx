@@ -109,6 +109,17 @@ class OutboundRouteService
             return ['type' => 'bridge', 'uuid' => null, 'name' => 'bridge', 'data' => substr($value, 7)];
         }
 
+        if (str_starts_with(strtolower($value), 'bridge_uuid:')) {
+            $bridgeUuid = substr($value, 12);
+
+            return [
+                'type' => 'bridge_uuid',
+                'uuid' => $bridgeUuid,
+                'name' => 'bridge',
+                'data' => 'bridge.lua ' . $bridgeUuid,
+            ];
+        }
+
         if (str_starts_with(strtolower($value), 'enum')) {
             return ['type' => 'enum', 'uuid' => null, 'name' => 'enum', 'data' => $value];
         }
@@ -145,7 +156,7 @@ class OutboundRouteService
             'gateway' => $destination['name'] . '.' . $abbrv,
             'freetdm' => 'freetdm.' . $abbrv,
             'xmpp' => 'xmpp.' . $abbrv,
-            'bridge' => 'bridge.' . $abbrv,
+            'bridge', 'bridge_uuid' => 'bridge.' . $abbrv,
             'enum' => 'enum.' . $abbrv,
             'transfer' => 'transfer.' . $abbrv,
             default => $abbrv,
@@ -158,7 +169,7 @@ class OutboundRouteService
             'gateway' => 'sofia/gateway/' . $destination['uuid'] . '/' . ($abbrv === '988' ? $prefixNumber . '18002738255' : $prefixNumber . '$1'),
             'freetdm' => $destination['data'] . '/1/a/' . $prefixNumber . '$1',
             'xmpp' => 'dingaling/gtalk/+' . $prefixNumber . '$1@voice.google.com',
-            'bridge', 'transfer' => $destination['data'],
+            'bridge', 'bridge_uuid', 'transfer' => $destination['data'],
             'enum' => '${enum_auto_route}',
             default => $destination['data'],
         };
@@ -250,20 +261,86 @@ class OutboundRouteService
             $order += 10;
         }
 
-        $details[] = $this->detail(
+        // Optional module: available to enable, never executed by default.
+        $details[] = $this->detail('action', 'lua', 'stir_shaken.lua', $order, inline: 'false', enabled: 'false');
+        $order += 10;
+        $routing = [];
+        $routing[] = $this->detail(
             'action',
-            $primary['type'] === 'transfer' ? 'transfer' : 'bridge',
+            match ($primary['type']) {
+                'transfer' => 'transfer',
+                'bridge_uuid' => 'lua',
+                default => 'bridge',
+            },
             $this->bridgeData($primary, $prefixNumber, $route['abbrv']),
             $order
         );
         $order += 10;
 
         foreach ($fallbacks as $fallback) {
-            $details[] = $this->detail('action', 'bridge', $this->bridgeData($fallback, $prefixNumber, $route['abbrv']), $order);
+            $routing[] = $this->detail(
+                'action',
+                $fallback['type'] === 'bridge_uuid' ? 'lua' : 'bridge',
+                $this->bridgeData($fallback, $prefixNumber, $route['abbrv']),
+                $order
+            );
             $order += 10;
         }
 
+        $mode = null;
+        $order = end($details)['dialplan_detail_order'] + 10;
+        foreach ($routing as $detail) {
+            $next = self::diversionAction($detail['dialplan_detail_type'], $detail['dialplan_detail_data']);
+            if ($mode !== $next) {
+                $details[] = $this->detail('action', 'lua', $next, $order, inline: 'false');
+                $order += 10;
+                $mode = $next;
+            }
+            $detail['dialplan_detail_order'] = $order;
+            $details[] = $detail;
+            $order += 10;
+            if ($detail['dialplan_detail_type'] === 'lua' && str_starts_with($detail['dialplan_detail_data'], 'bridge.lua ')) {
+                $mode = null;
+            }
+        }
+
+        if ($isEmergency) {
+            // Keep the optional headers in this route. A blank location must
+            // still reach the normal routing group and its number capture.
+            $headers = array_values(array_filter($details, fn ($detail) => $detail['dialplan_detail_tag'] === 'condition'));
+            $headerOrder = end($headers)['dialplan_detail_order'] + 10;
+            $presence = $this->detail('condition', '${emergency_caller_id_location}', '^.+$', $headerOrder);
+            $presence['dialplan_detail_break'] = 'never';
+            $headers[] = $presence;
+            $headers[] = $this->detail('action', 'export', 'sip_h_Geolocation-Routing=yes', $headerOrder + 10);
+            $headers[] = $this->detail('action', 'export', 'sip_geolocation=<https://location.somewhere.com/?loc=${url_encode(${emergency_caller_id_location})}>', $headerOrder + 20);
+            foreach ($details as &$detail) {
+                $detail['dialplan_detail_group'] = 1;
+            }
+            unset($detail);
+            $details = [...$headers, ...$details];
+        }
+
         return $details;
+    }
+
+    /** A header action never replaces native routing applications. */
+    public static function diversionAction(string $application, string $data): string
+    {
+        return ($application === 'bridge' && self::supportsDiversion($data))
+            || ($application === 'lua' && str_starts_with($data, 'bridge.lua '))
+            ? 'diversion.lua' : 'diversion.lua clear';
+    }
+
+    /** Only definite gateway bridges receive a generated header. */
+    public static function supportsDiversion(string $destination): bool
+    {
+        if (stripos($destination, 'sip_h_Diversion') !== false) {
+            return false;
+        }
+        // Native generated gateway routes are literal single endpoints. Saved
+        // Bridges are resolved and classified separately in bridge.lua.
+        return (bool) preg_match('~^sofia/gateway/[a-zA-Z0-9_.-]+/[^,\s|{}\[\]]+$~D', $destination);
     }
 
     private function persistDialplan(array $attributes, array $details): Dialplans

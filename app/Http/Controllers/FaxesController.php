@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use App\Http\Requests\CreateNewFaxRequest;
 use App\Services\FaxSendService;
+use App\Services\FaxSettingsResolver;
 use Illuminate\Validation\ValidationException;
 use Exception;
 
@@ -162,11 +163,11 @@ class FaxesController extends Controller
             ->count();
 
         return [
-            ['name' => 'Faxes Sent (Last 30 Days)', 'stat' => $totalSent],
-            ['name' => 'Faxes Received (Last 30 Days)', 'stat' => $totalReceived],
-            ['name' => 'Pages Sent (Last 30 Days)', 'stat' => $totalSentPages],
-            ['name' => 'Pages Received (Last 30 Days)', 'stat' => $totalReceivedPages],
-            ['name' => 'Active Fax Servers', 'stat' => $totalFaxes],
+            ['name' => __('Faxes Sent (Last 30 Days)'), 'stat' => $totalSent],
+            ['name' => __('Faxes Received (Last 30 Days)'), 'stat' => $totalReceived],
+            ['name' => __('Pages Sent (Last 30 Days)'), 'stat' => $totalSentPages],
+            ['name' => __('Pages Received (Last 30 Days)'), 'stat' => $totalReceivedPages],
+            ['name' => __('Active Fax Servers'), 'stat' => $totalFaxes],
         ];
     }
 
@@ -276,7 +277,7 @@ class FaxesController extends Controller
 
         if (!empty($invalid)) {
             throw ValidationException::withMessages([
-                'locations' => ['Select only locations you have access to.'],
+                'locations' => [__('Select only locations you have access to.')],
             ]);
         }
 
@@ -415,7 +416,7 @@ class FaxesController extends Controller
 
 
             return response()->json([
-                'messages' => ['success' => ['Fax server created successfully']],
+                'messages' => ['success' => [__('Fax server created successfully')]],
                 'fax' => $fax->fresh(['allowed_emails', 'allowed_domain_names', 'locations']),
             ], 200);
         } catch (ValidationException $e) {
@@ -426,7 +427,7 @@ class FaxesController extends Controller
             DB::rollBack();
             logger('FaxesController@update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
-                'messages' => ['error' => ['An error occurred while updating the fax.', $e->getMessage()]],
+                'messages' => ['error' => [__('An error occurred while updating the fax.'), $e->getMessage()]],
             ], 500);
         }
     }
@@ -659,7 +660,7 @@ class FaxesController extends Controller
         ]);
     }
 
-    public function getNewFaxOptions(Request $request)
+    public function getNewFaxOptions(Request $request, FaxSettingsResolver $faxSettings)
     {
         $itemUuid = $request->input('item_uuid');
 
@@ -672,6 +673,12 @@ class FaxesController extends Controller
         // 3) Any routes your front end needs
         $routes = array_merge($routes, [
             'send_fax_route'  => route('faxes.new.fax.send'),
+            'contact_options_route' => route('contacts.options'),
+            'contact_store_route' => route('contacts.store'),
+            'contact_show_route' => route('contacts.show', ['phoneNumber' => ':phoneNumber']),
+            'contact_update_route' => route('contacts.update', ['contact' => ':contact']),
+            'contact_destroy_route' => route('contacts.destroy', ['contact' => ':contact']),
+            'organization_options_route' => route('organizations.index'),
         ]);
 
         $currentDomain = session('domain_uuid');
@@ -700,6 +707,10 @@ class FaxesController extends Controller
             'permissions' => $permissions,
             'routes'      => $routes,
             'phone_numbers' => $phone_numbers,
+            'send_confirmation_default' => $faxSettings->boolean(
+                'send_confirmation',
+                $currentDomain
+            ),
         ]);
     }
 
@@ -1004,7 +1015,7 @@ class FaxesController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Fax updated successfully']],
+                'messages' => ['success' => [__('Fax updated successfully')]],
                 'fax' => $fax->fresh(['allowed_emails', 'allowed_domain_names']),
             ], 200);
         } catch (ValidationException $e) {
@@ -1015,7 +1026,7 @@ class FaxesController extends Controller
             DB::rollBack();
             logger('FaxesController@update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
-                'messages' => ['error' => ['An error occurred while updating the fax.', $e->getMessage()]],
+                'messages' => ['error' => [__('An error occurred while updating the fax.'), $e->getMessage()]],
             ], 500);
         }
     }
@@ -1121,7 +1132,7 @@ class FaxesController extends Controller
     {
         if (! userCheckPermission('user_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -1154,7 +1165,7 @@ class FaxesController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Selected user(s) were deleted successfully.']]
+                'messages' => ['success' => [__('Selected user(s) were deleted successfully.')]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -1163,7 +1174,7 @@ class FaxesController extends Controller
                 . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting the selected user(s).']]
+                'messages' => ['error' => [__('An error occurred while deleting the selected user(s).')]]
             ], 500);
         }
     }
@@ -1185,14 +1196,14 @@ class FaxesController extends Controller
                 return response()->json([
                     'status' => 200,
                     'success' => [
-                        'message' => 'Selected fax have been deleted'
+                        'message' => __('Selected fax have been deleted')
                     ]
                 ]);
             } else {
                 return response()->json([
                     'status' => 401,
                     'error' => [
-                        'message' => 'There was an error deleting selected fax'
+                        'message' => __('There was an error deleting selected fax')
                     ]
                 ]);
             }
@@ -1209,14 +1220,14 @@ class FaxesController extends Controller
                 return response()->json([
                     'status' => 200,
                     'success' => [
-                        'message' => 'Selected fax have been deleted'
+                        'message' => __('Selected fax have been deleted')
                     ]
                 ]);
             } else {
                 return response()->json([
                     'status' => 401,
                     'error' => [
-                        'message' => 'There was an error deleting selected fax'
+                        'message' => __('There was an error deleting selected fax')
                     ]
                 ]);
             }
@@ -1233,14 +1244,14 @@ class FaxesController extends Controller
                 return response()->json([
                     'status' => 200,
                     'success' => [
-                        'message' => 'Selected log has been deleted'
+                        'message' => __('Selected log has been deleted')
                     ]
                 ]);
             } else {
                 return response()->json([
                     'status' => 401,
                     'error' => [
-                        'message' => 'There was an error deleting selected log'
+                        'message' => __('There was an error deleting selected log')
                     ]
                 ]);
             }
@@ -1337,7 +1348,7 @@ class FaxesController extends Controller
 
             // Validate the input
             $attributes = [
-                'recipient' => 'fax recipient',
+                'recipient' => __('fax recipient'),
             ];
 
             $validator = Validator::make($data, [
@@ -1367,7 +1378,7 @@ class FaxesController extends Controller
                 ->first();
 
             if (!$fax) {
-                throw new \Exception("There was a problem scheduling your fax. Fax server not found.");
+                throw new \Exception(__('There was a problem scheduling your fax. Fax server not found.'));
             }
 
             // Persist uploads to the fax disk and build attachment metadata
@@ -1375,26 +1386,42 @@ class FaxesController extends Controller
             $attachments = [];
             foreach (($files ?? []) as $file) {
                 $meta = FaxSendService::storeUploadedAttachment($file);
-                if ($meta !== null) {
-                    $attachments[] = $meta;
+                if ($meta === null) {
+                    foreach ($attachments as $attachment) {
+                        Storage::disk('fax')->delete($attachment['stored_path']);
+                    }
+
+                    return response()->json([
+                        'message' => __('The fax attachment could not be saved. Please try again.'),
+                        'errors' => ['files' => [__('The fax attachment could not be saved. Please try again.')]],
+                    ], 422);
                 }
+                $attachments[] = $meta;
             }
 
             // Subject of "body" tells FaxSendService to render a cover page
             // from the body text. Empty subject = no cover page.
             // From is left blank when the user opted out of confirmation
             // emails so FaxSendService doesn't notify them.
-            FaxSendService::send([
+            $result = FaxSendService::send([
                 'from'            => $data['send_confirmation'] ? Session::get('user.user_email') : '',
                 'fax_destination' => $data['recipient'],
                 'fax_uuid'        => $data['fax_uuid'],
+                'domain_uuid'     => $fax->domain_uuid,
                 'subject'         => isset($data['fax_message']) ? 'body' : '',
                 'body'            => isset($data['fax_message']) ? strip_tags($data['fax_message']) : '',
                 'attachments'     => $attachments,
             ]);
 
+            if (!is_string($result) || !Str::isUuid($result)) {
+                return response()->json([
+                    'message' => __('There was a problem processing your fax. Please check your attachments and try again.'),
+                    'errors' => ['files' => [__('There was a problem processing your fax. Please check your attachments and try again.')]],
+                ], 422);
+            }
+
             return response()->json([
-                'messages' => ['success' => ['Fax is scheduled for delivery']],
+                'messages' => ['success' => [__('Fax is scheduled for delivery')]],
             ], 200);
         } catch (\Throwable $e) {
             DB::rollBack();

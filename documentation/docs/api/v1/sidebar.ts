@@ -176,6 +176,90 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Message Settings",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/list-message-settings",
+          label: "List message settings",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/create-message-settings",
+          label: "Create message settings",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api/v1/retrieve-message-settings",
+          label: "Retrieve message settings",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/update-message-settings",
+          label: "Update message settings",
+          className: "api-method patch",
+        },
+        {
+          type: "doc",
+          id: "api/v1/delete-message-settings",
+          label: "Delete message settings",
+          className: "api-method delete",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Messages",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/send-an-sms-or-mms",
+          label: "Send an SMS or MMS",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api/v1/send-a-group-mms",
+          label: "Send a group MMS",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Phone Control",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/create-a-click-to-dial-call",
+          label: "Create a click-to-dial call",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api/v1/list-phone-control-targets",
+          label: "List phone-control targets",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/list-active-calls-for-phone-control",
+          label: "List active calls for phone control",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/create-a-phone-control-action",
+          label: "Create a phone-control action",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Phone Numbers",
       items: [
         {
@@ -206,6 +290,42 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api/v1/delete-a-phone-number",
           label: "Delete a phone number",
+          className: "api-method delete",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Recordings",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/list-recordings",
+          label: "List recordings",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/create-a-recording",
+          label: "Create a recording",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api/v1/retrieve-a-recording",
+          label: "Retrieve a recording",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/update-a-recording",
+          label: "Update a recording",
+          className: "api-method patch",
+        },
+        {
+          type: "doc",
+          id: "api/v1/delete-a-recording",
+          label: "Delete a recording",
           className: "api-method delete",
         },
       ],
@@ -248,6 +368,18 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Reports",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/retrieve-active-and-suspended-extensions-report",
+          label: "Retrieve active and suspended extensions report",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Ring Groups",
       items: [
         {
@@ -279,6 +411,48 @@ const sidebar: SidebarsConfig = {
           id: "api/v1/delete-a-ring-group",
           label: "Delete a ring group",
           className: "api-method delete",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Users",
+      items: [
+        {
+          type: "doc",
+          id: "api/v1/list-users",
+          label: "List users",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/create-a-user",
+          label: "Create a user",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api/v1/retrieve-a-user",
+          label: "Retrieve a user",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api/v1/update-a-user",
+          label: "Update a user",
+          className: "api-method patch",
+        },
+        {
+          type: "doc",
+          id: "api/v1/delete-a-user",
+          label: "Delete a user",
+          className: "api-method delete",
+        },
+        {
+          type: "doc",
+          id: "api/v1/send-a-password-reset-email",
+          label: "Send a password reset email",
+          className: "api-method post",
         },
       ],
     },

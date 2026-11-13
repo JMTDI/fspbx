@@ -3,7 +3,7 @@
 
         <div class="m-3">
             <DataTable @search-action="handleSearchButtonClick" @reset-filters="handleFiltersReset">
-                <template #title>Call History</template>
+                <template #title>{{ $t('Call History') }}</template>
 
                 <template #action>
 
@@ -11,20 +11,20 @@
                         :disabled="isExporting"
                         class="inline-flex items-center gap-x-1.5 rounded-md bg-indigo-600 px-2.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
                         <DocumentArrowDownIcon class="h-5 w-5" aria-hidden="true" />
-                        Export CSV
+                        {{ $t('Export CSV') }}
                         <Spinner class="ml-1" :show="isExporting" />
                     </button>
 
                     <button v-if="!showGlobal && page.props.auth.can.cdrs_view_global" type="button"
                         @click.prevent="handleShowGlobal()"
                         class="rounded-md bg-white px-2.5 py-1.5 ml-2 sm:ml-4 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
-                        Show global
+                        {{ $t('Show global') }}
                     </button>
 
                     <button v-if="showGlobal && page.props.auth.can.cdrs_view_global" type="button"
                         @click.prevent="handleShowLocal()"
                         class="rounded-md bg-white px-2.5 py-1.5 ml-2 sm:ml-4 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
-                        Show local
+                        {{ $t('Show local') }}
                     </button>
 
                 </template>
@@ -37,11 +37,11 @@
                         <input type="search" v-model="filterData.search" name="mobile-search-candidate"
                             id="mobile-search-candidate"
                             class="block w-full rounded-md border-0 py-1.5 pl-10 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:hidden"
-                            placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                            :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
                         <input type="search" v-model="filterData.search" name="desktop-search-candidate"
                             id="desktop-search-candidate"
                             class="hidden w-full rounded-md border-0 py-1.5 pl-10 text-sm leading-6 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:block"
-                            placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                            :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
                     </div>
 
 
@@ -53,28 +53,28 @@
                     <div class="relative min-w-36 mb-2 shrink-0 sm:mr-4">
                         <multiselect v-model="filterData.direction" :options="callDirections" :searchable="false"
                             :close-on-select="true" track-by="value" label="name" :show-labels="false"
-                            placeholder="Direction" aria-label="pick a value"></multiselect>
+                            :placeholder="$t('Direction')" :aria-label="$t('Filter by call direction')"></multiselect>
                     </div>
 
                     <div v-if="permissions.all_cdr_view" class="relative min-w-64 mb-2 shrink-0 sm:mr-4">
                         <multiselect v-model="filterData.entity" :options="entities" deselectLabel=""
                             selectGroupLabel="" deselectGroupLabel="" selectLabel="" group-values="groupOptions"
-                            group-label="groupLabel" :group-select="false" placeholder="Select extension or group"
-                            track-by="value" label="label"><template v-slot:noResult>No items found.</template>
+                            group-label="groupLabel" :group-select="false" :placeholder="$t('Select extension or group')"
+                            track-by="value" label="label"><template v-slot:noResult>{{ $t('No items found.') }}</template>
                         </multiselect>
                     </div>
 
                     <div class="relative min-w-36 mb-2 shrink-0 sm:mr-4">
                         <multiselect v-model="filterData.status" :options="statusOptions" :searchable="false"
                             :close-on-select="true" track-by="value" label="name" :show-labels="false"
-                            placeholder="Status" aria-label="pick a value">
+                            :placeholder="$t('Status')" :aria-label="$t('Filter by call status')">
                         </multiselect>
                     </div>
 
                     <div v-if="permissions.search_sentiment && permissions.transcription_summary" class="relative min-w-36 mb-2 shrink-0 sm:mr-4">
                         <multiselect v-model="filterData.sentiment" :options="sentimentOptions" :searchable="false"
                             :close-on-select="true" track-by="value" label="name" :show-labels="false"
-                            placeholder="Sentiment" aria-label="pick a value">
+                            :placeholder="$t('Sentiment')" :aria-label="$t('Filter by call sentiment')">
                         </multiselect>
                     </div>
 
@@ -90,58 +90,58 @@
                     <TableColumnHeader header=" "
                         class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-6">
                     </TableColumnHeader>
-                    <TableColumnHeader v-if="showGlobal" header="Domain"
+                    <TableColumnHeader v-if="showGlobal" :header="$t('Domain')"
                         class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('caller_id_name')">
-                            <span class="mr-2">Caller ID Name</span>
+                            <span class="mr-2">{{ $t('Caller ID Name') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'caller_id_name' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'caller_id_name' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('caller_id_number')">
-                            <span class="mr-2">Caller ID Number</span>
+                            <span class="mr-2">{{ $t('Caller ID Number') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'caller_id_number' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'caller_id_number' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('caller_destination')">
-                            <span class="mr-2">Dialed Number</span>
+                            <span class="mr-2">{{ $t('Dialed Number') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'caller_destination' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'caller_destination' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('destination_number')">
-                            <span class="mr-2">Recipient</span>
+                            <span class="mr-2">{{ $t('Recipient') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'destination_number' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'destination_number' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('start_epoch')">
-                            <span class="mr-2">Date</span>
+                            <span class="mr-2">{{ $t('Date') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'start_epoch' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'start_epoch' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('start_epoch')">
-                            <span class="mr-2">Time</span>
+                            <span class="mr-2">{{ $t('Time') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'start_epoch' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'start_epoch' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
                     <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                         <div class="flex items-center cursor-pointer select-none" @click="handleSortRequest('duration')">
-                            <span class="mr-2">Duration</span>
+                            <span class="mr-2">{{ $t('Duration') }}</span>
                             <ChevronUpIcon v-if="sortData.name === 'duration' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
                             <ChevronDownIcon v-else-if="sortData.name === 'duration' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
                         </div>
                     </TableColumnHeader>
-                    <TableColumnHeader header="Status"
+                    <TableColumnHeader :header="$t('Status')"
                         class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
                     </TableColumnHeader>
 
@@ -153,9 +153,9 @@
                         </div>
                     </TableColumnHeader>
 
-                    <TableColumnHeader header="Rec" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
+                    <TableColumnHeader :header="$t('Rec')" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
 
-                    <TableColumnHeader header="Actions"
+                    <TableColumnHeader :header="$t('Actions')"
                         class="w-24 px-1 py-3.5 text-sm font-semibold text-center text-gray-900" />
 
                 </template>
@@ -166,7 +166,7 @@
                         :text="row.direction" /> -->
                         <TableField :text="row.direction"
                             class="whitespace-nowrap py-2 pl-4 pr-3 text-sm text-gray-500 sm:pl-6">
-                            <ejs-tooltip :content="row.direction + ' call'" position='TopLeft'
+                            <ejs-tooltip :content="directionTooltip(row.direction)" position='TopLeft'
                                 target="#destination_tooltip_target">
                                 <div id="destination_tooltip_target">
                                     <PhoneOutgoingIcon class="w-5 h-5 text-blue-600"
@@ -193,7 +193,8 @@
                             :text="row.caller_id_name" /> -->
 
                         <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500">
-                            <div v-if="row.extension && row.direction == 'outbound'">{{ row.extension?.name_formatted }}
+                            <!-- A destination extension on an application-originated call is not its caller. -->
+                            <div v-if="row.extension && row.direction == 'outbound' && row.extension.extension !== row.destination_number">{{ row.extension?.name_formatted }}
                             </div>
                             <div v-else>{{ row.caller_id_name_formatted }}</div>
                         </TableField>
@@ -217,10 +218,17 @@
 
                         <!-- <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500" :text="row.status" /> -->
                         <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500">
-                            <Badge :text="row.status"
+                            <Badge :text="statusLabel(row.status)"
                                 :backgroundColor="statusBadgeConfig[row.status]?.backgroundColor || 'bg-blue-50'"
                                 :textColor="statusBadgeConfig[row.status]?.textColor || 'text-blue-700'"
                                 :ringColor="statusBadgeConfig[row.status]?.ringColor || 'ring-blue-600/20'" />
+                            <!-- Only add what the badge doesn't say: a queue outcome can replace the Voicemail status. -->
+                            <template v-if="row.voicemail_message === true || row.voicemail_message === 'true'">
+                                <div v-if="row.status !== 'voicemail'" class="mt-1 text-xs text-gray-500">
+                                    {{ $t('Voicemail message left') }}</div>
+                            </template>
+                            <div v-else-if="row.status === 'voicemail'" class="mt-1 text-xs text-gray-500">
+                                {{ $t('No message left') }}</div>
                         </TableField>
 
                         <TableField v-if="permissions.cdr_mos_view"
@@ -248,7 +256,7 @@
                         <TableField class="w-24 whitespace-nowrap px-1 py-1 text-sm text-gray-500">
                             <template #action-buttons>
                                 <div class="grid w-[72px] grid-cols-2 place-items-center gap-0 whitespace-nowrap">
-                                    <ejs-tooltip v-if="page.props.auth.can.cdr_view_details" :content="'View details'"
+                                    <ejs-tooltip v-if="page.props.auth.can.cdr_view_details" :content="$t('View details')"
                                         position='TopCenter' target="#view_tooltip_target">
                                         <div id="view_tooltip_target">
                                             <MagnifyingGlassIcon @click="handleViewRequest(row.xml_cdr_uuid)"
@@ -271,9 +279,9 @@
                     <!-- Conditional rendering for 'no records' message -->
                     <div v-if="data.data.length === 0" class="text-center my-5 ">
                         <MagnifyingGlassIcon class="mx-auto h-12 w-12 text-gray-400" />
-                        <h3 class="mt-2 text-sm font-semibold text-gray-900">No results found</h3>
+                        <h3 class="mt-2 text-sm font-semibold text-gray-900">{{ $t('No results found') }}</h3>
                         <p class="mt-1 text-sm text-gray-500">
-                            Adjust your search and try again.
+                            {{ $t('Adjust your search and try again.') }}
                         </p>
                     </div>
                 </template>
@@ -295,7 +303,9 @@
 
 
     <CallDetailsModal :show="showDetailsModal" :item="itemOptions?.item" :loading="loadingModal"
-        :customClass="'sm:max-w-4xl'" @close="handleModalClose" 
+        :pcap-route="routes.sip_trace" :can-view-pcap="permissions.cdr_pcap"
+        :can-play-recording="permissions.call_recording_play" :routes="routes"
+        :customClass="'sm:max-w-5xl'" @close="handleModalClose"
         @success="showNotification" 
         @error="handleErrorResponse">
     </CallDetailsModal>
@@ -315,6 +325,7 @@
 import { computed, ref, onMounted } from "vue";
 import { usePage } from '@inertiajs/vue3'
 import { router } from "@inertiajs/vue3";
+import { trans } from "@i18n";
 import MainLayout from '../Layouts/MainLayout.vue'
 import DataTable from "./components/general/DataTable.vue";
 import TableColumnHeader from "./components/general/TableColumnHeader.vue";
@@ -422,18 +433,18 @@ const selectedUuid = ref(null)
 const callBlockHeader = computed(() => {
     const item = callBlockOptions.value?.item ?? {};
     const value = item.call_block_number || item.call_block_name;
-    const label = item.call_block_direction === "outbound" ? "Block Destination" : "Block Caller";
+    const label = item.call_block_direction === "outbound" ? trans("Block Destination") : trans("Block Caller");
 
     return value ? `${label} - ${value}` : label;
 });
 
 const callBlockAdvancedActions = (row) => [
     {
-        category: "Advanced",
+        category: trans("Advanced"),
         actions: [
             {
                 id: "block_call_history_number",
-                label: row.direction === "outbound" ? "Block destination" : "Block caller",
+                label: row.direction === "outbound" ? trans("Block destination") : trans("Block caller"),
                 icon: "NoSymbolIcon",
             },
         ],
@@ -441,25 +452,71 @@ const callBlockAdvancedActions = (row) => [
 ];
 
 const callDirections = [
-    { value: 'outbound', name: 'Outbound' },
-    { value: 'inbound', name: 'Inbound' },
-    { value: 'local', name: 'Local' },
+    { value: 'outbound', name: trans('Outbound') },
+    { value: 'inbound', name: trans('Inbound') },
+    { value: 'local', name: trans('Local') },
 ]
 
 const statusOptions = [
-    { name: 'Answered', value: 'answered' },
-    { name: 'No Answer', value: 'no_answer' },
-    { name: 'Cancelled', value: 'cancelled' },
-    { name: 'Voicemail', value: 'voicemail' },
-    { name: 'Missed Call', value: 'missed call' },
-    { name: 'Abandoned', value: 'abandoned' },
+    { name: trans('Answered'), value: 'answered' },
+    { name: trans('No Answer'), value: 'no_answer' },
+    { name: trans('Cancelled'), value: 'cancelled' },
+    { name: trans('Voicemail message left'), value: 'voicemail' },
+    { name: trans('Missed Call'), value: 'missed call' },
+    { name: trans('Abandoned'), value: 'abandoned' },
+    { name: trans('Exited queue'), value: 'queue_exited' },
+    { name: trans('Timed out'), value: 'queue_timeout' },
+    { name: trans('Other queue outcome'), value: 'queue_other' },
+    { name: trans('Callback requested'), value: 'callback_requested' },
 ];
 
 const sentimentOptions = [
-    { name: 'Neutral', value: 'neutral' },
-    { name: 'Positive', value: 'positive' },
-    { name: 'Negative', value: 'negative' },
+    { name: trans('Neutral'), value: 'neutral' },
+    { name: trans('Positive'), value: 'positive' },
+    { name: trans('Negative'), value: 'negative' },
 ];
+
+const directionTooltip = (direction) => {
+    switch (direction) {
+        case 'outbound':
+            return trans('Outbound call');
+        case 'inbound':
+            return trans('Inbound call');
+        case 'local':
+            return trans('Local call');
+        default:
+            return direction;
+    }
+};
+
+const statusLabel = (status) => {
+    switch (status) {
+        case 'answered':
+            return trans('Answered');
+        case 'no_answer':
+            return trans('No Answer');
+        case 'cancelled':
+            return trans('Cancelled');
+        case 'voicemail':
+            return trans('Voicemail');
+        case 'missed call':
+            return trans('Missed Call');
+        case 'abandoned':
+            return trans('Abandoned');
+        case 'queue_exited':
+            return trans('Exited queue');
+        case 'queue_timeout':
+            return trans('Timed out');
+        case 'queue_other':
+            return trans('Other queue outcome');
+        case 'callback_requested':
+            return trans('Callback requested');
+        case 'failed':
+            return trans('Failed');
+        default:
+            return status;
+    }
+};
 
 const handleCallRecordingButtonClick = (uuid) => {
     showCallRecordingModal.value = true
@@ -716,7 +773,23 @@ const handleErrorResponse = (error) => {
     }
 }
 
+// Queue outcome badges match the Contact Center dashboard's outcome palette:
+// green answered, rose abandoned, sky exited, amber timed out, violet callback.
 const statusBadgeConfig = {
+    queue_exited: {
+        backgroundColor: 'bg-sky-50', textColor: 'text-sky-700', ringColor: 'ring-sky-600/20',
+    },
+    queue_timeout: {
+        backgroundColor: 'bg-amber-50', textColor: 'text-amber-700', ringColor: 'ring-amber-600/20',
+    },
+    queue_other: {
+        backgroundColor: 'bg-gray-50', textColor: 'text-gray-700', ringColor: 'ring-gray-600/20',
+    },
+    callback_requested: {
+        backgroundColor: "bg-violet-50",
+        textColor: "text-violet-700",
+        ringColor: "ring-violet-600/20",
+    },
     answered: {
         backgroundColor: "bg-green-50",
         textColor: "text-green-700",
@@ -743,9 +816,9 @@ const statusBadgeConfig = {
         ringColor: "ring-orange-600/20",
     },
     abandoned: {
-        backgroundColor: "bg-purple-50",
-        textColor: "text-purple-700",
-        ringColor: "ring-purple-600/20",
+        backgroundColor: "bg-rose-50",
+        textColor: "text-rose-700",
+        ringColor: "ring-rose-600/20",
     }
 };
 

@@ -108,7 +108,7 @@ class CallTranscriptionController extends Controller
             app(CallTranscriptionConfigService::class)->invalidate($domainUuid);
 
             return response()->json([
-                'messages' => ['success' => ['Call transcription options saved']],
+                'messages' => ['success' => [__('Call transcription options saved')]],
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -116,7 +116,7 @@ class CallTranscriptionController extends Controller
             logger('CallTranscriptionPolicyController@storePolicy error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while saving.']],
+                'messages' => ['error' => [__('Something went wrong while saving.')]],
             ], 500);
         }
     }
@@ -142,7 +142,7 @@ class CallTranscriptionController extends Controller
 
             return response()->json([
                 'messages' => ['success' => [
-                    $deleted ? 'Reverted to defaults.' : 'No custom options found; already using defaults.'
+                    $deleted ? __('Reverted to defaults.') : __('No custom options found; already using defaults.')
                 ]],
             ], 200);
         } catch (\Throwable $e) {
@@ -154,7 +154,7 @@ class CallTranscriptionController extends Controller
             );
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while reverting to defaults.']],
+                'messages' => ['error' => [__('Something went wrong while reverting to defaults.')]],
             ], 500);
         }
     }
@@ -170,7 +170,7 @@ class CallTranscriptionController extends Controller
 
         if (!$provider) {
             return response()->json([
-                'messages' => ['error' => ['AssemblyAI provider is not configured or inactive.']],
+                'messages' => ['error' => [__('AssemblyAI provider is not configured or inactive.')]],
             ], 422);
         }
 
@@ -198,7 +198,7 @@ class CallTranscriptionController extends Controller
             app(CallTranscriptionConfigService::class)->invalidate($domainUuid);
 
             return response()->json([
-                'messages' => ['success' => ['AssemblyAI options saved']],
+                'messages' => ['success' => [__('AssemblyAI options saved')]],
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -206,7 +206,7 @@ class CallTranscriptionController extends Controller
             logger('AssemblyAiController@storeAssemblyAiConfig error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while saving.']],
+                'messages' => ['error' => [__('Something went wrong while saving.')]],
             ], 500);
         }
     }
@@ -225,7 +225,7 @@ class CallTranscriptionController extends Controller
 
         if (!$provider) {
             return response()->json([
-                'messages' => ['error' => ['AssemblyAI provider is not configured or inactive.']],
+                'messages' => ['error' => [__('AssemblyAI provider is not configured or inactive.')]],
             ], 422);
         }
 
@@ -283,7 +283,7 @@ class CallTranscriptionController extends Controller
 
         if (!$provider) {
             return response()->json([
-                'messages' => ['error' => ['AssemblyAI provider is not configured or inactive.']],
+                'messages' => ['error' => [__('AssemblyAI provider is not configured or inactive.')]],
             ], 422);
         }
 
@@ -302,7 +302,7 @@ class CallTranscriptionController extends Controller
 
             return response()->json([
                 'messages' => ['success' => [
-                    $deleted ? 'Reverted to defaults.' : 'No custom options found; already using defaults.'
+                    $deleted ? __('Reverted to defaults.') : __('No custom options found; already using defaults.')
                 ]],
             ], 200);
         } catch (\Throwable $e) {
@@ -314,7 +314,7 @@ class CallTranscriptionController extends Controller
             );
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while reverting to defaults.']],
+                'messages' => ['error' => [__('Something went wrong while reverting to defaults.')]],
             ], 500);
         }
     }
@@ -343,7 +343,7 @@ class CallTranscriptionController extends Controller
             );
 
             return response()->json([
-                'messages' => ['success' => ['Transcription request queued.']],
+                'messages' => ['success' => [__('Transcription request queued.')]],
             ], 202);
         } catch (\Throwable $e) {
             logger("CallTranscriptionController@transcribe error: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -372,7 +372,7 @@ class CallTranscriptionController extends Controller
             dispatch(new \App\Jobs\SummarizeCallTranscription($data['uuid']))->onQueue('transcriptions');
 
             return response()->json([
-                'messages' => ['success' => ['Summarization request queued.']],
+                'messages' => ['success' => [__('Summarization request queued.')]],
             ], 202);
         } catch (\Throwable $e) {
             logger("CallTranscriptionController@summarize error: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -454,7 +454,7 @@ class CallTranscriptionController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);
         }
     }

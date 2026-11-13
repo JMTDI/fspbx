@@ -168,7 +168,7 @@ class ExtensionsImport implements ToCollection, WithHeadingRow, SkipsEmptyRows, 
                 $extension = Extensions::create([
                     'domain_uuid' => $this->domain_uuid,
                     'extension' => $row['extension'],
-                    'password' => generate_password(),
+                    'password' => generate_sip_password(),
                     'directory_first_name' => $row['first_name'],
                     'directory_last_name' => $row['last_name'] ?? null,
                     'effective_caller_id_name' => trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? '')),
@@ -239,10 +239,10 @@ class ExtensionsImport implements ToCollection, WithHeadingRow, SkipsEmptyRows, 
                         'server_address_secondary' => get_domain_setting('server_address_secondary'),
                         'outbound_proxy_primary' => get_domain_setting('outbound_proxy_primary'),
                         'outbound_proxy_secondary' => get_domain_setting('outbound_proxy_secondary'),
-                        'display_name' => $row['extension'],
+                        'display_name' => null,
                         'user_id' => $row['extension'],
                         'auth_id' => $row['extension'],
-                        'label' => $row['extension'],
+                        'label' => null,
                         'password' => $extension->password,
                         'sip_port' => get_domain_setting('line_sip_port'),
                         'sip_transport' => get_domain_setting('line_sip_transport'),
@@ -258,10 +258,6 @@ class ExtensionsImport implements ToCollection, WithHeadingRow, SkipsEmptyRows, 
                 }
 
                 FusionCache::clear("directory:" . $extension->extension . "@" . $extension->user_context);
-
-                if (isset($_SESSION['destinations']['array'])) {
-                    unset($_SESSION['destinations']['array']);
-                }
 
                 DB::commit();
             } catch (\Throwable $e) {
@@ -300,7 +296,7 @@ class ExtensionsImport implements ToCollection, WithHeadingRow, SkipsEmptyRows, 
         }
 
         // New-style label:
-        // yealink/t74w (v1.0.5)
+        // yealink/T7W (v1.0.5)
         // dinstar/Dinstar test (r19)
         if (preg_match('/^(?<vendor>[^\/]+)\/(?<name>.+?) \((?<kind>v|r)(?<value>[^)]+)\)$/i', $rawTemplate, $matches)) {
             $vendor = trim($matches['vendor']);

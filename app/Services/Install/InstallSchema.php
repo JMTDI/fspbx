@@ -17,10 +17,19 @@ class InstallSchema
 
     public function ensureSchemas(): void
     {
+        $this->ensureMenuSchema();
         $this->ensureExtensionsSchema();
         $this->ensureRingGroupsSchema();
         $this->ensureIvrMenusSchema();
         $this->ensureFollowMeSchema();
+        $this->ensureBridgesSchema();
+        $this->ensureCallBlockSchema();
+        $this->ensureCallFlowsSchema();
+        $this->ensureCnamSchema();
+        $this->ensureFaxSchema();
+        $this->ensureModulesSchema();
+        $this->ensureMusicOnHoldSchema();
+        $this->ensureEmailTemplatesSchema();
     }
 
     public function ensureMetadata(): void
@@ -31,9 +40,368 @@ class InstallSchema
         $this->seedRingGroupDefaultSettings();
         $this->seedIvrMenuPermissions();
         $this->seedIvrMenuDefaultSettings();
-        $this->seedFollowMePermissions();
         $this->seedFollowMeDefaultSettings();
         $this->seedActiveCallPermissions();
+    }
+
+    public function ensureBridgesSchema(): void
+    {
+        if (Schema::hasTable('v_bridges')) {
+            return;
+        }
+
+        Schema::create('v_bridges', function (Blueprint $table) {
+            $table->uuid('bridge_uuid')->primary();
+            $table->uuid('domain_uuid')->nullable()->index();
+            $table->text('bridge_name')->nullable()->index();
+            $table->text('bridge_destination')->nullable();
+            $table->text('bridge_enabled')->nullable();
+            $table->text('bridge_description')->nullable();
+            $table->timestampTz('insert_date')->nullable();
+            $table->uuid('insert_user')->nullable();
+            $table->timestampTz('update_date')->nullable();
+            $table->uuid('update_user')->nullable();
+        });
+    }
+
+    public function ensureCallBlockSchema(): void
+    {
+        if (Schema::hasTable('v_call_block')) {
+            return;
+        }
+
+        Schema::create('v_call_block', function (Blueprint $table) {
+            $table->uuid('call_block_uuid')->primary();
+            $table->uuid('domain_uuid')->nullable()->index();
+            $table->text('call_block_direction')->nullable();
+            $table->uuid('extension_uuid')->nullable()->index();
+            $table->text('call_block_name')->nullable()->index();
+            $table->decimal('call_block_country_code', 20, 0)->nullable();
+            $table->text('call_block_number')->nullable()->index();
+            $table->decimal('call_block_count', 20, 0)->nullable();
+            $table->text('call_block_action')->nullable();
+            $table->text('call_block_app')->nullable();
+            $table->text('call_block_data')->nullable();
+            $table->text('date_added')->nullable();
+            $table->text('call_block_enabled')->nullable();
+            $table->text('call_block_description')->nullable();
+            $table->timestampTz('insert_date')->nullable();
+            $table->uuid('insert_user')->nullable();
+            $table->timestampTz('update_date')->nullable();
+            $table->uuid('update_user')->nullable();
+        });
+    }
+
+    public function ensureCallFlowsSchema(): void
+    {
+        if (Schema::hasTable('v_call_flows')) {
+            return;
+        }
+
+        Schema::create('v_call_flows', function (Blueprint $table) {
+            $table->uuid('call_flow_uuid')->primary();
+            $table->uuid('domain_uuid')->nullable()->index();
+            $table->uuid('dialplan_uuid')->nullable()->index();
+            $table->text('call_flow_name')->nullable()->index();
+            $table->text('call_flow_extension')->nullable()->index();
+            $table->text('call_flow_feature_code')->nullable()->index();
+            $table->text('call_flow_context')->nullable()->index();
+            $table->text('call_flow_status')->nullable();
+            $table->text('call_flow_pin_number')->nullable()->index();
+            $table->text('call_flow_label')->nullable()->index();
+            $table->text('call_flow_sound')->nullable();
+            $table->text('call_flow_app')->nullable();
+            $table->text('call_flow_data')->nullable();
+            $table->text('call_flow_alternate_label')->nullable()->index();
+            $table->text('call_flow_alternate_sound')->nullable();
+            $table->text('call_flow_alternate_app')->nullable();
+            $table->text('call_flow_alternate_data')->nullable();
+            $table->text('call_flow_enabled')->nullable()->index();
+            $table->text('call_flow_description')->nullable()->index();
+            $table->timestampTz('insert_date')->nullable();
+            $table->uuid('insert_user')->nullable();
+            $table->timestampTz('update_date')->nullable();
+            $table->uuid('update_user')->nullable();
+        });
+    }
+
+    public function ensureCnamSchema(): void
+    {
+        if (Schema::hasTable('v_cnam')) {
+            return;
+        }
+
+        Schema::create('v_cnam', function (Blueprint $table) {
+            $table->uuid('cnam_uuid')->primary();
+            $table->text('phone_number')->nullable();
+            $table->text('cnam')->nullable();
+            $table->timestampTz('date')->nullable();
+        });
+    }
+
+    public function ensureFaxSchema(): void
+    {
+        if (! Schema::hasTable('v_fax')) {
+            Schema::create('v_fax', function (Blueprint $table) {
+                $table->uuid('fax_uuid')->primary();
+                $table->uuid('domain_uuid')->nullable()->index();
+                $table->uuid('dialplan_uuid')->nullable()->index();
+                $table->text('v_id')->nullable();
+                $table->text('fax_extension')->nullable()->index();
+                $table->text('fax_destination_number')->nullable()->index();
+                $table->text('fax_prefix')->nullable();
+                $table->text('fax_name')->nullable()->index();
+                $table->text('fax_email')->nullable()->index();
+                $table->text('fax_email_connection_type')->nullable();
+                $table->text('fax_email_connection_host')->nullable();
+                $table->text('fax_email_connection_port')->nullable();
+                $table->text('fax_email_connection_security')->nullable();
+                $table->text('fax_email_connection_validate')->nullable();
+                $table->text('fax_email_connection_username')->nullable();
+                $table->text('fax_email_connection_password')->nullable();
+                $table->text('fax_email_connection_mailbox')->nullable();
+                $table->text('fax_email_inbound_subject_tag')->nullable();
+                $table->text('fax_email_outbound_subject_tag')->nullable();
+                $table->text('fax_email_outbound_authorized_senders')->nullable();
+                $table->text('fax_pin_number')->nullable();
+                $table->text('fax_caller_id_name')->nullable()->index();
+                $table->text('fax_caller_id_number')->nullable()->index();
+                $table->text('fax_toll_allow')->nullable();
+                $table->text('fax_user_list')->nullable();
+                $table->text('fax_forward_number')->nullable()->index();
+                $table->decimal('fax_send_channels', 20, 0)->nullable();
+                $table->text('fax_description')->nullable()->index();
+                $table->text('accountcode')->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+            });
+        }
+
+        if (! Schema::hasTable('v_fax_files')) {
+            Schema::create('v_fax_files', function (Blueprint $table) {
+                $table->uuid('fax_file_uuid')->primary();
+                $table->uuid('domain_uuid')->nullable()->index();
+                $table->uuid('fax_uuid')->nullable();
+                $table->text('fax_mode')->nullable();
+                $table->text('fax_destination')->nullable();
+                $table->text('fax_file_type')->nullable();
+                $table->text('fax_file_path')->nullable();
+                $table->text('fax_caller_id_name')->nullable();
+                $table->text('fax_caller_id_number')->nullable();
+                $table->timestampTz('fax_date')->nullable();
+                $table->decimal('fax_epoch', 20, 0)->nullable();
+                $table->text('fax_base64')->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+            });
+        }
+
+        if (! Schema::hasTable('v_fax_logs')) {
+            Schema::create('v_fax_logs', function (Blueprint $table) {
+                $table->uuid('fax_log_uuid')->primary();
+                $table->uuid('domain_uuid')->nullable()->index();
+                $table->uuid('fax_uuid')->nullable()->index();
+                $table->text('fax_success')->nullable();
+                $table->decimal('fax_result_code', 20, 0)->nullable();
+                $table->text('fax_result_text')->nullable();
+                $table->text('fax_file')->nullable();
+                $table->text('fax_ecm_used')->nullable();
+                $table->text('fax_local_station_id')->nullable();
+                $table->decimal('fax_document_transferred_pages', 20, 0)->nullable();
+                $table->decimal('fax_document_total_pages', 20, 0)->nullable();
+                $table->text('fax_image_resolution')->nullable();
+                $table->decimal('fax_image_size', 20, 0)->nullable();
+                $table->decimal('fax_bad_rows', 20, 0)->nullable();
+                $table->decimal('fax_transfer_rate', 20, 0)->nullable();
+                $table->decimal('fax_retry_attempts', 20, 0)->nullable();
+                $table->decimal('fax_retry_limit', 20, 0)->nullable();
+                $table->decimal('fax_retry_sleep', 20, 0)->nullable();
+                $table->text('fax_uri')->nullable();
+                $table->decimal('fax_duration', 20, 0)->nullable();
+                $table->timestampTz('fax_date')->nullable();
+                $table->decimal('fax_epoch', 20, 0)->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+            });
+        }
+    }
+
+    public function ensureModulesSchema(): void
+    {
+        if (Schema::hasTable('v_modules')) {
+            return;
+        }
+
+        Schema::create('v_modules', function (Blueprint $table) {
+            $table->uuid('module_uuid')->primary();
+            $table->text('module_label')->nullable();
+            $table->text('module_name')->nullable();
+            $table->text('module_category')->nullable();
+            $table->decimal('module_order', 20, 0)->nullable();
+            $table->text('module_enabled')->nullable();
+            $table->text('module_default_enabled')->nullable();
+            $table->text('module_description')->nullable();
+            $table->timestampTz('insert_date')->nullable();
+            $table->uuid('insert_user')->nullable();
+            $table->timestampTz('update_date')->nullable();
+            $table->uuid('update_user')->nullable();
+        });
+    }
+
+    public function ensureMusicOnHoldSchema(): void
+    {
+        if (Schema::hasTable('v_music_on_hold')) {
+            return;
+        }
+
+        Schema::create('v_music_on_hold', function (Blueprint $table) {
+            $table->uuid('music_on_hold_uuid')->primary();
+            $table->uuid('domain_uuid')->nullable()->index();
+            $table->text('music_on_hold_name')->nullable();
+            $table->text('music_on_hold_path')->nullable();
+            $table->decimal('music_on_hold_rate', 20, 0)->nullable();
+            $table->text('music_on_hold_shuffle')->nullable();
+            $table->decimal('music_on_hold_channels', 20, 0)->nullable();
+            $table->decimal('music_on_hold_interval', 20, 0)->nullable();
+            $table->text('music_on_hold_timer_name')->nullable();
+            $table->text('music_on_hold_chime_list')->nullable();
+            $table->decimal('music_on_hold_chime_freq', 20, 0)->nullable();
+            $table->decimal('music_on_hold_chime_max', 20, 0)->nullable();
+            $table->timestampTz('insert_date')->nullable();
+            $table->uuid('insert_user')->nullable();
+            $table->timestampTz('update_date')->nullable();
+            $table->uuid('update_user')->nullable();
+        });
+    }
+
+    public function ensureEmailTemplatesSchema(): void
+    {
+        if (Schema::hasTable('email_templates')) {
+            if (! Schema::hasColumn('email_templates', 'template_layout')) {
+                Schema::table('email_templates', function (Blueprint $table) {
+                    $table->string('template_layout', 20)->default('standard');
+                });
+            }
+
+            return;
+        }
+
+        Schema::create('email_templates', function (Blueprint $table) {
+            $table->uuid('email_template_uuid')
+                ->primary()
+                ->default(DB::raw('uuid_generate_v4()'));
+            $table->uuid('domain_uuid')->nullable()->index();
+            $table->uuid('base_template_uuid')->nullable()->index();
+            $table->string('base_version', 50)->nullable();
+            $table->string('template_key');
+            $table->string('template_type', 20)->default('custom');
+            $table->string('template_language', 20)->default('en-us');
+            $table->string('template_category');
+            $table->string('template_subcategory');
+            $table->string('template_layout', 20)->default('standard');
+            $table->string('version', 50)->nullable();
+            $table->text('template_subject');
+            $table->text('template_html');
+            $table->text('template_text')->nullable();
+            $table->boolean('template_enabled')->default(true);
+            $table->text('template_description')->nullable();
+            $table->string('checksum', 64)->nullable()->index();
+            $table->uuid('created_by')->nullable();
+            $table->uuid('updated_by')->nullable();
+            $table->timestampsTz();
+
+            $table->index(
+                ['template_key', 'template_language', 'template_type'],
+                'email_templates_lookup_index'
+            );
+            $table->unique(
+                ['template_type', 'domain_uuid', 'template_key', 'template_language'],
+                'email_templates_scope_unique'
+            );
+        });
+    }
+
+    private function ensureMenuSchema(): void
+    {
+        if (! Schema::hasTable('v_menus')) {
+            Schema::create('v_menus', function (Blueprint $table) {
+                $table->uuid('menu_uuid')->primary();
+                $table->text('menu_name')->nullable()->index();
+                $table->text('menu_language')->nullable();
+                $table->text('menu_description')->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+            });
+        }
+
+        if (! Schema::hasTable('v_menu_items')) {
+            Schema::create('v_menu_items', function (Blueprint $table) {
+                $table->uuid('menu_item_uuid')->primary();
+                $table->uuid('menu_uuid')->nullable()->index();
+                $table->uuid('menu_item_parent_uuid')->nullable()->index();
+                $table->uuid('uuid')->nullable()->index();
+                $table->text('menu_item_title')->nullable()->index();
+                $table->text('menu_item_link')->nullable();
+                $table->text('menu_item_icon')->nullable();
+                $table->text('menu_item_category')->nullable();
+                $table->text('menu_item_protected')->nullable();
+                $table->decimal('menu_item_order', 20, 0)->nullable();
+                $table->text('menu_item_description')->nullable();
+                $table->text('menu_item_add_user')->nullable();
+                $table->text('menu_item_add_date')->nullable();
+                $table->text('menu_item_mod_user')->nullable();
+                $table->text('menu_item_mod_date')->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+
+                $table->index(['menu_uuid', 'menu_item_parent_uuid']);
+            });
+        }
+
+        if (! Schema::hasTable('v_menu_item_groups')) {
+            Schema::create('v_menu_item_groups', function (Blueprint $table) {
+                $table->uuid('menu_item_group_uuid')->primary();
+                $table->uuid('menu_uuid')->nullable()->index();
+                $table->uuid('menu_item_uuid')->nullable()->index();
+                $table->text('group_name')->nullable();
+                $table->uuid('group_uuid')->nullable()->index();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+
+                $table->index(['menu_item_uuid', 'group_uuid']);
+            });
+        }
+
+        if (! Schema::hasTable('v_menu_languages')) {
+            Schema::create('v_menu_languages', function (Blueprint $table) {
+                $table->uuid('menu_language_uuid')->primary();
+                $table->uuid('menu_uuid')->nullable()->index();
+                $table->uuid('menu_item_uuid')->nullable()->index();
+                $table->text('menu_language')->nullable()->index();
+                $table->text('menu_item_title')->nullable();
+                $table->timestampTz('insert_date')->nullable();
+                $table->uuid('insert_user')->nullable();
+                $table->timestampTz('update_date')->nullable();
+                $table->uuid('update_user')->nullable();
+
+                $table->index(
+                    ['menu_uuid', 'menu_language', 'menu_item_uuid'],
+                    'v_menu_languages_lookup_index'
+                );
+            });
+        }
     }
 
     private function ensureExtensionsSchema(): void
@@ -346,11 +714,6 @@ SQL);
         $this->seedDefaultSettings($this->ivrMenuDefaultSettings(), self::IVR_MENUS_APP_UUID);
     }
 
-    private function seedFollowMePermissions(): void
-    {
-        $this->seedPermissions($this->followMePermissions(), 'Follow Me', self::FOLLOW_ME_APP_UUID);
-    }
-
     private function seedFollowMeDefaultSettings(): void
     {
         $this->seedDefaultSettings($this->followMeDefaultSettings(), self::FOLLOW_ME_APP_UUID);
@@ -575,24 +938,6 @@ SQL);
             'ivr_menu_destinations' => ['superadmin', 'admin'],
             'ivr_menus_sub_destinations' => ['superadmin', 'admin'],
             'ivr_menus_other_destinations' => ['superadmin', 'admin'],
-        ];
-    }
-
-    private function followMePermissions(): array
-    {
-        return [
-            'follow_me_view' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_add' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_edit' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_delete' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_destination_view' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_destination_add' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_destination_edit' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_destination_delete' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_ignore_busy' => ['superadmin', 'admin', 'user', 'agent'],
-            'follow_me_cid_name_prefix' => [],
-            'follow_me_cid_number_prefix' => [],
-            'follow_me_prompt' => ['superadmin', 'admin', 'user', 'agent'],
         ];
     }
 

@@ -5,6 +5,7 @@ namespace App\Services;
 use Throwable;
 use ESLconnection;
 use App\Models\SipProfiles;
+use Illuminate\Support\Collection;
 
 class FreeswitchEslService
 {
@@ -39,6 +40,16 @@ class FreeswitchEslService
     public function isConnected(): bool
     {
         return $this->conn && $this->conn->connected();
+    }
+
+    /** Reuse the raw ESL connection for timed event reads and background APIs. */
+    public function connection()
+    {
+        if (! $this->isConnected()) {
+            $this->reconnect();
+        }
+
+        return $this->conn;
     }
 
     public function reconnect(): void
@@ -87,6 +98,47 @@ class FreeswitchEslService
         }
     }
 
+    public function sendEvent(string $eventName, array $headers = [], ?string $body = null, bool $disconnect = true): ?string
+    {
+        try {
+            if (! $this->isConnected()) {
+                $this->reconnect();
+            }
+
+            if (! class_exists('\ESLevent')) {
+                throw new \Exception("FreeSWITCH PHP ESL event class is not available.");
+            }
+
+            $event = new \ESLevent($eventName);
+
+            foreach ($headers as $name => $value) {
+                $event->addHeader((string) $name, (string) $value);
+            }
+
+            if ($body !== null) {
+                $event->addBody($body);
+            }
+
+            $response = $this->conn->sendEvent($event);
+            $reply = $response ? trim((string) $response->getHeader('Reply-Text')) : '';
+
+            if (! preg_match('/^\+OK\b/i', $reply)) {
+                logger("FreeSWITCH ESL rejected event [{$eventName}]: " . ($reply !== '' ? $reply : 'no reply from server'));
+
+                return null;
+            }
+
+            return $reply;
+        } catch (Throwable $e) {
+            logger($e->getMessage());
+            return null;
+        } finally {
+            if ($disconnect) {
+                $this->disconnect();
+            }
+        }
+    }
+
     public function disconnect()
     {
         if ($this->conn) {
@@ -111,6 +163,7 @@ class FreeswitchEslService
             );
 
         $registrations = [];
+        $addressResolver = new SipRegistrationAddressResolver();
 
         foreach ($sip_profiles as $sip_profile) {
             $cmd = "sofia xmlstatus profile '" . $sip_profile['sip_profile_name'] . "' reg";
@@ -118,63 +171,13 @@ class FreeswitchEslService
 
             if ($xml) {
                 foreach ($xml->registrations->registration as $registration) {
-                    $contact = (string)$registration->contact;
-                    $contactData = [];
-
-                    // Extract transport first
-                    if (preg_match('/;transport=([a-zA-Z]+)/i', $contact, $tMatch)) {
-                        $contactData['transport'] = strtoupper($tMatch[1]);
-                    }
-
-                    // Extract the actual SIP URI (user, ip, port)
-                    if (preg_match('/<([^>]+)>/', $contact, $bracketMatch)) {
-                        $contact = $bracketMatch[1];
-                    } else {
-                        $contact = trim($contact);
-                    }
-
-                    $sipUri = strtok($contact, ';');
-
-                    if (preg_match('/^(?:sips?):([^@]+)@([0-9a-zA-Z\.\-]+)(?::(\d+))?$/', $sipUri, $matches)) {
-                        $contactData['user'] = $matches[1];
-                        $contactData['ip'] = $matches[2];
-                        $contactData['port'] = $matches[3] ?? null;
-                    }
-
-                    // Example of using regular expressions to extract information
-                    // if (preg_match('/sips?:([^@]+)@([^;]+);transport=([^;]+);/', $contact, $matches)) {
-                    //     $contactData['user'] = $matches[1];
-                    //     $contactData['ip_with_port'] = $matches[2];
-                    //     $contactData['transport'] = $matches[3];
-
-                    //     // Further splitting to separate IP and port if needed
-                    //     $ipPort = explode(':', $contactData['ip_with_port']);
-                    //     $contactData['ip'] = $ipPort[0];
-                    //     $contactData['port'] = $ipPort[1] ?? null; // Check if port is present
-                    // }
-
-                    if (preg_match('/<([^>]+)>/', $contact, $bracketMatch)) {
-                        $contact = $bracketMatch[1];
-                    } else {
-                        // If no angle brackets, use as is
-                        $contact = trim($contact);
-                    }
-                    $sipUri = strtok($contact, ';'); // get everything before first ';'
-
-                    if (preg_match('/^(?:sips?):([^@]+)@([0-9a-zA-Z\.\-]+)(?::(\d+))?$/', $sipUri, $matches)) {
-                        $contactData['user'] = $matches[1];
-                        $contactData['ip'] = $matches[2];
-                        $contactData['port'] = $matches[3] ?? null;
-                    }
-
-                    // Extracting the WAN IP from fs_path
-                    if (preg_match('/fs_path=sips?%3A([^;]+)/', $contact, $fsPathMatches)) {
-                        $decodedFsPath = urldecode($fsPathMatches[1]);
-                        // Extract the IP from the decoded string
-                        if (preg_match('/(\d+\.\d+\.\d+\.\d+)/', $decodedFsPath, $ipMatches)) {
-                            $contactData['wan_ip'] = $ipMatches[1];
-                        }
-                    }
+                    $contactData = $addressResolver->resolve(
+                        (string) $registration->contact,
+                        (string) $registration->{'call-id'},
+                        (string) $registration->agent,
+                        (string) $registration->{'network-ip'},
+                        (string) $registration->{'network-port'}
+                    );
 
                     // Remove expiration date from status
                     $status = (string)$registration->status;
@@ -199,12 +202,12 @@ class FreeswitchEslService
                         'call_id' => (string)$registration->{'call-id'},
                         'user' => (string)$registration->user,
                         'status' => (string)$status,
-                        'lan_ip' => $contactData['ip'] ?? '',
-                        'port' => $contactData['port'] ?? '',
-                        'contact' => $contact,
+                        'lan_ip' => $contactData['lan_ip'],
+                        'port' => $contactData['port'],
+                        'contact' => $contactData['contact'],
                         'agent' => (string)$registration->agent,
-                        'transport' => $contactData['transport'] ?? '',
-                        'wan_ip' => $contactData['wan_ip'] ?? '',
+                        'transport' => $contactData['transport'],
+                        'wan_ip' => $contactData['wan_ip'],
                         'sip_profile_name' => $sip_profile['sip_profile_name'],
                         'sip_auth_user' => (string)$registration->{'sip-auth-user'}, // Add this line
                         'sip_auth_realm' => (string)$registration->{'sip-auth-realm'},
@@ -219,7 +222,17 @@ class FreeswitchEslService
         return collect($registrations);
     }
 
-    function getAllChannels()
+    /**
+     * Channels belonging to one extension's presence (e.g. "101@example.com").
+     */
+    public function channelsForPresenceId(string $presenceId, bool $disconnect = false): Collection
+    {
+        return $this->getAllChannels($disconnect)
+            ->filter(fn (array $channel) => (string) ($channel['presence_id'] ?? '') === $presenceId)
+            ->values();
+    }
+
+    function getAllChannels($disconnect = true)
     {
         // Check if the 'esl' extension is loaded
         if (!extension_loaded('esl')) {
@@ -228,7 +241,7 @@ class FreeswitchEslService
 
         $cmd = "show channels as json";
         // $cmd = "show channels";
-        $result = $this->executeCommand($cmd);
+        $result = $this->executeCommand($cmd, $disconnect);
 
         // Initialize an array to hold channel information
         $channels = [];
@@ -298,12 +311,27 @@ class FreeswitchEslService
     }
 
 
-    public function subscribeToEvents($eventType, $events)
+    /** @param array<string, string> $filters Positive socket filters (matched as OR). */
+    public function subscribeToEvents($eventType, $events, array $filters = [])
     {
         try {
-            $this->conn->events($eventType, $events);
+            // Install filters before enabling delivery on this connection.
+            $commands = [];
+            foreach ($filters as $header => $value) {
+                $commands[] = 'filter '.$header.' '.$value;
+            }
+            $commands[] = 'event '.$eventType.' '.$events;
+
+            foreach ($commands as $command) {
+                $reply = $this->conn->sendRecv($command);
+                $text = $reply ? trim((string) $reply->getHeader('Reply-Text')) : '';
+                if (! str_starts_with($text, '+OK')) {
+                    throw new \RuntimeException($text ?: 'No FreeSWITCH subscription acknowledgement');
+                }
+            }
             return true;
         } catch (\Throwable $e) {
+            $this->disconnect();
             logger()->error("Failed to subscribe to events: " . $e->getMessage());
             return false;
         }
@@ -375,6 +403,11 @@ class FreeswitchEslService
                 return json_decode($response, true); // Decode JSON response as an associative array
             }
 
+            // XML attributes can contain pipes, notably PCRE alternatives in translate.conf.
+            if (str_starts_with($response, '<')) {
+                return $this->convertEslResponseToXml($response);
+            }
+
             // Check if the response contains CSV-like data
             if (strpos($response, '|') !== false) {
                 return $this->convertEslResponseToArray($response);
@@ -428,7 +461,7 @@ class FreeswitchEslService
 
     private function handleResponseErrors($eslEvent)
     {
-        if (strpos($eslEvent->getBody(), '-ERR') !== false) {
+        if (preg_match('/^-ERR\b/', ltrim($eslEvent->getBody()))) {
             throw new \Exception("ESL API Error: " . $eslEvent->getBody());
         }
     }

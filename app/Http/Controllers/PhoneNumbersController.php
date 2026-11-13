@@ -233,25 +233,17 @@ class PhoneNumbersController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
 
     public function getData()
     {
+        abort_unless(userCheckPermission('destination_view'), 403);
+
         $perPage = fspbx_pagination_per_page();
         $currentDomain = session('domain_uuid');
-
-        // If the filter is not present, assign default value before QueryBuilder
-        if (!request()->has('filter.showGlobal')) {
-            request()->merge([
-                'filter' => array_merge(
-                    request()->input('filter', []),
-                    ['showGlobal' => false]
-                ),
-            ]);
-        }
 
         $data = QueryBuilder::for(Destinations::class)
             ->select([
@@ -261,6 +253,8 @@ class PhoneNumbersController extends Controller
                 'destination_actions',
                 'destination_enabled',
                 'destination_description',
+                'destination_record',
+                'fax_uuid',
                 'domain_uuid',
             ])
             // allow ?filter[username]=foo or ?filter[user_email]=bar
@@ -282,13 +276,9 @@ class PhoneNumbersController extends Controller
                         return;
                     }
 
-                    // Numeric-only: remove all non-digits
-                    $digits = preg_replace('/\D+/', '', $s);
-
-                    // If 11 digits and starts with 1 (covers +1 once stripped), drop leading 1
-                    if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
-                        $digits = substr($digits, 1);
-                    }
+                    // Resolve the national digits using the account or explicit country code.
+                    $parts = app(\App\Services\PhoneNumberService::class)->destinationParts($s, null, session('domain_uuid'));
+                    $digits = preg_replace('/\D+/', '', $parts['destination_number']);
 
                     if ($digits === '') {
                         return;
@@ -299,12 +289,10 @@ class PhoneNumbersController extends Controller
                     $query->where('destination_number', 'ilike', $pattern);                        
                 }),
                 AllowedFilter::callback('showGlobal', function ($query, $value) use ($currentDomain) {
-                    // If showGlobal is falsey (0, '0', false, null), restrict to the current domain
-                    if (!$value || $value === '0' || $value === 0 || $value === false) {
+                    if (!filter_var($value, FILTER_VALIDATE_BOOLEAN) || !userCheckPermission('destination_all')) {
                         $query->where('domain_uuid', $currentDomain);
                     }
-                    // else, do nothing and show all domains
-                }),
+                })->default(false)->nullable(),
             ])
 
             ->with(['domain' => function ($query) {
@@ -321,7 +309,22 @@ class PhoneNumbersController extends Controller
                 }),
             ])
             ->defaultSort('destination_number')
-            ->paginate($perPage);
+            ->paginate($perPage)
+            ->through(function (Destinations $destination) {
+                $extras = array_values(array_filter([
+                    filled($destination->fax_uuid) ? __('Fax detection') : null,
+                    $destination->destination_record === 'true' ? __('Recorded') : null,
+                ]));
+
+                // The list shows routing_summary instead of the edit form's routing_options.
+                return $destination
+                    ->setAppends(['destination_number_formatted'])
+                    ->makeHidden(['destination_record', 'fax_uuid'])
+                    ->toArray() + [
+                        'routing_summary' => $destination->routingSummary(),
+                        'routing_extras' => $extras,
+                    ];
+            });
 
         return $data;
     }
@@ -388,7 +391,7 @@ class PhoneNumbersController extends Controller
 
                 return response()->json([
                     'success' => true,
-                    'messages' => ['success' => ['Phone numbers have been successfully imported.']]
+                    'messages' => ['success' => [__('Phone numbers have been successfully imported.')]]
                 ], 200);
             } catch (Throwable $e) {
                 logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -433,13 +436,16 @@ class PhoneNumbersController extends Controller
                 // Combine Country code and number for display
                 $prefix = preg_replace('/\D+/', '', $row['country_code'] ?? '');
                 $number = preg_replace('/\D+/', '', $row['phone_number'] ?? '');
+                $description = $this->normalizeImportDescription(
+                    $row['description'] ?? $row['destination_description'] ?? null
+                );
                 
                 $previewData[] = [
                     'id' => Str::uuid()->toString(), // Temp ID for frontend keys
                     'destination_prefix' => $prefix,
                     'destination_number' => $number,
                     'destination_number_formatted' => $prefix . $number, // Initial value
-                    'destination_description' => '', // Empty by default
+                    'destination_description' => $description,
                 ];
             }
 
@@ -471,7 +477,7 @@ public function importCommit(Request $request)
         $domain_name = session('domain_name');
 
         if (empty($items)) {
-            return response()->json(['success' => false, 'messages' => ['error' => ['No items to import']]], 422);
+            return response()->json(['success' => false, 'messages' => ['error' => [__('No items to import')]]], 422);
         }
 
         // --- DUPLICATE CHECKING ---
@@ -483,7 +489,7 @@ public function importCommit(Request $request)
         if (!empty($duplicatesInFile)) {
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['The import list contains duplicate numbers: ' . implode(', ', $duplicatesInFile)]]
+                'errors' => ['server' => [__('The import list contains duplicate numbers: :numbers', ['numbers' => implode(', ', $duplicatesInFile)])]]
             ], 422);
         }
 
@@ -495,7 +501,7 @@ public function importCommit(Request $request)
         if (!empty($existingNumbers)) {
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['The following numbers already exist in the system: ' . implode(', ', $existingNumbers)]]
+                'errors' => ['server' => [__('The following numbers already exist in the system: :numbers', ['numbers' => implode(', ', $existingNumbers)])]]
             ], 422);
         }
         // --------------------------
@@ -521,7 +527,7 @@ public function importCommit(Request $request)
                     'dialplan_uuid' => Str::uuid(),
                     'destination_prefix' => $row['destination_prefix'] ?? null,
                     'destination_number' => $row['destination_number'],
-                    'destination_description' => $row['destination_description'] ?? null,
+                    'destination_description' => $this->sanitizeImportDescription($row['destination_description'] ?? null),
                     'destination_type' => 'inbound',
                     'destination_actions' => $destination_actions,
                     'destination_enabled' => 'true', 
@@ -537,7 +543,7 @@ public function importCommit(Request $request)
 
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => [count($items) . ' phone numbers imported successfully.']]
+                'messages' => ['success' => [__(':count phone numbers imported successfully.', ['count' => count($items)])]]
             ], 200);
 
         } catch (\Exception $e) {
@@ -545,9 +551,35 @@ public function importCommit(Request $request)
             logger($e);
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Error saving phone numbers: ' . $e->getMessage()]]
+                'errors' => ['server' => [__('Error saving phone numbers: :error', ['error' => $e->getMessage()])]]
             ], 500);
         }
+    }
+
+    private function sanitizeImportDescription(?string $description): ?string
+    {
+        $description = $this->normalizeImportDescription($description);
+
+        if ($description === null) {
+            return null;
+        }
+
+        return htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
+    }
+
+    private function normalizeImportDescription(?string $description): ?string
+    {
+        if ($description === null) {
+            return null;
+        }
+
+        $description = trim(strip_tags(htmlspecialchars_decode($description, ENT_QUOTES)));
+
+        if ($description === '') {
+            return null;
+        }
+
+        return preg_replace('/[^\x20-\x7E]/', '', $description);
     }
 
     /**
@@ -608,7 +640,7 @@ public function importCommit(Request $request)
             dispatch(new \App\Jobs\BuildDialplanForPhoneNumber($instance->destination_uuid, session('domain_name')));
 
             return response()->json([
-                'messages' => ['success' => ['New phone number succesfully created']]
+                'messages' => ['success' => [__('New phone number succesfully created')]]
             ], 201);
         } catch (\Exception $e) {
             // Log the error message
@@ -617,7 +649,7 @@ public function importCommit(Request $request)
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to create new item'], 'ss' => $e->getMessage()]
+                'errors' => ['server' => [__('Failed to create new item')], 'ss' => $e->getMessage()]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -640,7 +672,7 @@ public function importCommit(Request $request)
         if (empty($ids) || empty($data)) {
             return response()->json([
                 'success' => false,
-                'errors' => ['input' => ['No phone numbers or fields provided for update.']]
+                'errors' => ['input' => [__('No phone numbers or fields provided for update.')]]
             ], 422);
         }
 
@@ -677,14 +709,14 @@ public function importCommit(Request $request)
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Selected phone numbers updated']],
+                'messages' => ['success' => [__('Selected phone numbers updated')]],
             ], 200);
         } catch (\Exception $e) {
             DB::rollBack();
             logger('PhoneNumbersController@bulkUpdate error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update selected items']]
+                'errors' => ['server' => [__('Failed to update selected items')]]
             ], 500);
         }
     }
@@ -703,7 +735,7 @@ public function importCommit(Request $request)
             // If the model is not found, return an error response
             return response()->json([
                 'success' => false,
-                'errors' => ['model' => ['Model not found']]
+                'errors' => ['model' => [__('Model not found')]]
             ], 404); // 404 Not Found if the model does not exist
         }
 
@@ -727,7 +759,7 @@ public function importCommit(Request $request)
             dispatch(new \App\Jobs\BuildDialplanForPhoneNumber($phone_number->destination_uuid, session('domain_name')));
 
             return response()->json([
-                'messages' => ['success' => ['Phone number updated successfully']],
+                'messages' => ['success' => [__('Phone number updated successfully')]],
                 'phone_number' => $phone_number,
             ], 200);
         } catch (\Exception $e) {
@@ -735,7 +767,7 @@ public function importCommit(Request $request)
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update this item']]
+                'errors' => ['server' => [__('Failed to update this item')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -775,7 +807,7 @@ public function importCommit(Request $request)
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['All selected items have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected items have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             // Rollback Transaction if any error occurs
@@ -785,7 +817,7 @@ public function importCommit(Request $request)
             logger('PhoneNumbersController@bulkDelete error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while deleting the selected items.']]
+                'errors' => ['server' => [__('Server returned an error while deleting the selected items.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -855,25 +887,22 @@ public function importCommit(Request $request)
      */
     public function selectAll(): JsonResponse
     {
+        abort_unless(userCheckPermission('destination_view'), 403);
+
         try {
-            $params = request()->all();
-
             $domain_uuid = session('domain_uuid');
-            $params['domain_uuid'] = $domain_uuid;
 
-            $data = QueryBuilder::for(Destinations::class, request()->merge($params))
+            $data = QueryBuilder::for(Destinations::class)
                 ->select([
                     'destination_uuid',
                     'domain_uuid',
                 ])
                 ->allowedFilters([
                     AllowedFilter::callback('showGlobal', function ($query, $value) use ($domain_uuid) {
-                        // If showGlobal is falsey (0, '0', false, null), restrict to the current domain
-                        if (!$value || $value === '0' || $value === 0 || $value === 'false') {
+                        if (!filter_var($value, FILTER_VALIDATE_BOOLEAN) || !userCheckPermission('destination_all')) {
                             $query->where('domain_uuid', $domain_uuid);
                         }
-                        // else, do nothing and show all domains
-                    }),
+                    })->default(false)->nullable(),
                     AllowedFilter::callback('search', function ($query, $value) {
                         $s = trim((string) $value);
                         if ($s === '') {
@@ -890,13 +919,9 @@ public function importCommit(Request $request)
                             return;
                         }
 
-                        // Numeric-only: remove all non-digits
-                        $digits = preg_replace('/\D+/', '', $s);
-
-                        // If 11 digits and starts with 1 (covers +1 once stripped), drop leading 1
-                        if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
-                            $digits = substr($digits, 1);
-                        }
+                        // Resolve the national digits using the account or explicit country code.
+                        $parts = app(\App\Services\PhoneNumberService::class)->destinationParts($s, null, session('domain_uuid'));
+                        $digits = preg_replace('/\D+/', '', $parts['destination_number']);
 
                         if ($digits === '') {
                             return;
@@ -911,7 +936,7 @@ public function importCommit(Request $request)
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $data,
             ], 200);
         } catch (\Exception $e) {
@@ -919,7 +944,7 @@ public function importCommit(Request $request)
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -927,6 +952,6 @@ public function importCommit(Request $request)
     public function downloadTemplate()
     {
         // Download as CSV (third parameter sets the writer type)
-        return Excel::download(new PhoneNumberTemplate, 'template.csv', ExcelWriter::CSV);
+        return Excel::download(new PhoneNumberTemplate, 'phone_number_template.csv', ExcelWriter::CSV);
     }
 }

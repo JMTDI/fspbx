@@ -9,25 +9,11 @@ class RingGroupService
      */
     private function buildForwardDestinationTarget($payload)
     {
-        switch ($payload['forward_action']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'conferences':
-            case 'faxes':
-            case 'call_flows':
-                return  $payload['forward_target'];
-            case 'voicemails':
-                return '*99' . $payload['forward_target'];
-                // Add other cases as necessary for different types
-            case 'external':
-                return $payload['forward_external_target'] ?? $payload['forward_target'];
-            default:
-                return null;
-        }
+        return CallRoutingOptionsService::forwardingTarget(
+            $payload['forward_action'] ?? null,
+            $payload['forward_target'] ?? null,
+            $payload['forward_external_target'] ?? null
+        );
     }
 
     /**
@@ -35,39 +21,18 @@ class RingGroupService
      */
     private function buildExitDestinationAction($payload, $domain_name)
     {
-        switch ($payload['timeout_action']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'faxes':
-            case 'conferences':
-            case 'call_flows':
-                return  ['action' => 'transfer', 'data' => $payload['timeout_target'] . ' XML ' . $domain_name];
-            case 'bridges':
-                return ['action' => 'bridge', 'data' => $payload['timeout_target']];
-            case 'voicemails':
-                return ['action' => 'transfer', 'data' => '*99' . $payload['timeout_target'] . ' XML ' . $domain_name];
+        $destination = buildDestinationAction([
+            'type' => $payload['timeout_action'],
+            'extension' => $payload['timeout_target'] ?? null,
+        ], $domain_name);
 
-            case 'recordings':
-                // Handle recordings with 'lua' destination app
-                return ['action' => 'lua', 'data' => 'streamfile.lua ' . $payload['timeout_target']];
-
-            case 'check_voicemail':
-                return ['action' => 'transfer', 'data' => '*98 XML ' . $domain_name];
-
-            case 'company_directory':
-                return ['action' => 'transfer', 'data' => '*411 XML ' . $domain_name];
-
-            case 'hangup':
-                return ['action' => 'hangup', 'data' => ''];
-
-                // Add other cases as necessary for different types
-            default:
-                return [];
+        if (! isset($destination['destination_app'], $destination['destination_data'])) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'timeout_action' => __('Unsupported routing action.'),
+            ]);
         }
+
+        return ['action' => $destination['destination_app'], 'data' => $destination['destination_data']];
     }
 
     private function toBool(mixed $value, bool $default = false): bool
@@ -93,6 +58,9 @@ class RingGroupService
             $updateData['ring_group_timeout_app']  = $timeout['action'] ?? null;
             $updateData['ring_group_timeout_data'] = $timeout['data'] ?? null;
         }
+
+        // Flag overrides live in their own table; the controller syncs them.
+        unset($updateData['flag_overrides']);
 
         // --- Normalize booleans for logic (but store as strings) ---
         $forwardEnabledBool = $this->toBool($validated['ring_group_forward_enabled'] ?? false);

@@ -10,6 +10,16 @@ print_error() {
     echo -e "\e[31m$1 \e[0m"  # Red text
 }
 
+# Install the shipped Supervisor configuration on every fresh-install attempt.
+install_supervisor_config() {
+    local source="$1" destination="/etc/supervisor/conf.d/$(basename -- "$1")"
+    if ! sudo cp -- "$source" "$destination"; then
+        print_error "Unable to install Supervisor configuration: $destination"
+        return 1
+    fi
+    print_success "Supervisor configuration installed: $destination"
+}
+
 # Detect OS codename
 OS_CODENAME=$(lsb_release -sc 2>/dev/null || echo "")
 echo "Detected OS_CODENAME=$OS_CODENAME"
@@ -127,6 +137,12 @@ if [ $? -eq 0 ]; then
     print_success "PHP installed successfully."
 else
     print_error "Error occurred while installing PHP."
+    exit 1
+fi
+
+print_success "Installing photo processing dependencies..."
+if ! bash /var/www/fspbx/install/install_message_photos.sh; then
+    print_error "Error occurred while installing photo processing dependencies."
     exit 1
 fi
 
@@ -408,9 +424,9 @@ else
 fi
 
 print_success "Installing FreeSWITCH..."
-bash /var/www/fspbx/install/install_freeswitch.sh
+bash /var/www/fspbx/install/install_freeswitch.sh --fspbx-install
 if [ $? -eq 0 ]; then
-    print_success "FreeSWITCH installed successfully."
+    print_success "FreeSWITCH installation step completed successfully."
 else
     print_error "Error occurred while installing FreeSWITCH."
     exit 1
@@ -536,13 +552,37 @@ else
 fi
 
 
-# Create a symbolic link from "public/storage" to "storage/app/public"
-php artisan storage:link
-if [ $? -eq 0 ]; then
-    print_success "Storage link created successfully."
-else
-    print_error "Error occurred while creating storage link."
+# The downloaded public files may already contain the storage link.
+FSPBX_STORAGE_LINK=/var/www/fspbx/public/storage
+FSPBX_STORAGE_TARGET=/var/www/fspbx/storage/app/public
+if [[ -L "$FSPBX_STORAGE_LINK" ]]; then
+    if [[ "$(readlink -m -- "$FSPBX_STORAGE_LINK")" != "$(readlink -m -- "$FSPBX_STORAGE_TARGET")" ]]; then
+        print_error "Storage link points to an unexpected location: $FSPBX_STORAGE_LINK"
+        exit 1
+    fi
+elif [[ -e "$FSPBX_STORAGE_LINK" ]]; then
+    print_error "$FSPBX_STORAGE_LINK exists but is not a symbolic link."
     exit 1
+fi
+
+if ! mkdir -p "$FSPBX_STORAGE_TARGET"; then
+    print_error "Unable to create storage directory: $FSPBX_STORAGE_TARGET"
+    exit 1
+fi
+
+if [[ -L "$FSPBX_STORAGE_LINK" ]]; then
+    print_success "Storage link already configured."
+else
+    if ! php artisan storage:link; then
+        print_error "Error occurred while creating storage link."
+        exit 1
+    fi
+    # Artisan can report success without creating the link; verify the result.
+    if ! [[ -L "$FSPBX_STORAGE_LINK" && "$FSPBX_STORAGE_LINK" -ef "$FSPBX_STORAGE_TARGET" ]]; then
+        print_error "Storage link was not created correctly: $FSPBX_STORAGE_LINK"
+        exit 1
+    fi
+    print_success "Storage link created successfully."
 fi
 
 # Copy assets to storage/app/public
@@ -600,10 +640,10 @@ else
     exit 1
 fi
 
-# Set permissions to ug+rwx for storage and bootstrap/cache
-sudo chmod -R ug+rwx /var/www/fspbx/storage /var/www/fspbx/bootstrap/cache
+# Set permissions to ug+rwX for storage and bootstrap/cache
+sudo chmod -R ug+rwX /var/www/fspbx/storage /var/www/fspbx/bootstrap/cache
 if [ $? -eq 0 ]; then
-    print_success "Permissions set to ug+rwx for storage and bootstrap/cache successfully."
+    print_success "Permissions set to ug+rwX for storage and bootstrap/cache successfully."
 else
     print_error "Error occurred while setting permissions for storage and bootstrap/cache."
     exit 1
@@ -618,77 +658,7 @@ else
     exit 1
 fi
 
-# Update settings for email_queue service
-# Copy email_queue service file
-sudo cp /var/www/fspbx/public/app/email_queue/resources/service/debian.service /etc/systemd/system/email_queue.service
-if [ $? -eq 0 ]; then
-    print_success "email_queue service file copied successfully."
-else
-    print_error "Error occurred while copying fax_queue service file."
-    exit 1
-fi
-
-# Update settings for email_queue service
-sudo sed -i "s|WorkingDirectory=/var/www/fusionpbx|WorkingDirectory=/var/www/fspbx/public|" /etc/systemd/system/email_queue.service
-if [ $? -eq 0 ]; then
-    print_success "Updated WorkingDirectory for email_queue service successfully."
-else
-    print_error "Error occurred while updating WorkingDirectory for email_queue service."
-    exit 1
-fi
-
-sudo sed -i "s|ExecStart=/usr/bin/php /var/www/fusionpbx/app/email_queue/resources/service/email_queue.php|ExecStart=/usr/bin/php /var/www/fspbx/public/app/email_queue/resources/service/email_queue.php|" /etc/systemd/system/email_queue.service
-if [ $? -eq 0 ]; then
-    print_success "Updated ExecStart for email_queue service successfully."
-else
-    print_error "Error occurred while updating ExecStart for email_queue service."
-    exit 1
-fi
-
-# Update settings for fax_queue service
-# Copy fax_queue service file
-sudo cp /var/www/fspbx/public/app/fax_queue/resources/service/debian.service /etc/systemd/system/fax_queue.service
-if [ $? -eq 0 ]; then
-    print_success "fax_queue service file copied successfully."
-else
-    print_error "Error occurred while copying fax_queue service file."
-    exit 1
-fi
-
-# Enable fax_queue service
-sudo systemctl enable fax_queue
-if [ $? -eq 0 ]; then
-    print_success "fax_queue service enabled successfully."
-else
-    print_error "Error occurred while enabling fax_queue service."
-    exit 1
-fi
-
-# Enable email_queue service
-sudo systemctl enable email_queue
-if [ $? -eq 0 ]; then
-    print_success "email_queue service enabled successfully."
-else
-    print_error "Error occurred while enabling email_queue service."
-    exit 1
-fi
-
-sudo sed -i "s|WorkingDirectory=/var/www/fusionpbx|WorkingDirectory=/var/www/fspbx/public|" /etc/systemd/system/fax_queue.service
-if [ $? -eq 0 ]; then
-    print_success "Updated WorkingDirectory for fax_queue service successfully."
-else
-    print_error "Error occurred while updating WorkingDirectory for fax_queue service."
-    exit 1
-fi
-
-sudo sed -i "s|ExecStart=/usr/bin/php /var/www/fusionpbx/app/fax_queue/resources/service/fax_queue.php|ExecStart=/usr/bin/php /var/www/fspbx/public/app/fax_queue/resources/service/fax_queue.php|" /etc/systemd/system/fax_queue.service
-if [ $? -eq 0 ]; then
-    print_success "Updated ExecStart for fax_queue service successfully."
-else
-    print_error "Error occurred while updating ExecStart for fax_queue service."
-    exit 1
-fi
-
+# Legacy email_queue/fax_queue services are retired; native queues use Horizon.
 # Update settings for event_guard service
 # Copy event_guard service file
 sudo cp /var/www/fspbx/public/app/event_guard/resources/service/debian.service /etc/systemd/system/event_guard.service
@@ -731,41 +701,6 @@ if [ $? -eq 0 ]; then
     print_success "systemd daemon reloaded successfully."
 else
     print_error "Error occurred while reloading systemd daemon."
-    exit 1
-fi
-
-
-# Restart email_queue service
-sudo service email_queue stop
-if [ $? -eq 0 ]; then
-    print_success "email_queue service stopped successfully."
-else
-    print_error "Error occurred while stopping email_queue service."
-    exit 1
-fi
-
-sudo service email_queue start
-if [ $? -eq 0 ]; then
-    print_success "email_queue service started successfully."
-else
-    print_error "Error occurred while starting email_queue service."
-    exit 1
-fi
-
-# Restart fax_queue service
-sudo service fax_queue stop
-if [ $? -eq 0 ]; then
-    print_success "fax_queue service stopped successfully."
-else
-    print_error "Error occurred while stopping fax_queue service."
-    exit 1
-fi
-
-sudo service fax_queue start
-if [ $? -eq 0 ]; then
-    print_success "fax_queue service started successfully."
-else
-    print_error "Error occurred while starting fax_queue service."
     exit 1
 fi
 
@@ -832,13 +767,7 @@ else
 fi
 
 # Copy Horizon configuration to Supervisor
-sudo cp install/horizon.conf /etc/supervisor/conf.d/
-if [ $? -eq 0 ]; then
-    print_success "Horizon configuration file copied to Supervisor successfully."
-else
-    print_error "Error occurred while copying Horizon configuration file to Supervisor."
-    exit 1
-fi
+install_supervisor_config install/horizon.conf || exit 1
 
 # Publish Horizon's assets
 php artisan vendor:publish --provider="Laravel\Horizon\HorizonServiceProvider"
@@ -850,92 +779,19 @@ else
 fi
 
 # Copy FS PBX CDR Service configuration to Supervisor
-sudo cp install/fs-cdr-service.conf /etc/supervisor/conf.d/
-if [ $? -eq 0 ]; then
-    print_success "FS PBX CDR Service configuration file copied to Supervisor successfully."
-else
-    print_error "Error occurred while copying FS PBX CDR Service configuration file to Supervisor."
-    exit 1
-fi
+install_supervisor_config install/fs-cdr-service.conf || exit 1
 
-# Copy FS ELS Emergency Listener configuration to Supervisor
-sudo cp install/fs-esl-listener-emergency.conf /etc/supervisor/conf.d/
-if [ $? -eq 0 ]; then
-    print_success "FS ELS Emergency Listener configuration file copied to Supervisor successfully."
-else
-    print_error "Error occurred while copying FS ELS Emergency Listener configuration file to Supervisor."
-    exit 1
-fi
+# Copy FS ESL Emergency Listener configuration to Supervisor
+install_supervisor_config install/fs-esl-listener-emergency.conf || exit 1
+
+# Copy FS PBX call webhook listener configuration to Supervisor
+install_supervisor_config install/fs-esl-listener-call-webhooks.conf || exit 1
 
 # Copy Laravel Reverb configuration to Supervisor
-sudo cp install/reverb.conf /etc/supervisor/conf.d/
-if [ $? -eq 0 ]; then
-    print_success "Laravel Reverb configuration file copied to Supervisor successfully."
-else
-    print_error "Error occurred while copying Laravel Reverb configuration file to Supervisor."
-    exit 1
-fi
+install_supervisor_config install/reverb.conf || exit 1
 
-# Reload Supervisor to read new configuration
-sudo supervisorctl reread
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "Supervisor reread configuration successfully."
-else
-    print_error "Error occurred while rereading Supervisor configuration."
-    exit 1
-fi
-
-# Update Supervisor with new configuration
-sudo supervisorctl update
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "Supervisor updated with new configuration successfully."
-else
-    print_error "Error occurred while updating Supervisor with new configuration."
-    exit 1
-fi
-
-# Restart Supervisor
-sudo systemctl restart supervisor
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "Supervisor restarted successfully."
-else
-    print_error "Error occurred while restarting Supervisor."
-    exit 1
-fi
-
-# Restart Horizon processes under Supervisor
-sudo supervisorctl restart horizon:* 
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "Horizon processes restarted successfully."
-else
-    print_error "Error occurred while restarting Horizon processes."
-    exit 1
-fi
-
-# Restart FS ELS Emergency process under Supervisor
-sudo supervisorctl restart fs-esl-listener-emergency
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "FS ELS Emergency process started successfully."
-else
-    print_error "Error occurred while starting FS ELS Emergency process."
-    exit 1
-fi
-
-# Restart FS PBX CDR Service process under Supervisor
-sudo supervisorctl restart fs-cdr-service
-if [ $? -eq 0 ]; then
-    sleep 6
-    print_success "FS PBX CDR Service process restarted successfully."
-else
-    print_error "Error occurred while restarting FS PBX CDR Service process."
-    exit 1
-fi
-
+# Final setup prepares the database, runtime permissions and FreeSWITCH before
+# restarting Supervisor. Do not start listeners or workers before that point.
 print_success "Seeding the database and configuring FS PBX..."
 # Navigate to Laravel project directory
 cd /var/www/fspbx

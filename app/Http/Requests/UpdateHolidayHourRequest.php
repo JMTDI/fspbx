@@ -5,6 +5,8 @@ namespace App\Http\Requests;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Rules\RoutingTarget;
+use App\Services\CallRoutingOptionsService;
 
 class UpdateHolidayHourRequest extends FormRequest
 {
@@ -54,28 +56,11 @@ class UpdateHolidayHourRequest extends FormRequest
             // routing action + target
             'action' => [
                 'required',
+                'string',
+                Rule::in(array_column((new CallRoutingOptionsService)->routingTypes, 'value')),
             ],
 
-            'target' => [
-                'sometimes',
-                function ($attribute, $value, $fail) {
-                    $action = $this->input('action');
-
-                    // if an action *needs* a target (i.e. it is NOT one of these),
-                    // then failback_target cannot be empty
-                    if (
-                        $action
-                        && ! in_array($action, [
-                            'company_directory',
-                            'check_voicemail',
-                            'hangup',
-                        ], true)
-                        && empty($value)
-                    ) {
-                        $fail('A target must be provided when action is selected.');
-                    }
-                },
-            ],
+            'target' => [new RoutingTarget('action')],
 
             // free‐form note
             'note'             => ['nullable', 'string'],
@@ -86,8 +71,8 @@ class UpdateHolidayHourRequest extends FormRequest
     {
         return [
             // 'ring_group_extension.ring_group_unique' => 'This number is already used',
-            'start_date.required_if' => 'The date field is required',
-            'end_date.required_if' => 'The date field is required',
+            'start_date.required_if' => __('The date field is required'),
+            'end_date.required_if' => __('The date field is required'),
 
         ];
     }
@@ -109,7 +94,7 @@ class UpdateHolidayHourRequest extends FormRequest
                 if (! $hasFixed && ! $hasFloating) {
                     $validator->errors()->add(
                         'holiday_type',
-                        'You must select a holiday from the list.'
+                        __('You must select a holiday from the list.')
                     );
                 }
             }
@@ -126,7 +111,7 @@ class UpdateHolidayHourRequest extends FormRequest
                 if (! $hasAny) {
                     $validator->errors()->add(
                         'holiday_type',
-                        'To define a recurring pattern you must fill at least one of the condition fields in the form.'
+                        __('To define a recurring pattern you must fill at least one of the condition fields in the form.')
                     );
                 }
             }
@@ -136,7 +121,7 @@ class UpdateHolidayHourRequest extends FormRequest
                 if ($this->input('end_date') !== $this->input('start_date')) {
                     $validator->errors()->add(
                         'end_date',
-                        'For a single-date holiday, end_date must equal start_date.'
+                        __('For a single-date holiday, end_date must equal start_date.')
                     );
                 }
             }
@@ -149,7 +134,7 @@ class UpdateHolidayHourRequest extends FormRequest
                     if ($endTime < $startTime) {
                         $validator->errors()->add(
                             'end_time',
-                            'The end time must be a time after or equal to start time.'
+                            __('The end time must be a time after or equal to start time.')
                         );
                     }
                 }

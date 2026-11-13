@@ -29,6 +29,8 @@ class Kernel extends HttpKernel
      */
     protected $middlewareGroups = [
         'web' => [
+            // Outermost so it sees the final response; must run before anything starts the PHP session
+            \App\Http\Middleware\NoStoreByDefault::class,
             \App\Http\Middleware\EncryptCookies::class,
             \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
             \Illuminate\Session\Middleware\StartSession::class,
@@ -38,6 +40,7 @@ class Kernel extends HttpKernel
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
             \App\Http\Middleware\CheckUserEnabled::class, // Custom class. Checks if FusionPBX user is enabled
             \App\Http\Middleware\CheckFusionPBXLogin::class, // Custom class. Check if FusionPBX user didn't expire
+            \App\Http\Middleware\SetApplicationLocale::class, // Custom class. Applies the active domain's language setting
 
             // Inertia MUST BE the last item in your web middleware group
             \App\Http\Middleware\HandleInertiaRequests::class,
@@ -47,6 +50,11 @@ class Kernel extends HttpKernel
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
             'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            // Applies the active domain's language to API responses too, so
+            // __() messages from controllers/validation returned to the SPA
+            // are localized. Falls back to the default locale for stateless
+            // (token) requests that have no session/domain.
+            \App\Http\Middleware\SetApplicationLocale::class,
         ],
     ];
 

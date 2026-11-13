@@ -20,7 +20,7 @@
                                 <button type="button"
                                     class="rounded-md bg-white text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
                                     @click="emit('close')">
-                                    <span class="sr-only">Close</span>
+                                    <span class="sr-only">{{ $t('Close') }}</span>
                                     <XMarkIcon class="h-6 w-6" aria-hidden="true" />
                                 </button>
                             </div>
@@ -38,25 +38,26 @@
                                             </path>
                                         </svg>
                                     </div>
-                                    <div class="text-lg text-blue-600 m-auto">Loading...</div>
+                                    <div class="text-lg text-blue-600 m-auto">{{ $t('Loading...') }}</div>
                                 </div>
                             </div>
 
 
                             <Vueform v-if="!loading" ref="form$" :endpoint="submitForm" @success="handleSuccess"
                                 @error="handleError" @response="handleResponse" :display-errors="false" :default="{
-                                    // destination: options.item.destination,
+                                    ...messageDeliveryDefaults(null, options.webhook),
+                                    opt_out_enabled: options.opt_out_available && options.opt_out_scope === 'number',
 
-                                }">
+                                }" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
 
                                 <template #empty>
 
                                     <FormElements>
 
-                                        <StaticElement name="h4" tag="h4" content="Create new" />
+                                        <StaticElement name="h4" tag="h4" :content="$t('Create new')" />
 
-                                        <TextElement name="destination" label="Phone Number"
-                                            placeholder="Enter Phone Number" :floating="false" :columns="{
+                                        <TextElement name="destination" :label="$t('Phone Number')"
+                                            :placeholder="$t('Enter Phone Number')" :floating="false" :columns="{
                                                 sm: {
                                                     container: 6,
                                                 },
@@ -64,37 +65,27 @@
 
 
                                         <SelectElement name="carrier" :items="options.carrier"
-                                            :search="true" :native="false" label="Message Provider" input-type="search"
+                                            :search="true" :native="false" :label="$t('Message Provider')" input-type="search"
                                             autocomplete="off" :floating="false" :strict="false"
-                                            placeholder="Choose Provider" :columns="{
+                                            :placeholder="$t('Choose Provider')" :columns="{
                                                 sm: {
                                                     container: 6,
                                                 },
                                             }" />
 
-                                        <SelectElement name="chatplan_detail_data" :items="options.chatplan_detail_data"
-                                            :search="true" :native="false" label="Extension" input-type="search"
-                                            autocomplete="off" :floating="false" description="Assign the extension
-                                                        to which the messages should be
-                                                        forwarded." :strict="false" placeholder="Choose extension"
-                                            :columns="{
-                                                sm: {
-                                                    container: 6,
-                                                },
-                                            }" />
+                                        <MessageDeliveryFields :settings="options.webhook" :extensions="options.extensions" />
+                                        <ToggleElement v-if="options.opt_out_available && options.opt_out_scope === 'number'" name="opt_out_enabled" :text="$t('Enable opt out')"
+                                            :conditions="[form => !options.webhook?.available || form.data.inbound_delivery === 'members']"
+                                            :true-value="true" :false-value="false"
+                                            :description="$t('An SMS matching an opt-out keyword blocks further Messages and Ringotel sends to that recipient. Manage keywords in Account Settings. Customer API sends are excluded.')" />
 
-                                        <TextElement name="email" label="Email" placeholder="Optional" :floating="false"
-                                            :columns="{
-                                                sm: {
-                                                    container: 6,
-                                                },
-                                            }" />
-
-                                        <TextareaElement label="Description" name="description" :rows="2" />
+                                        <StaticElement v-if="options.opt_out_available && options.opt_out_scope === 'account'" name="opt_out_account"
+                                            :content="$t('Account-wide opt-out handling is enabled for every phone number. Individual numbers cannot be excluded.')" />
+                                        <TextareaElement :label="$t('Description')" name="description" :rows="2" />
 
                                         <GroupElement name="container_3" />
 
-                                        <ButtonElement name="submit" button-label="Save" :submits="true"
+                                        <ButtonElement name="submit" :button-label="$t('Save')" :submits="true"
                                             align="right" />
 
                                     </FormElements>
@@ -112,7 +103,11 @@
 </template>
 
 <script setup>
+import { clearServerFormErrors } from '../../../composables/serverFormErrors.js';
+import { trans } from '@i18n';
 import { ref } from "vue";
+import MessageDeliveryFields from './MessageDeliveryFields.vue';
+import { messageDeliveryDefaults, messageDeliveryRequest } from '../../../composables/messageDelivery.js';
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from '@headlessui/vue'
 import { XMarkIcon } from "@heroicons/vue/24/solid";
 
@@ -131,8 +126,7 @@ const form$ = ref(null)
 const submitForm = async (FormData, form$) => {
     // Using form$.requestData will EXCLUDE conditional elements and it 
     // will submit the form as Content-Type: application/json . 
-    const requestData = form$.requestData
-    // console.log(requestData);
+    const requestData = messageDeliveryRequest(form$.requestData, null, props.options.webhook)
 
     return await form$.$vueform.services.axios.post(props.options.routes.store_route, requestData)
 };
@@ -183,7 +177,7 @@ const handleError = (error, details, form$) => {
         case 'prepare':
             console.log(error) // Error object
 
-            form$.messageBag.append('Could not prepare form')
+            form$.messageBag.append(trans('Could not prepare form'))
             break
 
         // Error occured because response status is outside of 2xx
@@ -203,14 +197,14 @@ const handleError = (error, details, form$) => {
         case 'cancel':
             console.log(error) // Error object
 
-            form$.messageBag.append('Request cancelled')
+            form$.messageBag.append(trans('Request cancelled'))
             break
 
         // Some other errors happened (no response object)
         case 'other':
             console.log(error) // Error object
 
-            form$.messageBag.append('Couldn\'t submit form')
+            form$.messageBag.append(trans('Couldn\'t submit form'))
             break
     }
 }

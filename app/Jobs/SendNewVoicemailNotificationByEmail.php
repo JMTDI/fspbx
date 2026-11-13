@@ -5,7 +5,6 @@ namespace App\Jobs;
 use App\Models\EmailLog;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
-use App\Models\EmailTemplate;
 use Illuminate\Bus\Queueable;
 use App\Models\DomainSettings;
 use Illuminate\Support\Carbon;
@@ -14,6 +13,8 @@ use App\Models\VoicemailMessages;
 use App\Models\Extensions;
 use App\Mail\VoicemailNotification;
 use App\Services\VoicemailMessageUrlService;
+use App\Services\EmailDeliveryFailureReporter;
+use App\Support\Localization\LocaleRegistry;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
@@ -23,6 +24,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 
 class SendNewVoicemailNotificationByEmail implements ShouldQueue
 {
@@ -96,12 +98,23 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
         Redis::throttle('email')->allow(2)->every(1)->then(function () {
 
             $message = VoicemailMessages::select('voicemail_message_uuid', 'domain_uuid', 'voicemail_uuid', 'created_epoch', 'caller_id_name', 'caller_id_number', 'message_length', 'message_transcription')
-                ->with('voicemail:voicemail_uuid,voicemail_id,voicemail_mail_to,voicemail_transcription_enabled,voicemail_local_after_email,voicemail_description,voicemail_file')
+                ->with('voicemail:voicemail_uuid,domain_uuid,voicemail_id,voicemail_mail_to,voicemail_transcription_enabled,voicemail_local_after_email,voicemail_description,voicemail_file')
                 ->with('domain:domain_uuid,domain_name')
                 ->find($this->params['message_uuid']);
 
             // If already deleted (e.g., prior success cleanup), nothing to do
             if (!$message) return;
+
+            // A deleted or invalid mailbox is terminal. Preserve the message for review.
+            if (! $message->voicemail || $message->voicemail->domain_uuid !== $message->domain_uuid || ! $message->domain) {
+                logger()->warning('Skipping voicemail email: mailbox or account is missing or mismatched', [
+                    'voicemail_message_uuid' => $message->voicemail_message_uuid,
+                    'domain_uuid' => $message->domain_uuid,
+                    'voicemail_uuid' => $message->voicemail_uuid,
+                ]);
+
+                return;
+            }
 
             $domain_uuid = $message->domain_uuid;
 
@@ -210,28 +223,10 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
                 $downloadUrl = app(VoicemailMessageUrlService::class)->downloadUrlForMessage($message);
             }
 
-            $template = EmailTemplate::where(function ($q) use ($domain_uuid) {
-                $q->where('domain_uuid', $domain_uuid)
-                    ->orWhereNull('domain_uuid');
-            })
-                ->select([
-                    'template_subject',
-                    'template_body',
-                ])
-                ->where('template_language', $this->params['default_language'] . '-' . $this->params['default_dialect'])
-                ->where('template_category', 'voicemail')
-                ->where('template_subcategory', $subcategory)
-                ->where('template_enabled', 'true')
-                // Prefer domain-specific rows over global rows:
-                ->orderBy('domain_uuid', 'desc')
-                ->first();
-
-
-            $subjectTpl = $template->template_subject ?? 'New Voicemail from {{ caller_id_number }}';
-            $bodyTpl    = $template->template_body ?? '<p>You have a new voicemail from {{ caller_id_number }}</p>';
             $timezone = get_local_time_zone($domain_uuid);
 
             $vars = [
+                'app_name' => config('app.name', 'FS PBX'),
                 'caller_id_number' => (string) $message->caller_id_number,
                 'caller_id_name'   => (string) $message->caller_id_name,
                 'voicemail_id'     => (string) ($message->voicemail?->voicemail_id ?? ''),
@@ -241,38 +236,33 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
                 'message_duration'   => gmdate('i\m s\s', (int) $message->message_length),
                 'message_text'    => (string) $message->message_transcription,
                 'voicemail_download_url' => (string) $downloadUrl,
-                // add more as needed…
+                'voicemail_file_mode' => $voicemailFileMode,
             ];
 
-            if (strpos($bodyTpl, '${origination_callee_id_name}') !== false) {
-                $extension = Extensions::where('extension', $message->voicemail?->voicemail_id ?? null)
-                    ->where('domain_uuid', $domain_uuid)
-                    ->select('extension_uuid', 'extension', 'effective_caller_id_name')
-                    ->first();
-                $vars['origination_callee_id_name'] = $extension->name_formatted ?? null;
-            }
+            $extension = Extensions::where('extension', $message->voicemail?->voicemail_id ?? null)
+                ->where('domain_uuid', $domain_uuid)
+                ->select('extension_uuid', 'extension', 'effective_caller_id_name')
+                ->first();
+            $vars['origination_callee_id_name'] = $extension?->name_formatted;
+            $vars['new_messages'] = VoicemailMessages::where('voicemail_uuid', $message->voicemail->voicemail_uuid)
+                ->where('domain_uuid', $domain_uuid)
+                ->whereNull('message_status')
+                ->count();
 
-            if (strpos($subjectTpl, '${new_messages}') !== false) {
-                $voicemail_id = $message->voicemail?->voicemail_id ?? null;
-                $newMessagesCount = VoicemailMessages::where('voicemail_uuid', $message->voicemail->voicemail_uuid)
-                    ->whereNull('message_status')
-                    ->count();
-                $vars['new_messages'] = $newMessagesCount;
-            }
-
-            $replacements = [];
-            foreach ($vars as $k => $v) {
-                $replacements['${' . $k . '}'] = e($v);
-            }
-            $subject = strtr($subjectTpl, $replacements);
-            $bodyHtml = strtr($bodyTpl, $replacements);
-            $bodyHtml = $this->applyVoicemailDeliveryInstructions($bodyHtml, $voicemailFileMode, $downloadUrl, $bodyTpl);
-
-            $attributes['email_subject'] = $subject;
-            $attributes['bodyHtml'] = $bodyHtml;
-            $attributes['domain_uuid'] = $domain_uuid;
-            $attributes['logId'] = $this->logId;
-            $attributes['attachment_path'] = $voicemailFileMode === 'attach' ? $attachment_path : null;
+            $attributes = array_merge($vars, [
+                'template_subcategory' => $subcategory,
+                // Voicemail emails follow the account's UI language (the same
+                // config/locales.php vocabulary the email-template picker uses)
+                // rather than FreeSWITCH's default_language/default_dialect,
+                // which only govern call-audio prompt paths. Resolved through
+                // LocaleRegistry so it's always a registered code, en-us fallback.
+                'language' => app(LocaleRegistry::class)
+                    ->resolve(get_domain_setting('language', $domain_uuid)),
+                'email_subject' => 'New voicemail from '.($message->caller_id_number ?: 'unknown caller'),
+                'domain_uuid' => $domain_uuid,
+                'logId' => $this->logId,
+                'attachment_path' => $voicemailFileMode === 'attach' ? $attachment_path : null,
+            ]);
 
             $uuid    = (string) $message->voicemail_message_uuid;
             $sentKey = "vm:sent:$uuid";
@@ -297,12 +287,31 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
                     // mark as sent so future retries won't resend
                     Cache::put($sentKey, 1, now()->addDays(1));
                 } catch (\Throwable $e) {
-                    logger()->error('Voicemail email send failed', [
+                    $classification = $this->classifyMailException($e);
+
+                    $this->markEmailLogSendFailure($classification);
+
+                    $context = [
+                        'job' => class_basename($this),
                         'uuid' => $uuid,
+                        'log_uuid' => $this->logId,
                         'attempt' => $this->attempts(),
                         'max_tries' => $this->tries,
-                        'error' => $e->getMessage(),
-                    ]);                    
+                        'status' => $classification['status'],
+                        'category' => $classification['category'],
+                    ];
+
+                    if ($e instanceof TransportExceptionInterface) {
+                        app(EmailDeliveryFailureReporter::class)->report($e, $context);
+                    } else {
+                        logger()->error('Voicemail email send failed', $context + ['error' => $e->getMessage()]);
+                    }
+
+                    if ($classification['stop_retrying']) {
+                        $this->fail($e);
+                        return;
+                    }
+
                     throw $e; // ensure retry on failure
                 }
             }
@@ -400,51 +409,112 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
         return $value;
     }
 
-    private function applyVoicemailDeliveryInstructions(
-        string $bodyHtml,
-        string $voicemailFileMode,
-        ?string $downloadUrl,
-        string $bodyTpl
-    ): string {
-        $legacyInstructions = '<p>Listen to this voicemail over your phone or by opening the attached sound file. You can also sign in to your account with your credentials to manage and listen to voicemails.</p>';
+    private function classifyMailException(\Throwable $e): array
+    {
+        $raw = $this->exceptionMessageWithPrevious($e);
+        $normalized = strtolower($raw);
 
-        if ($voicemailFileMode === 'attach') {
-            return $bodyHtml;
+        if (
+            str_contains($normalized, 'marked as inactive') ||
+            str_contains($normalized, 'inactive recipients') ||
+            str_contains($normalized, 'manual suppression') ||
+            str_contains($normalized, 'generated a hard bounce') ||
+            str_contains($normalized, 'code 406')
+        ) {
+            return [
+                'category' => 'postmark_inactive_recipient',
+                'status' => 'permanent_failed',
+                'summary' => 'Postmark rejected the message because the recipient is inactive or suppressed.',
+                'details' => $this->shortenTransportMessage($raw),
+                'stop_retrying' => true,
+            ];
         }
 
-        $replacement = '<p>Listen to this voicemail over your phone. You can also sign in to your account with your credentials to manage and listen to voicemails.</p>';
-
-        if ($voicemailFileMode === 'link' && $downloadUrl) {
-            $replacement = '<p>Listen to this voicemail over your phone or by using the secure download link below. You can also sign in to your account with your credentials to manage and listen to voicemails.</p>';
-
-            if (strpos($bodyTpl, '${voicemail_download_url}') === false) {
-                $replacement .= $this->voicemailDownloadLinkHtml($downloadUrl);
-            }
+        if (
+            str_contains($normalized, 'invalid credentials') ||
+            str_contains($normalized, 'authentication failed') ||
+            str_contains($normalized, 'failed to authenticate on smtp server')
+        ) {
+            return [
+                'category' => 'auth_invalid',
+                'status' => 'permanent_failed',
+                'summary' => 'Email authentication failed. Check the outgoing mail credentials.',
+                'details' => $this->shortenTransportMessage($raw),
+                'stop_retrying' => true,
+            ];
         }
 
-        if (strpos($bodyHtml, $legacyInstructions) !== false) {
-            return str_replace($legacyInstructions, $replacement, $bodyHtml);
+        if (
+            str_contains($normalized, 'rfc 2822') ||
+            str_contains($normalized, 'addr-spec') ||
+            str_contains($normalized, 'invalid from address format') ||
+            str_contains($normalized, 'no valid recipient found')
+        ) {
+            return [
+                'category' => 'config_error',
+                'status' => 'permanent_failed',
+                'summary' => 'Email could not be sent because of invalid message data or mail configuration.',
+                'details' => $this->shortenTransportMessage($raw),
+                'stop_retrying' => true,
+            ];
         }
 
-        if ($voicemailFileMode === 'link' && $downloadUrl && strpos($bodyTpl, '${voicemail_download_url}') === false) {
-            return $this->insertBeforeBodyClose($bodyHtml, $this->voicemailDownloadLinkHtml($downloadUrl));
-        }
-
-        return $bodyHtml;
+        return [
+            'category' => 'transport_error',
+            'status' => 'failed',
+            'summary' => 'Email send attempt failed due to a mail transport error.',
+            'details' => $this->shortenTransportMessage($raw),
+            'stop_retrying' => false,
+        ];
     }
 
-    private function voicemailDownloadLinkHtml(string $downloadUrl): string
+    private function markEmailLogSendFailure(array $classification): void
     {
-        return '<p><a href="' . e($downloadUrl) . '">Download voicemail recording</a></p>';
-    }
+        $log = EmailLog::query()->find($this->logId);
 
-    private function insertBeforeBodyClose(string $bodyHtml, string $html): string
-    {
-        if (stripos($bodyHtml, '</body>') !== false) {
-            return preg_replace('/<\/body>/i', $html . '</body>', $bodyHtml, 1);
+        if (! $log) {
+            return;
         }
 
-        return $bodyHtml . $html;
+        $existing = trim((string) $log->sent_debug_info);
+        $line = 'Voicemail email send failed at '
+            . now()->toDateTimeString()
+            . ': '
+            . $classification['summary'];
+
+        if (! empty($classification['details'])) {
+            $line .= ' Details: ' . $classification['details'];
+        }
+
+        $log->update([
+            'status' => $classification['status'],
+            'sent_debug_info' => $existing
+                ? $existing . PHP_EOL . $line
+                : $line,
+        ]);
+    }
+
+    private function exceptionMessageWithPrevious(\Throwable $e): string
+    {
+        $messages = [];
+
+        do {
+            $messages[] = get_class($e) . ': ' . $e->getMessage();
+            $e = $e->getPrevious();
+        } while ($e);
+
+        return implode(' | Previous: ', $messages);
+    }
+
+    private function shortenTransportMessage(string $message, int $max = 500): string
+    {
+        $message = preg_replace('/\s+/', ' ', trim($message));
+
+        if (mb_strlen($message) <= $max) {
+            return $message;
+        }
+
+        return mb_substr($message, 0, $max - 3) . '...';
     }
 
     private function deleteVoicemailSilently(\App\Models\VoicemailMessages $message): void
@@ -464,8 +534,23 @@ class SendNewVoicemailNotificationByEmail implements ShouldQueue
 
             // Best-effort MWI; never throw
             try {
+                // Count after deletion, using the same unread statuses as vm_blf.lua.
+                $counts = VoicemailMessages::query()
+                    ->where('domain_uuid', $message->domain_uuid)
+                    ->where('voicemail_uuid', $message->voicemail_uuid)
+                    ->selectRaw("count(case when message_status is null or message_status in ('', 'new') then 1 end) as new_messages")
+                    ->selectRaw("count(case when message_status = 'saved' then 1 end) as saved_messages")
+                    ->toBase()
+                    ->first();
+
                 $esl = app(FreeswitchEslService::class);
-                $esl->executeCommand(sprintf("bgapi luarun app/voicemail/resources/scripts/mwi_notify.lua %s %s", $voicemailId, $domainName));
+                $esl->executeCommand(sprintf(
+                    "bgapi luarun app/voicemail/resources/scripts/mwi_notify.lua %s %s %d %d",
+                    $voicemailId,
+                    $domainName,
+                    $counts->new_messages,
+                    $counts->saved_messages,
+                ));
             } catch (\Throwable $e) {
                 logger()->warning('MWI update failed after voicemail delete', ['v' => $voicemailId, 'd' => $domainName, 'e' => $e->getMessage()]);
             }

@@ -10,6 +10,7 @@ use App\Models\DeviceLines;
 use App\Services\DeviceCloudProvisioningService;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Session;
 
 class DeviceService
 {
@@ -36,6 +37,10 @@ class DeviceService
                 }
             }
 
+            if (array_key_exists('phonebook_mode', $inputs) || array_key_exists('phonebook_uuids', $inputs)) {
+                $this->syncDevicePhonebooks($device, $inputs);
+            }
+
             return $device->fresh();
         });
     }
@@ -56,11 +61,18 @@ class DeviceService
             $this->normalizeKeyTemplateValue($inputs);
 
             $domainUuid = (string) ($inputs['domain_uuid'] ?? $device->domain_uuid);
+            $previousDomainUuid = (string) $device->domain_uuid;
 
             $device->update($inputs);
 
             if (array_key_exists('device_lines', $inputs)) {
                 $this->syncDeviceLines($device, $inputs['device_lines'], $domainUuid);
+            }
+
+            // The edit form round-trips whatever line values it loaded, so a domain change
+            // has to re-resolve them afterwards - including when no lines were submitted.
+            if ($domainUuid !== '' && $domainUuid !== $previousDomainUuid) {
+                $this->cascadeDomainToLines($device, $domainUuid);
             }
 
             if (array_key_exists('device_settings', $inputs)) {
@@ -71,8 +83,62 @@ class DeviceService
                 $this->syncDeviceKeys($device, $inputs['device_keys']);
             }
 
+            if (array_key_exists('phonebook_mode', $inputs) || array_key_exists('phonebook_uuids', $inputs)) {
+                $this->syncDevicePhonebooks($device, $inputs);
+            }
+
             return $device->fresh();
         });
+    }
+
+    /**
+     * Sync a device's phonebook assignments.
+     *
+     * mode 'default' (or empty custom list) clears assignments so the device
+     * inherits the domain default; mode 'custom' stores the ordered UUID list,
+     * with the array order becoming the phone slot / priority.
+     */
+    private function syncDevicePhonebooks(Devices $device, array $inputs): void
+    {
+        $mode = $inputs['phonebook_mode'] ?? 'custom';
+
+        DB::table('device_phonebook')->where('device_uuid', $device->device_uuid)->delete();
+
+        if ($mode !== 'custom') {
+            return;
+        }
+
+        $uuids = array_values(array_filter((array) ($inputs['phonebook_uuids'] ?? [])));
+        if (empty($uuids)) {
+            return;
+        }
+
+        // Only keep phonebooks that belong to the device's domain.
+        $valid = \App\Models\Phonebook::query()
+            ->where('domain_uuid', $device->domain_uuid)
+            ->whereIn('phonebook_uuid', $uuids)
+            ->pluck('phonebook_uuid')
+            ->all();
+
+        $now = now();
+        $slot = 1;
+        $rows = [];
+        foreach ($uuids as $uuid) {
+            if (! in_array($uuid, $valid, true)) {
+                continue;
+            }
+            $rows[] = [
+                'device_uuid'    => $device->device_uuid,
+                'phonebook_uuid' => $uuid,
+                'slot'           => $slot++,
+                'created_at'     => $now,
+                'updated_at'     => $now,
+            ];
+        }
+
+        if (! empty($rows)) {
+            DB::table('device_phonebook')->insert($rows);
+        }
     }
 
     public function delete(Devices $device): void
@@ -169,6 +235,147 @@ class DeviceService
         }
 
         return (string) $value;
+    }
+
+    /**
+     * The line columns that describe how a line reaches the PBX. They are derived from
+     * the owning domain, so they have to be re-resolved whenever a device changes domain.
+     */
+    public const DOMAIN_DERIVED_LINE_SETTINGS = [
+        'server_address_primary' => 'server_address_primary',
+        'server_address_secondary' => 'server_address_secondary',
+        'outbound_proxy_primary' => 'outbound_proxy_primary',
+        'outbound_proxy_secondary' => 'outbound_proxy_secondary',
+        'sip_port' => 'line_sip_port',
+        'sip_transport' => 'line_sip_transport',
+        'register_expires' => 'line_register_expires',
+    ];
+
+    /**
+     * Re-point a device's lines at the domain the device now belongs to.
+     *
+     * Every line follows the device's domain_uuid. Connectivity settings and the SIP
+     * domain are additionally re-resolved from the new domain's settings, except on
+     * external lines: those register to a third party, so their server address, proxy,
+     * port and transport belong to that provider and must survive the move.
+     *
+     * @return int number of lines re-pointed
+     */
+    public function cascadeDomainToLines(Devices $device, ?string $domainUuid = null): int
+    {
+        $domainUuid = (string) ($domainUuid ?: $device->domain_uuid);
+
+        if ($domainUuid === '') {
+            return 0;
+        }
+
+        $domainName = $this->resolveDomainName($domainUuid);
+
+        $derived = ['domain_uuid' => $domainUuid, 'server_address' => $domainName];
+
+        foreach (self::DOMAIN_DERIVED_LINE_SETTINGS as $column => $setting) {
+            $derived[$column] = get_domain_setting($setting, $domainUuid);
+        }
+
+        $isExternal = function ($query) {
+            $query->where('external_line', true);
+        };
+
+        // External lines: only the owning domain moves, their connection details stay put.
+        $externalCount = DeviceLines::query()
+            ->where('device_uuid', $device->device_uuid)
+            ->where($isExternal)
+            ->update([
+                'domain_uuid' => $domainUuid,
+                'update_date' => date('Y-m-d H:i:s'),
+            ]);
+
+        $internalCount = DeviceLines::query()
+            ->where('device_uuid', $device->device_uuid)
+            ->where(function ($query) {
+                $query->whereNull('external_line')->orWhere('external_line', false);
+            })
+            ->update($derived + ['update_date' => date('Y-m-d H:i:s')]);
+
+        return $externalCount + $internalCount;
+    }
+
+    /**
+     * Apply connectivity settings (SIP port, transport, ...) to the lines of many devices at once.
+     *
+     * $scope controls which lines of each device are touched:
+     *   - mode: 'all' | 'first' | 'list'
+     *   - line_numbers: string[] used when mode is 'list'
+     *   - include_external: whether lines registered to a third party provider are included
+     *
+     * @param  string[]  $deviceUuids
+     * @param  array<string, mixed>  $attributes  keyed by v_device_lines column
+     * @return array{lines_updated:int, devices_affected:int, devices_skipped:int, device_uuids:string[]}
+     */
+    public function bulkUpdateLineSettings(array $deviceUuids, array $attributes, array $scope = []): array
+    {
+        $selectedCount = count(array_unique($deviceUuids));
+
+        $empty = [
+            'lines_updated' => 0,
+            'devices_affected' => 0,
+            'devices_skipped' => $selectedCount,
+            'device_uuids' => [],
+        ];
+
+        if (empty($deviceUuids) || empty($attributes)) {
+            return $empty;
+        }
+
+        $mode = $scope['mode'] ?? 'all';
+        $lineNumbers = $scope['line_numbers'] ?? [];
+        $includeExternal = (bool) ($scope['include_external'] ?? false);
+
+        if ($mode === 'list' && empty($lineNumbers)) {
+            return $empty;
+        }
+
+        // Rebuilt per use: the same constraints back both the lookup and the update.
+        $matching = function () use ($deviceUuids, $mode, $lineNumbers, $includeExternal) {
+            return DeviceLines::query()
+                ->whereIn('device_uuid', $deviceUuids)
+                ->unless($includeExternal, function ($query) {
+                    // External lines register to a third party server - their port and
+                    // transport belong to that provider, not to this PBX.
+                    $query->where(function ($inner) {
+                        $inner->whereNull('external_line')
+                            ->orWhere('external_line', false);
+                    });
+                })
+                ->when($mode === 'first', fn ($query) => $query->where('line_number', '1'))
+                ->when($mode === 'list', fn ($query) => $query->whereIn('line_number', $lineNumbers));
+        };
+
+        $affectedDevices = $matching()
+            ->distinct()
+            ->pluck('device_uuid')
+            ->map(fn ($uuid) => (string) $uuid)
+            ->all();
+
+        if (empty($affectedDevices)) {
+            return $empty;
+        }
+
+        $payload = $attributes;
+        $payload['update_date'] = date('Y-m-d H:i:s');
+
+        if ($updateUser = Session::get('user_uuid')) {
+            $payload['update_user'] = $updateUser;
+        }
+
+        $linesUpdated = $matching()->update($payload);
+
+        return [
+            'lines_updated' => $linesUpdated,
+            'devices_affected' => count($affectedDevices),
+            'devices_skipped' => max(0, $selectedCount - count($affectedDevices)),
+            'device_uuids' => $affectedDevices,
+        ];
     }
 
     private function createDeviceLine(Devices $device, array $line, string $domainUuid, ?string $domainName): void

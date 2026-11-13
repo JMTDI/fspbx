@@ -3,9 +3,7 @@
 namespace App\Jobs;
 
 use App\Mail\FaxFailed;
-use Illuminate\Http\Request;
 use Illuminate\Bus\Queueable;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Queue\SerializesModels;
@@ -13,7 +11,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Support\Facades\Notification;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
 use App\Notifications\SendSlackNotification;
 use Illuminate\Queue\Middleware\RateLimitedWithRedis;
 
@@ -99,7 +96,10 @@ class SendFaxFailedNotification implements ShouldQueue
                     ->notify(new SendSlackNotification($this->request));
             }
 
-            Mail::to($this->request['from'])->send(new FaxFailed($this->request));
+            $recipient = trim((string) ($this->request['from'] ?? ''));
+            if ($recipient !== '') {
+                Mail::to($recipient)->send(new FaxFailed($this->request));
+            }
         }, function () {
             // Could not obtain lock; this job will be re-queued
             return $this->release(5);

@@ -1,0 +1,152 @@
+<?php
+
+namespace App\Services\Settings;
+
+use App\Models\DefaultSettings;
+use App\Models\Domain;
+use App\Models\DomainSettings;
+use App\Models\Menu;
+use App\Support\Localization\LocaleRegistry;
+
+/**
+ * Declarative source of truth for the settings shown on the Account Settings
+ * "General" tab. Each field names the domain_settings row it maps to
+ * (category/subcategory/name), how it renders, and where its value comes
+ * from. Values are this account's own overrides; empty means inherit the
+ * system default (see AccountSettingsController::applySettings).
+ *
+ * Adding an account setting is one entry in fields() -- no per-field wiring
+ * across template, mount, and save.
+ */
+class AccountSettingsSchema extends SettingsSchema
+{
+    public function fields(): array
+    {
+        $lineDisplayNameDefault = $this->provisionDefault('line_display_name_format', '{extension}');
+        $blfLabelDefault = $this->provisionDefault('blf_label_format', '{name}');
+
+        return [
+            [
+                'key' => 'time_zone',
+                'category' => 'domain',
+                'subcategory' => 'time_zone',
+                'name' => 'name',
+                'type' => 'select',
+                'label' => __('Time Zone'),
+                'group' => __('Regional'),
+                'placeholder' => __('Select Time Zone'),
+                'options' => 'timezones',
+                'grouped' => true,
+                'searchable' => true,
+                'info' => __('Leave empty to inherit the system default.'),
+            ],
+            [
+                'key' => 'language',
+                'category' => 'domain',
+                'subcategory' => 'language',
+                'name' => 'code',
+                'type' => 'select',
+                'label' => __('Language'),
+                'group' => __('Regional'),
+                'placeholder' => __('Select Language'),
+                'options' => 'locales',
+                'grouped' => false,
+                'searchable' => true,
+                'info' => __('Sets the display language for everyone in this account. Only languages that are translated enough to use are listed. Leave empty to inherit the system default.'),
+            ],
+            [
+                'key' => 'menu',
+                'category' => 'domain',
+                'subcategory' => 'menu',
+                'name' => 'uuid',
+                'type' => 'select',
+                'label' => __('Account Menu'),
+                'group' => __('Navigation'),
+                'placeholder' => __('Use system default'),
+                'options' => 'menus',
+                'grouped' => false,
+                'searchable' => true,
+                'info' => __('Leave empty to inherit the system default.'),
+                'description' => __('Sign out and back in to apply menu changes.'),
+            ],
+            [
+                'key' => 'line_display_name_format',
+                'category' => 'provision',
+                'subcategory' => 'line_display_name_format',
+                'name' => 'text',
+                'type' => 'text',
+                'label' => __('Line Display Name'),
+                'group' => __('Devices'),
+                'placeholder' => __('Use system default (:value)', ['value' => $lineDisplayNameDefault]),
+                'info' => __('Leave empty to inherit the system default.'),
+                'description' => __('What phone lines show when their Display Name is left blank. Use {extension}, {name}, {first_name}, and {last_name}. A name typed on a line always wins.'),
+            ],
+            [
+                'key' => 'blf_label_format',
+                'category' => 'provision',
+                'subcategory' => 'blf_label_format',
+                'name' => 'text',
+                'type' => 'text',
+                'label' => __('BLF Label'),
+                'group' => __('Devices'),
+                'placeholder' => __('Use system default (:value)', ['value' => $blfLabelDefault]),
+                'info' => __('Leave empty to inherit the system default.'),
+                'description' => __('What BLF and speed dial keys show when their Label is left blank. Use {extension}, {name}, {first_name}, and {last_name}. A label typed on a key always wins.'),
+            ],
+        ];
+    }
+
+    /**
+     * The global provisioning default an empty account field inherits, for
+     * its placeholder.
+     */
+    private function provisionDefault(string $subcategory, string $fallback): string
+    {
+        return (string) (DefaultSettings::query()
+            ->where('default_setting_category', 'provision')
+            ->where('default_setting_subcategory', $subcategory)
+            ->where('default_setting_name', 'text')
+            ->where('default_setting_enabled', true)
+            ->value('default_setting_value') ?: $fallback);
+    }
+
+    /**
+     * Resolve the option lists this account sees, keyed by reference name.
+     */
+    public function options(?Domain $domain = null): array
+    {
+        $current = (string) (get_domain_setting('language', $domain?->domain_uuid)
+            ?: app(LocaleRegistry::class)->default());
+
+        return $this->optionLists($current);
+    }
+
+    /**
+     * The account's own override value for each schema key, or null when it
+     * has none (the field renders empty and inherits the default).
+     *
+     * @return array<string, ?string>
+     */
+    public function values(Domain $domain): array
+    {
+        $rows = DomainSettings::query()
+            ->where('domain_uuid', $domain->domain_uuid)
+            ->where('domain_setting_enabled', true)
+            ->whereIn('domain_setting_subcategory', collect($this->fields())->pluck('subcategory')->all())
+            ->get();
+
+        $values = [];
+        foreach ($this->fields() as $field) {
+            $values[$field['key']] = $rows->first(fn (DomainSettings $row) =>
+                $row->domain_setting_category === $field['category']
+                && $row->domain_setting_subcategory === $field['subcategory']
+                && $row->domain_setting_name === $field['name']
+            )?->domain_setting_value;
+        }
+        if ($values['menu'] && ! Menu::query()->whereKey($values['menu'])->exists()) {
+            $values['menu'] = null;
+        }
+
+        return $values;
+    }
+}

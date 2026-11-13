@@ -964,11 +964,12 @@ if (!function_exists('generate_password')) {
     /**
      * Generate a secure password
      *
+     * @param string $special_characters
      * @return string
      */
-    function generate_password()
+    function generate_password(string $special_characters = '!^$%*?.')
     {
-        $characters = str_split('!^$%*?.');
+        $characters = str_split($special_characters);
         $random_keys = array_rand($characters, 3);
         $random_characters = array();
 
@@ -985,34 +986,43 @@ if (!function_exists('generate_password')) {
     }
 }
 
-if (!function_exists('formatPhoneNumber')) {
-    function formatPhoneNumber($phoneNumber, $countryCode = 'US', $format = PhoneNumberFormat::NATIONAL)
+if (!function_exists('generate_sip_password')) {
+    /**
+     * Generate a SIP password compatible with supported phone vendors.
+     *
+     * Grandstream authenticated reboot NOTIFY requests fail when the SIP
+     * password contains a dollar sign.
+     */
+    function generate_sip_password(): string
     {
-        // If it starts with +1 (US E.164), normalize to national format
-        if (preg_match('/^\+1\d{10}$/', $phoneNumber)) {
-            $phoneNumberUtil = PhoneNumberUtil::getInstance();
-            try {
-                $phoneNumberObject = $phoneNumberUtil->parse($phoneNumber, 'US');
-                return $phoneNumberUtil->format($phoneNumberObject, $format);
-            } catch (NumberParseException $e) {
-                return $phoneNumber; // fallback
-            }
-        }
+        return generate_password('!^%*?.');
+    }
+}
 
-        // If truly international (+ but not +1) or 011-prefixed, keep as-is
-        if (preg_match('/^\s*(\+|011)/', $phoneNumber) && !preg_match('/^\+1\d{10}$/', $phoneNumber)) {
+if (!function_exists('formatPhoneNumber')) {
+    function formatPhoneNumber($phoneNumber, $countryCode = null, $format = PhoneNumberFormat::NATIONAL)
+    {
+        if ($phoneNumber === null || $phoneNumber === '') {
             return $phoneNumber;
         }
 
-        // Default: parse and format
         $phoneNumberUtil = PhoneNumberUtil::getInstance();
+
         try {
-            $phoneNumberObject = $phoneNumberUtil->parse($phoneNumber, $countryCode);
+            $phoneNumberObject = $phoneNumberUtil->parse(
+                (string) $phoneNumber,
+                strtoupper(trim((string) ($countryCode ?? app(\App\Services\PhoneNumberService::class)->countryCodeForDomain()))) ?: PhoneNumberUtil::UNKNOWN_REGION
+            );
+
             if ($phoneNumberUtil->isValidNumber($phoneNumberObject)) {
+                // Preserve numeric format arguments when using libphonenumber 9 enums.
+                if (is_int($format) && enum_exists(PhoneNumberFormat::class)) {
+                    $format = PhoneNumberFormat::from($format);
+                }
                 return $phoneNumberUtil->format($phoneNumberObject, $format);
             }
         } catch (NumberParseException $e) {
-            // ignore and fallback
+            // Preserve values libphonenumber does not understand.
         }
 
         return $phoneNumber;
@@ -1040,13 +1050,15 @@ if (!function_exists('debugEloquentSqlWithBindings')) {
  * ]
  */
 if (!function_exists('getVendorTemplateCollection')) {
-    function getVendorTemplateCollection(bool $includeDefaultTemplates = true, bool $includeCustomTemplates = true): array
+    function getVendorTemplateCollection(bool $includeDefaultTemplates = true, bool $includeCustomTemplates = true, ?bool $includeLegacyTemplates = null): array
     {
+        // Preserve existing callers while allowing legacy files independently of Blade defaults.
+        $includeLegacyTemplates ??= $includeDefaultTemplates;
         $vendors = DeviceVendor::where('enabled', 'true')->orderBy('name')->get();
         $templates = [];
 
         // 1) Legacy filesystem 
-        if ($includeDefaultTemplates) {
+        if ($includeLegacyTemplates) {
             $legacyBase = public_path('resources/templates/provision');
             foreach ($vendors as $vendor) {
                 $vname = $vendor->name;
@@ -1214,8 +1226,8 @@ if (!function_exists('getRingBackTonesCollection')) {
             ->orderBy('stream_name')
             ->select('stream_uuid', 'stream_name', 'stream_location');
         if ($domain) {
-            $streamsCollection->where('domain_uuid', $domain)
-                ->orWhere('domain_uuid', null);
+            $streamsCollection->where(fn ($query) => $query->where('domain_uuid', $domain)
+                ->orWhereNull('domain_uuid'));
         }
         $streamsCollection = $streamsCollection->get();
         $streams = [];
@@ -1289,8 +1301,8 @@ if (!function_exists('getMusicOnHoldCollection')) {
             ->orderBy('stream_name')
             ->select('stream_uuid', 'stream_name', 'stream_location');
         if ($domain) {
-            $streamsCollection->where('domain_uuid', $domain)
-                ->orWhere('domain_uuid', null);
+            $streamsCollection->where(fn ($query) => $query->where('domain_uuid', $domain)
+                ->orWhereNull('domain_uuid'));
         }
         $streamsCollection = $streamsCollection->get();
         $streams = [];
@@ -1384,8 +1396,8 @@ if (! function_exists('getRingBackTonesCollectionGrouped')) {
 
         // — Streams —
         $streams = MusicStreams::when($domain, function ($q) use ($domain) {
-            $q->where('domain_uuid', $domain)
-                ->orWhereNull('domain_uuid');
+            $q->where(fn ($scope) => $scope->where('domain_uuid', $domain)
+                ->orWhereNull('domain_uuid'));
         })
             ->where('stream_enabled', 'true')
             ->orderBy('stream_name')
@@ -1622,29 +1634,45 @@ if (!function_exists('getGroupedTimezones')) {
 if (!function_exists('buildDestinationAction')) {
     function buildDestinationAction($option, $domain_name = null)
     {
-        $domain_name = $domain_name ?? session('domain_name');
-        switch ($option['type']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'conferences':
-            case 'faxes':
-            case 'call_flows':
+        $handler = \App\Services\CallRoutingOptionsService::destinationHandler($option['type']);
+        if (! $handler) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['target' => __('Unsupported routing action.')]);
+        }
+        if (\App\Services\CallRoutingOptionsService::requiresTarget($option['type'])) {
+            $value = $option['type'] === 'bridges'
+                ? ($option['bridge_uuid'] ?? $option['option'] ?? $option['extension'] ?? null)
+                : ($option['extension'] ?? null);
+            if (! is_scalar($value) || blank($value)) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['target' => __('A target must be provided when action is selected.')]);
+            }
+        }
+        if (in_array($handler, ['transfer', 'voicemail', 'check_voicemail', 'company_directory'], true)) {
+            $domain_name = $domain_name ?? session('domain_name');
+        }
+
+        switch ($handler) {
+            case 'transfer':
                 return [
                     'destination_app' => 'transfer',
                     'destination_data' => $option['extension'] . ' XML ' . $domain_name,
                 ];
 
-            case 'bridges':
+            case 'bridge':
+                $bridgeUuid = $option['bridge_uuid'] ?? $option['option'] ?? null;
+                if (blank($bridgeUuid) && \Illuminate\Support\Str::isUuid($option['extension'] ?? null)) {
+                    $bridgeUuid = $option['extension'];
+                }
+                if (! is_string($bridgeUuid) || ! \Illuminate\Support\Str::isUuid($bridgeUuid)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['target' => __('Select a valid routing target in this account.')]);
+                }
+
                 return [
-                    'destination_app' => 'bridge',
-                    'destination_data' => $option['extension'],
+                    'destination_app' => 'lua',
+                    'destination_data' => 'bridge.lua ' . $bridgeUuid,
+                    'bridge_uuid' => $bridgeUuid,
                 ];
 
-            case 'voicemails':
+            case 'voicemail':
                 return [
                     'destination_app' => 'transfer',
                     'destination_data' => '*99' . $option['extension'] . ' XML ' . $domain_name,
@@ -1662,7 +1690,7 @@ if (!function_exists('buildDestinationAction')) {
                     'destination_data' => '*411 XML ' . $domain_name,
                 ];
 
-            case 'recordings':
+            case 'recording':
                 // Handle recordings with 'lua' destination app
                 return [
                     'destination_app' => 'lua',
@@ -1721,6 +1749,18 @@ if (!function_exists('buildDestinationAction')) {
         }
     }
 
+    if (!function_exists('fspbx_park_key_count')) {
+        function fspbx_park_key_count(?string $domainUuid = null): int
+        {
+            $count = filter_var(get_domain_setting('park_key_count', $domainUuid), FILTER_VALIDATE_INT, [
+                // The shipped parking dialplan supports 5901 through 5999.
+                'options' => ['min_range' => 1, 'max_range' => 99],
+            ]);
+
+            return $count === false ? 10 : $count;
+        }
+    }
+
     if (!function_exists('fspbx_vendor_key_type_code')) {
         function fspbx_vendor_key_type_code(string $vendor, string $simple_type, ?string $category = null): string
         {
@@ -1735,7 +1775,7 @@ if (!function_exists('buildDestinationAction')) {
                     'speed_dial' => '13',
                     'dtmf' => '11',
                     'blf', 'check_voicemail' => '16',
-                    'park' => '16',
+                    'park' => '10',
                     '' => '0',
                     default => '0',
                 };
@@ -1999,7 +2039,8 @@ if (!function_exists('buildDestinationAction')) {
             string $device_uuid,
             string $vendor,
             array $device_lines = [],
-            string $domain_uuid = ''
+            string $domain_uuid = '',
+            $blf_label_format = null
         ): void {
             if ($device_keys === null) {
                 $device_keys = [];
@@ -2023,7 +2064,8 @@ if (!function_exists('buildDestinationAction')) {
                         $device_uuid,
                         $vendor,
                         $device_lines,
-                        $domain_uuid
+                        $domain_uuid,
+                        $blf_label_format
                     );
 
                     // The old provisioning class applies v_device_keys before it
@@ -2034,7 +2076,8 @@ if (!function_exists('buildDestinationAction')) {
                         $device_uuid,
                         $vendor,
                         $domain_uuid,
-                        $device_lines
+                        $device_lines,
+                        $blf_label_format
                     );
                 }
             }
@@ -2045,7 +2088,8 @@ if (!function_exists('buildDestinationAction')) {
                 $device_uuid,
                 $vendor,
                 $device_lines,
-                $domain_uuid
+                $domain_uuid,
+                $blf_label_format
             );
         }
     }
@@ -2057,7 +2101,8 @@ if (!function_exists('buildDestinationAction')) {
             string $device_uuid,
             string $vendor,
             array $device_lines = [],
-            string $domain_uuid = ''
+            string $domain_uuid = '',
+            $blf_label_format = null
         ): void {
             if ($device_keys === null) {
                 $device_keys = [];
@@ -2067,7 +2112,7 @@ if (!function_exists('buildDestinationAction')) {
                 $device_lines = [];
             }
 
-            $blfLabelMap = fspbx_prefetch_extension_labels($domain_uuid, $new_keys_rows);
+            $blfLabelMap = fspbx_prefetch_extension_labels($domain_uuid, $new_keys_rows, $blf_label_format);
 
             $polycomLineCounts = [];
             $polycomFirstIndex = [];
@@ -2252,7 +2297,8 @@ if (!function_exists('buildDestinationAction')) {
             string $device_uuid,
             string $vendor,
             string $domain_uuid,
-            array $device_lines = []
+            array $device_lines = [],
+            $blf_label_format = null
         ): void {
             $sql = "select * from v_device_keys ";
             $sql .= "where device_uuid = :device_uuid ";
@@ -2290,7 +2336,7 @@ if (!function_exists('buildDestinationAction')) {
                 return;
             }
 
-            $blfLabelMap = fspbx_prefetch_blf_labels($domain_uuid, $keys);
+            $blfLabelMap = fspbx_prefetch_blf_labels($domain_uuid, $keys, $blf_label_format);
 
             foreach ($keys as $row) {
                 $id = $row['device_key_id'];
@@ -2319,8 +2365,26 @@ if (!function_exists('buildDestinationAction')) {
     }
 
 
+    if (!function_exists('fspbx_blf_label_format')) {
+        /**
+         * BLF/speed dial label format on the old provision.php path. That class
+         * passes its merged provision settings (default, account, device);
+         * without them, the session's default/account value is used.
+         */
+        function fspbx_blf_label_format($format = null): string
+        {
+            if (is_string($format) && trim($format) !== '') {
+                return trim($format);
+            }
+
+            $session = $_SESSION['provision']['blf_label_format']['text'] ?? null;
+
+            return is_string($session) && trim($session) !== '' ? trim($session) : '{name}';
+        }
+    }
+
     if (!function_exists('fspbx_prefetch_extension_labels')) {
-        function fspbx_prefetch_extension_labels(string $domain_uuid, array $new_keys_rows): array
+        function fspbx_prefetch_extension_labels(string $domain_uuid, array $new_keys_rows, $format = null): array
         {
             $exts = [];
 
@@ -2347,7 +2411,7 @@ if (!function_exists('buildDestinationAction')) {
                 $params[$ph] = $ext;
             }
 
-            $sql = "select extension, effective_caller_id_name
+            $sql = "select extension, effective_caller_id_name, directory_first_name, directory_last_name
                 from v_extensions
                 where domain_uuid = :domain_uuid
                   and extension in (" . implode(',', $placeholders) . ")";
@@ -2355,10 +2419,11 @@ if (!function_exists('buildDestinationAction')) {
             $database = new database;
             $rows = $database->select($sql, $params, 'all');
 
+            $format = fspbx_blf_label_format($format);
             $map = [];
             if (is_array($rows)) {
                 foreach ($rows as $r) {
-                    $map[(string)$r['extension']] = (string)($r['effective_caller_id_name'] ?? '');
+                    $map[(string)$r['extension']] = fspbx_format_extension_label($format, $r, '{name}');
                 }
             }
 
@@ -2367,7 +2432,7 @@ if (!function_exists('buildDestinationAction')) {
     }
 
     if (!function_exists('fspbx_prefetch_blf_labels')) {
-        function fspbx_prefetch_blf_labels(string $domain_uuid, array $keys): array
+        function fspbx_prefetch_blf_labels(string $domain_uuid, array $keys, $format = null): array
         {
             // Collect unique extensions that need labels
             $need = [];
@@ -2394,7 +2459,7 @@ if (!function_exists('buildDestinationAction')) {
                 $params[$k] = $ext;
             }
 
-            $sql = "select extension, effective_caller_id_name
+            $sql = "select extension, effective_caller_id_name, directory_first_name, directory_last_name
             from v_extensions
             where domain_uuid = :domain_uuid
               and extension in (" . implode(',', $ph) . ")";
@@ -2402,14 +2467,133 @@ if (!function_exists('buildDestinationAction')) {
             $database = new database;
             $rows = $database->select($sql, $params, 'all');
 
+            $format = fspbx_blf_label_format($format);
             $map = [];
             if (is_array($rows)) {
                 foreach ($rows as $r) {
-                    $map[(string)$r['extension']] = (string)($r['effective_caller_id_name'] ?? '');
+                    $map[(string)$r['extension']] = fspbx_format_extension_label($format, $r, '{name}');
                 }
             }
 
             return $map;
+        }
+    }
+
+    if (!function_exists('fspbx_line_display_name_is_automatic')) {
+        /**
+         * A device line follows the account's line_display_name_format only when
+         * its Display Name is blank. Stored names, including older lines that
+         * hold the extension number, always win. External lines are never
+         * matched to account extensions.
+         */
+        function fspbx_line_display_name_is_automatic(array $line): bool
+        {
+            $external = $line['external_line'] ?? false;
+            if ($external === true || in_array(strtolower(trim((string)$external)), ['1', 't', 'true'], true)) {
+                return false;
+            }
+
+            return trim((string)($line['display_name'] ?? '')) === ''
+                && trim((string)($line['auth_id'] ?? '')) !== '';
+        }
+    }
+
+    if (!function_exists('fspbx_format_extension_label')) {
+        /**
+         * Format an automatic label for an extension: device line display names
+         * (line_display_name_format) and BLF/speed dial key labels
+         * (blf_label_format). Tokens: {extension}, {name}, {first_name},
+         * {last_name}. {name} is the effective caller ID name, falling back to
+         * the directory first/last name. When every name token in the format is
+         * empty, the extension number is used alone. A blank format uses $default.
+         *
+         * Shared by native provisioning and the old provision.php path, so it
+         * must not depend on Laravel. Mirrored for form placeholders in
+         * resources/js/composables/extensionLabel.js.
+         */
+        function fspbx_format_extension_label(?string $format, array $extension, string $default = '{extension}'): string
+        {
+            $number = trim((string)($extension['extension'] ?? ''));
+            $first  = trim((string)($extension['directory_first_name'] ?? ''));
+            $last   = trim((string)($extension['directory_last_name'] ?? ''));
+            $name   = trim((string)($extension['effective_caller_id_name'] ?? ''));
+            if ($name === '') {
+                $name = trim($first . ' ' . $last);
+            }
+
+            $format = trim((string)$format);
+            if ($format === '') {
+                $format = $default;
+            }
+
+            $names = ['{name}' => $name, '{first_name}' => $first, '{last_name}' => $last];
+            $usedNames = array_filter($names, fn ($token) => str_contains($format, $token), ARRAY_FILTER_USE_KEY);
+            if (!empty($usedNames) && implode('', $usedNames) === '') {
+                return $number;
+            }
+
+            $label = trim((string)preg_replace('/\s+/', ' ', strtr($format, ['{extension}' => $number] + $names)));
+
+            return $label !== '' ? $label : $number;
+        }
+    }
+
+    if (!function_exists('fspbx_resolve_line_display_names')) {
+        /**
+         * Old provision.php path: fill blank line display names from the
+         * device account's extensions. Lines are keyed by line number, as
+         * provision.php loads them.
+         */
+        function fspbx_resolve_line_display_names(?array $device_lines, string $domain_uuid, $format = null): array
+        {
+            $device_lines = $device_lines ?? [];
+            $format = is_string($format) ? $format : null;
+
+            $numbers = [];
+            foreach ($device_lines as $line) {
+                if (is_array($line) && fspbx_line_display_name_is_automatic($line)) {
+                    $numbers[trim((string)$line['auth_id'])] = true;
+                }
+            }
+
+            if (empty($numbers) || $domain_uuid === '') {
+                return $device_lines;
+            }
+
+            $placeholders = [];
+            $params = ['domain_uuid' => $domain_uuid];
+            foreach (array_keys($numbers) as $i => $number) {
+                $placeholders[] = ':e' . $i;
+                $params['e' . $i] = (string)$number;
+            }
+
+            $sql = "select extension, effective_caller_id_name, directory_first_name, directory_last_name
+                from v_extensions
+                where domain_uuid = :domain_uuid
+                  and extension in (" . implode(',', $placeholders) . ")";
+
+            $database = new database;
+            $rows = $database->select($sql, $params, 'all');
+
+            $extensions = [];
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    $extensions[(string)$row['extension']] = $row;
+                }
+            }
+
+            foreach ($device_lines as $key => $line) {
+                if (!is_array($line) || !fspbx_line_display_name_is_automatic($line)) {
+                    continue;
+                }
+
+                $extension = $extensions[trim((string)$line['auth_id'])] ?? null;
+                if ($extension !== null) {
+                    $device_lines[$key]['display_name'] = fspbx_format_extension_label($format, $extension);
+                }
+            }
+
+            return $device_lines;
         }
     }
 

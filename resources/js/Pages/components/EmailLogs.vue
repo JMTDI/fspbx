@@ -9,11 +9,11 @@
                 <input type="text" v-model="filterData.search" name="mobile-search-candidate"
                     id="mobile-search-candidate"
                     class="block w-full rounded-md border-0 py-1.5 pl-10 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:hidden"
-                    placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                    :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
                 <input type="text" v-model="filterData.search" name="desktop-search-candidate"
                     id="desktop-search-candidate"
                     class="hidden w-full rounded-md border-0 py-1.5 pl-10 text-sm leading-6 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:block"
-                    placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                    :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
             </div>
 
             <div class="relative z-10 min-w-64 -mt-0.5 mb-2 scale-y-95 shrink-0 sm:mr-4">
@@ -35,12 +35,12 @@
                     <button type="button" @click.prevent="handleSearchButtonClick"
                         class="rounded-md bg-indigo-600 px-2.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500
                                 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                        Search
+                        {{ $t('Search') }}
                     </button>
 
                     <button type="button" @click.prevent="handleFiltersReset"
                         class="rounded-md bg-white px-2.5 py-1.5 ml-2  sm:ml-4 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
-                        Reset
+                        {{ $t('Reset') }}
                     </button>
                 </div>
             </div>
@@ -55,12 +55,12 @@
                     <table class="min-w-full divide-y divide-gray-200 mb-4">
                         <thead class="bg-gray-100">
                             <tr>
-                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Date</th>
-                                <th v-if="showDomainColumn" class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Domain</th>
-                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">To</th>
-                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Subject</th>
-                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Status</th>
-                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Action</th>
+                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('Date') }}</th>
+                                <th v-if="showDomainColumn" class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('Domain') }}</th>
+                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('To') }}</th>
+                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('Subject') }}</th>
+                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('Status') }}</th>
+                                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">{{ $t('Action') }}</th>
 
                                 
                             </tr>
@@ -85,19 +85,19 @@
                                     </td>
 
                                     <td class="whitespace-nowrap px-6 py-2 text-sm text-gray-500">
-                                        <Badge v-if="row.status == 'queued'" :text="row.status"
+                                        <Badge v-if="row.status == 'queued'" :text="statusLabel(row.status)"
                                             :backgroundColor="'bg-blue-100'" :textColor="'text-blue-800'"
                                             ringColor="ring-blue-400/20" class="px-2 py-1 text-xs" />
-                                        <Badge v-if="row.status == 'sending'" :text="row.status"
+                                        <Badge v-if="row.status == 'sending'" :text="statusLabel(row.status)"
                                             :backgroundColor="'bg-blue-100'" :textColor="'text-blue-800'"
                                             ringColor="ring-blue-400/20" class="px-2 py-1 text-xs" />
-                                        <Badge v-if="row.status == 'sent'" :text="row.status"
+                                        <Badge v-if="row.status == 'sent'" :text="statusLabel(row.status)"
                                             :backgroundColor="'bg-green-100'" :textColor="'text-green-800'"
                                             ringColor="ring-green-400/20" class="px-2 py-1 text-xs" />
-                                        <Badge v-if="row.status == 'permanent_failed'" :text="row.status"
+                                        <Badge v-if="row.status == 'permanent_failed'" :text="statusLabel(row.status)"
                                             :backgroundColor="'bg-rose-100'" :textColor="'text-rose-800'"
                                             ringColor="ring-rose-400/20" class="px-2 py-1 text-xs" />
-                                        <Badge v-if="row.status == 'failed'" :text="row.status"
+                                        <Badge v-if="row.status == 'failed'" :text="statusLabel(row.status)"
                                             :backgroundColor="'bg-rose-100'" :textColor="'text-rose-800'"
                                             ringColor="ring-rose-400/20" class="px-2 py-1 text-xs" />
                                     </td>
@@ -111,7 +111,7 @@
 
                                             <div
                                                 class="absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap bg-gray-800 text-white text-xs rounded py-1 px-2 z-10 shadow-lg">
-                                                Delivery Details
+                                                {{ $t('Delivery Details') }}
                                                 <div
                                                     class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-gray-800 rotate-45">
                                                 </div>
@@ -126,7 +126,7 @@
                                             <!-- TOOLTIP -->
                                             <div
                                                 class="absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap bg-gray-800 text-white text-xs rounded py-1 px-2 z-10 shadow-lg">
-                                                Resend
+                                                {{ $t('Resend') }}
                                                 <!-- Little down arrow -->
                                                 <div
                                                     class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-gray-800 rotate-45">
@@ -138,33 +138,135 @@
                                 </tr>
                                 <!-- EXPANDABLE ROW -->
                                 <tr v-if="expandedRow === row.uuid">
-                                    <td :colspan="emailColumnCount" class="bg-gray-50 px-6 py-4">
-
-                                        <div class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">ID: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.uuid }}</div>
-                                        </div>
-                                        <div class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">From: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.from }}</div>
-                                        </div>
-                                        <div class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">To: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.to }}</div>
-                                        </div>
-                                        <div v-if="row.cc" class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">CC: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.cc }}</div>
-                                        </div>
-                                        <div v-if="row.bcc" class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">BCC: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.bcc }}</div>
-                                        </div>
-                                        <div v-if="row.sent_debug_info" class="flex gap-2">
-                                            <div class="text-gray-500 text-sm ">Debug: </div>
-                                            <div class="text-gray-400 text-sm "> {{ row.sent_debug_info }}</div>
+                                    <td :colspan="emailColumnCount" class="bg-gray-50 px-6 py-4 shadow-inner">
+                                        <div v-if="expandedDetailsLoading" class="animate-pulse space-y-3 py-2">
+                                            <div class="h-2 w-1/3 rounded bg-slate-200"></div>
+                                            <div class="h-2 w-1/2 rounded bg-slate-200"></div>
+                                            <div class="h-2 w-1/4 rounded bg-slate-200"></div>
                                         </div>
 
+                                        <div v-else-if="expandedDetailsError" class="text-sm text-rose-700">
+                                            {{ expandedDetailsError }}
+                                        </div>
+
+                                        <div v-else-if="expandedDetails" class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                                            <div class="rounded-md border border-gray-200 bg-white p-4">
+                                                <div class="text-gray-900 font-semibold text-sm mb-2">{{ $t('Overview') }}</div>
+
+                                                <div class="space-y-2 text-sm text-gray-600">
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Email ID:') }}</span>
+                                                        <span class="ml-1 font-mono text-xs">{{ expandedDetails.uuid }}</span></div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Domain:') }}</span>
+                                                        {{ expandedDetails.domain_label || $t('System') }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Status:') }}</span>
+                                                        {{ statusLabel(expandedDetails.status) }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Created:') }}</span>
+                                                        {{ expandedDetails.created_at_formatted || '—' }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Last Updated:') }}</span>
+                                                        {{ expandedDetails.updated_at_formatted || '—' }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Provider:') }}</span>
+                                                        {{ expandedDetails.provider || '—' }}</div>
+                                                    <div v-if="expandedDetails.provider_message_id">
+                                                        <span class="font-medium text-gray-700">{{ $t('Provider ID:') }}</span>
+                                                        <span class="ml-1 font-mono text-xs">{{ expandedDetails.provider_message_id }}</span></div>
+                                                    <div v-if="expandedDetails.provider && expandedDetails.provider_message_stream">
+                                                        <span class="font-medium text-gray-700">{{ $t('Message Stream:') }}</span>
+                                                        {{ expandedDetails.provider_message_stream }}</div>
+                                                </div>
+
+                                                <button v-if="canShowDeliveryDetails(row)" type="button"
+                                                    class="mt-3 text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                                                    @click.stop="handleDeliveryDetails(row)">
+                                                    {{ $t('View provider events') }}
+                                                </button>
+                                            </div>
+
+                                            <div class="rounded-md border border-gray-200 bg-white p-4">
+                                                <div class="text-gray-900 font-semibold text-sm mb-2">{{ $t('Recipients') }}</div>
+
+                                                <div class="space-y-2 text-sm text-gray-600 break-words">
+                                                    <div><span class="font-medium text-gray-700">{{ $t('From:') }}</span>
+                                                        {{ expandedDetails.from || '—' }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('To:') }}</span>
+                                                        {{ expandedDetails.to || '—' }}</div>
+                                                    <div v-if="expandedDetails.cc"><span class="font-medium text-gray-700">{{ $t('CC:') }}</span>
+                                                        {{ expandedDetails.cc }}</div>
+                                                    <div v-if="expandedDetails.bcc"><span class="font-medium text-gray-700">{{ $t('BCC:') }}</span>
+                                                        {{ expandedDetails.bcc }}</div>
+                                                    <div><span class="font-medium text-gray-700">{{ $t('Subject:') }}</span>
+                                                        {{ expandedDetails.subject || '—' }}</div>
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-md border border-gray-200 bg-white p-4 lg:col-span-2">
+                                                <div class="text-gray-900 font-semibold text-sm mb-2">{{ $t('Send Log') }}</div>
+                                                <pre v-if="expandedDetails.sent_debug_info"
+                                                    class="max-h-60 overflow-auto text-gray-700 text-sm whitespace-pre-wrap break-words">{{ expandedDetails.sent_debug_info }}</pre>
+                                                <p v-else class="text-sm text-gray-500">{{ $t('No send errors or retries were recorded.') }}</p>
+                                            </div>
+
+                                            <div v-if="expandedDetails.attachments?.length"
+                                                class="rounded-md border border-gray-200 bg-white p-4 lg:col-span-2">
+                                                <div class="text-gray-900 font-semibold text-sm mb-2">{{ $t('Attachments') }}</div>
+
+                                                <div class="space-y-2">
+                                                    <div v-for="(item, index) in expandedDetails.attachments"
+                                                        :key="`${expandedDetails.uuid}-${index}`"
+                                                        class="flex items-center justify-between rounded border border-gray-200 px-3 py-2 text-sm">
+                                                        <div class="min-w-0">
+                                                            <div class="truncate font-medium text-gray-800">{{ item.name }}</div>
+                                                            <div class="text-xs text-gray-500">
+                                                                {{ item.mime || $t('Unknown') }}
+                                                                <span v-if="item.size !== null"> • {{ formatBytes(item.size) }}</span>
+                                                            </div>
+                                                        </div>
+                                                        <Badge v-if="!item.available" :text="$t('File missing')"
+                                                            backgroundColor="bg-amber-100" textColor="text-amber-800"
+                                                            ringColor="ring-amber-400/20" class="ml-4 px-2 py-1 text-xs" />
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-md border border-gray-200 bg-white p-4 lg:col-span-2">
+                                                <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                                    <div class="text-gray-900 font-semibold text-sm">{{ $t('Message') }}</div>
+                                                    <div class="flex items-center gap-1 rounded-md bg-gray-200/70 p-1" role="group">
+                                                        <button v-if="expandedDetails.html_body" type="button"
+                                                            :aria-pressed="messageView === 'html'"
+                                                            :class="viewButtonClass(messageView === 'html')"
+                                                            @click.stop="messageView = 'html'">
+                                                            {{ $t('HTML') }}
+                                                        </button>
+                                                        <button type="button"
+                                                            :aria-pressed="messageView === 'text'"
+                                                            :class="viewButtonClass(messageView === 'text')"
+                                                            @click.stop="messageView = 'text'">
+                                                            {{ $t('Plain text') }}
+                                                        </button>
+                                                        <button v-if="expandedDetails.html_body" type="button"
+                                                            :aria-pressed="messageView === 'source'"
+                                                            :class="viewButtonClass(messageView === 'source')"
+                                                            @click.stop="messageView = 'source'">
+                                                            {{ $t('HTML source') }}
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <iframe v-if="messageView === 'html' && expandedDetails.html_body"
+                                                    :srcdoc="expandedDetails.html_body"
+                                                    class="h-[36rem] w-full rounded-md border border-gray-200 bg-white"
+                                                    sandbox
+                                                    referrerpolicy="no-referrer"
+                                                    :title="$t('Rendered HTML email preview')" />
+                                                <pre v-else-if="messageView === 'source' && expandedDetails.html_body"
+                                                    class="max-h-[36rem] overflow-auto rounded-md bg-gray-900 p-3 text-xs text-gray-100 whitespace-pre-wrap break-words">{{ expandedDetails.html_body }}</pre>
+                                                <template v-else>
+                                                    <pre v-if="expandedDetails.text_body"
+                                                        class="max-h-[36rem] overflow-auto text-gray-700 text-sm whitespace-pre-wrap break-words">{{ expandedDetails.text_body }}</pre>
+                                                    <p v-else class="text-sm text-gray-500">{{ $t('No plain-text body was recorded.') }}</p>
+                                                </template>
+                                            </div>
+                                        </div>
                                     </td>
                                 </tr>
                             </template>
@@ -174,7 +276,7 @@
                     <!-- Empty State -->
                     <div v-if="!isDataLoading && data.data?.length === 0" class="text-center my-5">
                         <MagnifyingGlassIcon class="mx-auto h-12 w-12 text-gray-400" />
-                        <h3 class="mt-2 text-sm font-semibold text-gray-900">No results found</h3>
+                        <h3 class="mt-2 text-sm font-semibold text-gray-900">{{ $t('No results found') }}</h3>
                         <!-- <p class="mt-1 text-sm text-gray-500">
                 Adjust your search and try again.
               </p> -->
@@ -198,35 +300,35 @@
 
 
     <ConfirmationModal :show="showDeleteConfirmationModal" @close="showDeleteConfirmationModal = false"
-        @confirm="confirmDeleteAction" :header="'Confirm Deletion'"
-        :text="'This action will permanently delete the selected hotel room(s). Are you sure you want to proceed?'"
-        :confirm-button-label="'Delete'" cancel-button-label="Cancel" />
+        @confirm="confirmDeleteAction" :header="$t('Confirm Deletion')"
+        :text="$t('This action will permanently delete the selected hotel room(s). Are you sure you want to proceed?')"
+        :confirm-button-label="$t('Delete')" :cancel-button-label="$t('Cancel')" />
 
-    <AddEditItemModal :show="showDeliveryDetailsModal" header="Delivery Details" :loading="deliveryDetailsLoading"
+    <AddEditItemModal :show="showDeliveryDetailsModal" :header="$t('Delivery Details')" :loading="deliveryDetailsLoading"
         custom-class="sm:max-w-4xl" body-class="max-h-[70vh] overflow-y-auto" @close="showDeliveryDetailsModal = false">
         <template #modal-body>
             <div v-if="deliveryDetails?.available" class="space-y-4">
                 <div class="grid gap-3 text-sm sm:grid-cols-2">
                     <div>
-                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">Provider</div>
+                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">{{ $t('Provider') }}</div>
                         <div class="mt-1 text-gray-900">{{ deliveryDetails.provider }}</div>
                     </div>
                     <div>
-                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">Provider ID</div>
+                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">{{ $t('Provider ID') }}</div>
                         <div class="mt-1 font-mono text-xs text-gray-700">{{ deliveryDetails.message_id }}</div>
                     </div>
                     <div>
-                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">Status</div>
-                        <div class="mt-1 text-gray-900">{{ deliveryDetails.status || 'Unknown' }}</div>
+                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">{{ $t('Status') }}</div>
+                        <div class="mt-1 text-gray-900">{{ statusLabel(deliveryDetails.status) }}</div>
                     </div>
                     <div>
-                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">Message Stream</div>
-                        <div class="mt-1 text-gray-900">{{ deliveryDetails.message_stream || 'Default' }}</div>
+                        <div class="text-xs font-medium uppercase tracking-wide text-gray-400">{{ $t('Message Stream') }}</div>
+                        <div class="mt-1 text-gray-900">{{ deliveryDetails.message_stream || $t('Default') }}</div>
                     </div>
                 </div>
 
                 <div>
-                    <h4 class="text-sm font-semibold text-gray-900">Events</h4>
+                    <h4 class="text-sm font-semibold text-gray-900">{{ $t('Events') }}</h4>
                     <div v-if="deliveryDetails.events?.length" class="mt-2 divide-y divide-gray-200 rounded-md border border-gray-200">
                         <div v-for="(event, index) in deliveryDetails.events" :key="index" class="px-3 py-2 text-sm">
                             <div class="flex flex-wrap items-center justify-between gap-2">
@@ -237,7 +339,7 @@
                                 <div class="text-xs text-gray-500">{{ eventTimestamp(event) }}</div>
                             </div>
                             <div v-if="event.Recipient" class="mt-1 text-xs text-gray-500">
-                                Recipient: {{ event.Recipient }}
+                                {{ $t('Recipient:') }} {{ event.Recipient }}
                             </div>
                             <div v-if="eventDetailRows(event).length" class="mt-2 grid gap-2 sm:grid-cols-2">
                                 <div v-for="detail in eventDetailRows(event)" :key="detail.label"
@@ -248,16 +350,16 @@
                             </div>
                         </div>
                     </div>
-                    <p v-else class="mt-2 text-sm text-gray-500">No provider events were returned.</p>
+                    <p v-else class="mt-2 text-sm text-gray-500">{{ $t('No provider events were returned.') }}</p>
                 </div>
 
                 <details>
-                    <summary class="cursor-pointer text-sm font-medium text-gray-700">Raw provider response</summary>
+                    <summary class="cursor-pointer text-sm font-medium text-gray-700">{{ $t('Raw provider response') }}</summary>
                     <pre class="mt-2 max-h-80 overflow-auto rounded-md bg-gray-900 p-3 text-xs text-gray-100">{{ prettyJson(deliveryDetails.raw) }}</pre>
                 </details>
             </div>
             <div v-else class="text-sm text-gray-600">
-                {{ deliveryDetails?.message || 'Delivery details are not available.' }}
+                {{ deliveryDetails?.message || $t('Delivery details are not available.') }}
             </div>
         </template>
     </AddEditItemModal>
@@ -267,6 +369,7 @@
 </template>
 
 <script setup>
+import { trans } from '@i18n';
 import { ref, computed, watch } from 'vue';
 import Notification from "./notifications/Notification.vue";
 import ConfirmationModal from "./modal/ConfirmationModal.vue";
@@ -281,6 +384,14 @@ import moment from 'moment-timezone';
 import RestartIcon from "./icons/RestartIcon.vue";
 
 
+const statusLabel = (status) => ({
+    queued: trans('Queued'),
+    sending: trans('Sending'),
+    sent: trans('Sent'),
+    permanent_failed: trans('Permanently failed'),
+    failed: trans('Failed'),
+}[status] ?? (status || trans('Unknown')));
+
 const selectedItems = ref([]);
 
 const props = defineProps({
@@ -289,6 +400,10 @@ const props = defineProps({
     timezone: String,
     routes: Object,
     permissions: Object,
+    features: {
+        type: Object,
+        default: () => ({}),
+    },
     trigger: Boolean,
     domainOptions: {
         type: Array,
@@ -325,8 +440,11 @@ const data = ref({
     links: [],
 });
 const expandedRow = ref(null)
+const expandedDetails = ref(null)
+const expandedDetailsLoading = ref(false)
+const expandedDetailsError = ref(null)
+const messageView = ref('html')
 const domainFilterKey = ref(0)
-const deliveryStatusSyncs = new Map()
 
 
 const startLocal = moment.utc(props.startPeriod).tz(props.timezone)
@@ -349,21 +467,23 @@ const filterData = ref({
 const showDomainFilter = computed(() => props.domainOptions.length > 1);
 const showDomainColumn = computed(() => showDomainFilter.value);
 const domainFilterOptions = computed(() => [
-    { value: 'all', label: 'All domains' },
+    { value: 'all', label: trans('All domains') },
     ...props.domainOptions,
 ]);
 const emailColumnCount = computed(() => showDomainColumn.value ? 6 : 5);
 
 const domainLabel = (row) => {
     if (!row.domain_uuid) {
-        return 'System';
+        return trans('System');
     }
 
     return row.domain?.domain_description || row.domain?.domain_name || '';
 };
 
 const canShowDeliveryDetails = (row) => {
-    return !!row.provider_message_id || ['sent', 'failed', 'permanent_failed'].includes(row.status);
+    return props.features?.postmark_delivery_details === true
+        && row.provider === 'postmark'
+        && (!!row.provider_message_id || ['sent', 'failed', 'permanent_failed'].includes(row.status));
 }
 
 // const emits = defineEmits(['edit-item', 'delete-item']);
@@ -378,7 +498,6 @@ const fetchData = async (page = 1) => {
     })
         .then((response) => {
             data.value = response.data;
-            syncVisibleDeliveryStatuses();
             // console.log(data.value);
 
         }).catch((error) => {
@@ -393,31 +512,47 @@ watch(() => props.trigger, (newVal) => {
     fetchData(1)
 })
 
-const syncVisibleDeliveryStatuses = () => {
-    const rows = data.value.data ?? [];
-    const now = Date.now();
-    const rowsToSync = rows.filter((row) => {
-        const lastSync = deliveryStatusSyncs.get(row.uuid) ?? 0;
-
-        return row.provider === 'postmark'
-            && row.status === 'sent'
-            && now - lastSync > 30000
-            && canShowDeliveryDetails(row);
-    });
-
-    if (!rowsToSync.length) return;
-
-    rowsToSync.forEach((row) => deliveryStatusSyncs.set(row.uuid, now));
-
-    Promise.allSettled(rowsToSync.map((row) => {
-        return axios.get(props.routes.email_delivery_details.replace('__UUID__', row.uuid));
-    })).then(() => {
-        fetchData(data.value.current_page || 1);
-    });
-}
-
 const toggleExpand = (uuid) => {
     expandedRow.value = expandedRow.value === uuid ? null : uuid;
+
+    if (expandedRow.value) {
+        fetchExpandedDetails(uuid);
+    }
+};
+
+const fetchExpandedDetails = (uuid) => {
+    expandedDetails.value = null;
+    expandedDetailsError.value = null;
+    expandedDetailsLoading.value = true;
+
+    axios.get(props.routes.email_log_details.replace('__UUID__', uuid))
+        .then((response) => {
+            if (expandedRow.value === uuid) {
+                expandedDetails.value = response.data;
+                messageView.value = response.data.html_body ? 'html' : 'text';
+            }
+        }).catch((error) => {
+            if (expandedRow.value === uuid) {
+                expandedDetailsError.value = error.response?.data?.messages?.error?.[0] || trans('Unable to load email details.');
+            }
+        }).finally(() => {
+            if (expandedRow.value === uuid) {
+                expandedDetailsLoading.value = false;
+            }
+        });
+};
+
+const viewButtonClass = (active) => [
+    'rounded px-3 py-1 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600',
+    active
+        ? 'bg-white text-gray-900 shadow-sm'
+        : 'text-gray-600 hover:text-gray-900',
+];
+
+const formatBytes = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
 const handleUpdateDateRange = (newDateRange) => {
@@ -431,6 +566,8 @@ const handleUpdateDomainFilter = (newValue) => {
 }
 
 const renderRequestedPage = (url) => {
+    if (!url) return;
+
     isDataLoading.value = true;
     // Extract the page number from the url, e.g. "?page=3"
     const urlObj = new URL(url, window.location.origin);
@@ -454,7 +591,7 @@ const bulkActions = computed(() => {
     if (props.permissions.user_destroy) {
         actions.push({
             id: 'bulk_delete',
-            label: 'Delete',
+            label: trans('Delete'),
             icon: 'TrashIcon'
         });
     }
@@ -476,6 +613,10 @@ const handleFiltersReset = () => {
     filterData.value.search = null;
     filterData.value.domain_uuid = props.selectedDomainUuid;
     domainFilterKey.value += 1;
+    filterData.value.dateRange = [
+        startLocal.clone().startOf('day').toISOString(),
+        endLocal.clone().endOf('day').toISOString(),
+    ];
     // After resetting the filters, call handleSearchButtonClick to perform the search with the updated filters
     handleSearchButtonClick();
 }
@@ -537,16 +678,20 @@ const handleRetry = (uuid) => {
     axios.post(props.routes.email_retry, { 'items': [uuid] })
         .then((response) => {
             showNotification('success', response.data.messages);
-            handleClearSelection();
         }).catch((error) => {
-            handleClearSelection();
             handleErrorResponse(error);
         }).finally(() => {
             fetchData(data.value.current_page || 1);
+
+            if (expandedRow.value === uuid) {
+                fetchExpandedDetails(uuid);
+            }
         });
 }
 
 const handleDeliveryDetails = (row) => {
+    if (!canShowDeliveryDetails(row)) return;
+
     showDeliveryDetailsModal.value = true;
     deliveryDetails.value = null;
     deliveryDetailsLoading.value = true;
@@ -558,7 +703,7 @@ const handleDeliveryDetails = (row) => {
         }).catch((error) => {
             deliveryDetails.value = {
                 available: false,
-                message: error.response?.data?.messages?.error?.[0] || 'Unable to fetch delivery details.',
+                message: error.response?.data?.messages?.error?.[0] || trans('Unable to fetch delivery details.'),
             };
         }).finally(() => {
             deliveryDetailsLoading.value = false;
@@ -571,15 +716,15 @@ const prettyJson = (value) => {
 }
 
 const eventTypeLabel = (event) => {
-    const type = event.Type || event.RecordType || 'Event';
+    const type = event.Type || event.RecordType || trans('Event');
     const labels = {
-        Delivered: 'Delivered',
-        Transient: 'Temporary delivery issue',
-        Opened: 'Opened',
-        LinkClicked: 'Link clicked',
-        Bounced: 'Bounced',
-        SubscriptionChanged: 'Subscription changed',
-        SpamComplaint: 'Spam complaint',
+        Delivered: trans('Delivered'),
+        Transient: trans('Temporary delivery issue'),
+        Opened: trans('Opened'),
+        LinkClicked: trans('Link clicked'),
+        Bounced: trans('Bounced'),
+        SubscriptionChanged: trans('Subscription changed'),
+        SpamComplaint: trans('Spam complaint'),
     };
 
     return labels[type] || type;
@@ -609,13 +754,13 @@ const eventDetailRows = (event) => {
         rows.push({ label, value: typeof value === 'object' ? JSON.stringify(value) : String(value), wide });
     };
 
-    add('Delivery response', details.DeliveryMessage || details.Summary || event.Description, true);
-    add('Destination server', details.DestinationServer);
-    add('Destination IP', details.DestinationIP);
-    add('Bounce ID', details.BounceID);
-    add('Click URL', details.OriginalLink || details.Link);
-    add('User agent', details.UserAgent);
-    add('Geo location', [details.GeoLocation?.City, details.GeoLocation?.Region, details.GeoLocation?.Country].filter(Boolean).join(', '));
+    add(trans('Delivery response'), details.DeliveryMessage || details.Summary || event.Description, true);
+    add(trans('Destination server'), details.DestinationServer);
+    add(trans('Destination IP'), details.DestinationIP);
+    add(trans('Bounce ID'), details.BounceID);
+    add(trans('Click URL'), details.OriginalLink || details.Link);
+    add(trans('User agent'), details.UserAgent);
+    add(trans('Geo location'), [details.GeoLocation?.City, details.GeoLocation?.Region, details.GeoLocation?.Country].filter(Boolean).join(', '));
 
     Object.entries(details).forEach(([key, value]) => {
         const knownKeys = ['DeliveryMessage', 'Summary', 'DestinationServer', 'DestinationIP', 'BounceID', 'OriginalLink', 'Link', 'UserAgent', 'GeoLocation'];

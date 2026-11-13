@@ -4,11 +4,15 @@ namespace Tests\Feature;
 
 use App\Jobs\ProcessFaxWebhookEventJob;
 use App\Mail\FaxReceived;
+use App\Mail\VoicemailNotification;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\View\Compilers\Compiler;
 use ReflectionMethod;
+use ReflectionProperty;
 use Tests\TestCase;
 
 class FaxReceivedMailTest extends TestCase
@@ -18,6 +22,11 @@ class FaxReceivedMailTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $compiledPath = sys_get_temp_dir().'/fspbx-fax-received-mail-views';
+        File::ensureDirectoryExists($compiledPath);
+        config(['view.compiled' => $compiledPath]);
+        (new ReflectionProperty(Compiler::class, 'cachePath'))->setValue(app('blade.compiler'), $compiledPath);
 
         $this->databasePath = sys_get_temp_dir() . '/fspbx-fax-received-mail-' . bin2hex(random_bytes(8)) . '.sqlite';
         touch($this->databasePath);
@@ -111,6 +120,54 @@ class FaxReceivedMailTest extends TestCase
         ]));
 
         $this->assertSame('9:00:00 PM May 27, 2026', $mail->attributes['fax_date']);
+    }
+
+    public function test_received_fax_uses_the_standard_html_and_text_template_pair(): void
+    {
+        $mail = new FaxReceived($this->attributes([
+            'fax_destination' => 'Main fax line',
+            'fax_date' => '9:00:00 PM May 27, 2026',
+        ]));
+
+        $content = $mail->content();
+
+        $this->assertNull($content->view);
+        $this->assertNotEmpty($content->htmlString);
+        $this->assertSame('emails.rendered-text', $content->text);
+        $mail->assertSeeInText('A new fax was received for Main fax line');
+    }
+
+    public function test_voicemail_notification_uses_the_shared_mailable_content_path(): void
+    {
+        $mail = new VoicemailNotification([
+            'domain_uuid' => (string) Str::uuid(),
+            'template_subcategory' => 'default',
+            'email_subject' => 'New voicemail',
+            'caller_id_name' => 'Ada',
+            'caller_id_number' => '12025550100',
+            'dialed_user' => '1001',
+            'message_date' => 'July 23, 2026',
+            'message_duration' => '00m 42s',
+            'voicemail_file_mode' => 'none',
+            'voicemail_download_url' => '',
+        ]);
+
+        $this->assertSame('emails.rendered-text', $mail->content()->text);
+        $mail->assertSeeInHtml('You have a new voice message');
+        $mail->assertSeeInText('You have a new voice message');
+    }
+
+    public function test_requested_language_selects_a_translated_fax_template(): void
+    {
+        app()->setLocale('en-us');
+        $mail = new FaxReceived($this->attributes([
+            'language' => 'ru',
+            'fax_destination' => '1001',
+        ]));
+
+        $this->assertSame('Получен факс для 1001', $mail->envelope()->subject);
+        $mail->assertSeeInHtml('Получен факс');
+        $mail->assertSeeInText('Получен новый факс');
     }
 
     private function attributes(array $overrides = []): array

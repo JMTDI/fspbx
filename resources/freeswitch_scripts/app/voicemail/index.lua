@@ -1,3 +1,4 @@
+local function run_voicemail()
 --set default values
 min_digits = 1;
 max_digits = 8;
@@ -101,10 +102,10 @@ if (session ~= nil) then
         default_language = session:getVariable("default_language");
         default_dialect = session:getVariable("default_dialect");
         default_voice = session:getVariable("default_voice");
-        freeswitch.consoleLog("notice", "[voicemail] default_voice: " .. default_voice ..  "\n");
-        if (not default_language) then default_language = 'en'; end
-        if (not default_dialect) then default_dialect = 'us'; end
-        if (not default_voice) then default_voice = 'callie'; end
+        if (not sounds_dir or sounds_dir == '') then sounds_dir = '/usr/share/freeswitch/sounds'; end
+        if (not default_language or default_language == '') then default_language = 'en'; end
+        if (not default_dialect or default_dialect == '') then default_dialect = 'us'; end
+        if (not default_voice or default_voice == '') then default_voice = 'callie'; end
 
     --get the domain_uuid
         domain_uuid = session:getVariable("domain_uuid");
@@ -491,8 +492,8 @@ if (voicemail_action == "save") then
 
             --get the voicemail destinations
                 sql = [[select * from v_voicemail_destinations
-                where voicemail_uuid = :voicemail_uuid]]
-                params = {voicemail_uuid=voicemail_uuid};
+                where domain_uuid = :domain_uuid and voicemail_uuid = :voicemail_uuid]]
+                params = {domain_uuid=domain_uuid, voicemail_uuid=voicemail_uuid};
                 --freeswitch.consoleLog("notice", "[voicemail][destinations] SQL:" .. sql .. "; params:" .. json.encode(params) .. "\n");
                 destinations = {};
                 x = 1;
@@ -505,21 +506,32 @@ if (voicemail_action == "save") then
             --show the storage type
                 freeswitch.consoleLog("notice", "[voicemail] ".. storage_type .. "\n");
 
-                count = 0
-                for k,v in pairs(destinations) do
-                    count = count + 1
-                end
-
             --loop through the voicemail destinations
-                y = 1;
-                for key,row in pairs(destinations) do
+                for key,row in ipairs(destinations) do
+                    --Resolve each mailbox before creating messages or using its delivery details.
+                        local params = {domain_uuid = domain_uuid, voicemail_uuid = row.voicemail_uuid_copy};
+                        local voicemail_id_copy, email_address;
+                        local voicemail_message_uuid;
+                        sql = [[SELECT voicemail_id, voicemail_mail_to FROM v_voicemails
+                            WHERE domain_uuid = :domain_uuid AND voicemail_uuid = :voicemail_uuid]];
+                        dbh:query(sql, params, function(result)
+                            voicemail_id_copy = result["voicemail_id"];
+                            email_address = result["voicemail_mail_to"];
+                        end);
+
+                        if (voicemail_id_copy == nil or voicemail_id_copy == '') then
+                            freeswitch.consoleLog("warning", "[voicemail] Skipping missing destination "
+                                ..tostring(row.voicemail_uuid_copy).." in domain "..tostring(domain_uuid)
+                                .." from mailbox "..tostring(voicemail_uuid).."\n");
+                            goto next_destination;
+                        end
+
                     --determine uuid
-                        if (y == count) then
+                        if (key == #destinations) then
                             voicemail_message_uuid = uuid;
                         else
                             voicemail_message_uuid = api:execute("create_uuid");
                         end
-                        y = y + 1;
                     --save the message to the voicemail messages
                         if (message_length ~= nil and tonumber(message_length) > 3) then
                             caller_id_name = string.gsub(caller_id_name,"'","''");
@@ -587,8 +599,6 @@ if (voicemail_action == "save") then
                             end
                         end
 
-                        local params = {domain_uuid = domain_uuid, voicemail_uuid = row.voicemail_uuid_copy};
-
                     --get new message count
                         sql = [[SELECT count(*) as new_messages FROM v_voicemail_messages
                             WHERE domain_uuid = :domain_uuid
@@ -611,16 +621,6 @@ if (voicemail_action == "save") then
                         end
                         dbh:query(sql, params, function(result)
                             saved_messages = result["saved_messages"];
-                        end);
-
-                    --get the voicemail_id
-                        sql = [[SELECT voicemail_id, voicemail_mail_to FROM v_voicemails WHERE voicemail_uuid = :voicemail_uuid]];
-                        if (debug["sql"]) then
-                            freeswitch.consoleLog("notice", "[voicemail] SQL: " .. sql .. "; params:" .. json.encode(params) .. "\n");
-                        end
-                        dbh:query(sql, params, function(result)
-                            voicemail_id_copy = result["voicemail_id"];
-                            email_address = result["voicemail_mail_to"];
                         end);
 
                     --make sure the voicemail directory exists
@@ -743,6 +743,7 @@ if (voicemail_action == "save") then
                                 end
                             end
                         end
+                    ::next_destination::
                 end --for
 
         else
@@ -767,3 +768,9 @@ end
 --close the database connection
 dbh:release();
 
+end
+
+if session ~= nil then
+    return require('resources.functions.voicemail_sounds').with_voice(session, run_voicemail)
+end
+return run_voicemail()

@@ -4,29 +4,29 @@ return [
     'configs' => [
         [
             /*
+             * Voxutel's Message Broker uses the same payload format as Sinch,
+             * but receives its own endpoint, credentials, and provider identity.
+             */
+            'name' => 'voxutel_messaging',
+            'signing_secret' => env('WEBHOOK_CLIENT_SECRET'),
+            'signature_header_name' => 'X-Voxutel-Signature',
+            'signature_validator' => \App\Http\Webhooks\SignatureValidators\VoxutelSignatureValidator::class,
+            'webhook_profile' => \App\Http\Webhooks\WebhookProfiles\VoxutelWebhookProfile::class,
+            'webhook_response' => \Spatie\WebhookClient\WebhookResponse\DefaultRespondsTo::class,
+            'webhook_model' => \App\Models\WhCall::class,
+            'store_headers' => [],
+            'process_webhook_job' => \App\Http\Webhooks\Jobs\ProcessVoxutelWebhookJob::class,
+        ],
+
+        [
+            /*
              * This package supports multiple webhook receiving endpoints. If you only have
              * one endpoint receiving webhooks, you can use 'default'.
              */
             'name' => 'postmark',
 
-            /*
-             * We expect that every webhook call will be signed using a secret. This secret
-             * is used to verify that the payload has not been tampered with.
-             */
-            'signing_secret' => env('WEBHOOK_CLIENT_SECRET'),
-
-            /*
-             * The name of the header containing the signature.
-             */
-            'signature_header_name' => 'Signature',
-
-            /*
-             *  This class will verify that the content of the signature header is valid.
-             *
-             * It should implement \Spatie\WebhookClient\SignatureValidator\SignatureValidator
-             */
-            //'signature_validator' => \Spatie\WebhookClient\SignatureValidator\DefaultSignatureValidator::class,
-
+            // Postmark uses HTTP Basic Auth, not signed payloads. Credentials
+            // are configured in services.postmark and required for every event.
             'signature_validator' => \App\Http\Webhooks\SignatureValidators\PostmarkSignatureValidator::class,
 
             /*
@@ -733,6 +733,28 @@ return [
             'process_webhook_job'   => App\Http\Webhooks\Jobs\ProcessAssemblyAiWebhookJob::class,
         ],
 
+        [
+            'name' => 'fibernetics_messaging',
+            'signature_header_name' => 'Signature',
+            'signature_validator' => \App\Http\Webhooks\SignatureValidators\FiberneticsSignatureValidator::class,
+            'webhook_profile' => \App\Http\Webhooks\WebhookProfiles\FiberneticsWebhookProfile::class,
+            'webhook_response' => \Spatie\WebhookClient\WebhookResponse\DefaultRespondsTo::class,
+            'webhook_model' => \App\Models\WhCall::class,
+            'store_headers' => [],
+            'process_webhook_job' => \App\Http\Webhooks\Jobs\ProcessFiberneticsWebhookJob::class,
+        ],
+
+        [
+            'name'                  => 'twilio_messaging',
+            'signing_secret'        => env('TWILIO_AUTH_TOKEN'),
+            'signature_header_name' => 'X-Twilio-Signature',
+            'signature_validator'   => \App\Http\Webhooks\SignatureValidators\TwilioSignatureValidator::class,
+            'webhook_profile'       => \App\Http\Webhooks\WebhookProfiles\TwilioWebhookProfile::class,
+            'webhook_response'      => \Spatie\WebhookClient\WebhookResponse\DefaultRespondsTo::class,
+            'webhook_model'         => \App\Models\WhCall::class,
+            'store_headers'         => [],
+            'process_webhook_job'   => \App\Http\Webhooks\Jobs\ProcessTwilioWebhookJob::class,
+        ],
 
     ],
 

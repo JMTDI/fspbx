@@ -3,10 +3,11 @@
 namespace App\Services\Messaging;
 
 use App\Jobs\DeliverMessageToEmail;
-use App\Jobs\DeliverMessageToRingotel;
 use App\Services\Messaging\Data\DeliveryStatusEventData;
 use App\Services\Messaging\Data\InboundMessageEventData;
 use App\Services\Messaging\Providers\MessagingWebhookParser;
+use App\Models\Messages;
+use Illuminate\Support\Facades\DB;
 
 class InboundMessagePipeline
 {
@@ -31,6 +32,31 @@ class InboundMessagePipeline
 
     protected function handleInbound(InboundMessageEventData $event, MessagingWebhookParser $parser): void
     {
+        $this->handleResolvedInbound(
+            event: $event,
+            storeMedia: function ($route) use ($event, $parser): array {
+                if ($event->storedMedia !== []) {
+                    return $event->storedMedia[$route->destination] ?? [];
+                }
+
+                return $this->mediaIngestor->store(
+                    parser: $parser,
+                    provider: $event->provider,
+                    domainUuid: $route->domainUuid,
+                    mediaUrls: $event->mediaUrls,
+                );
+            },
+            isMms: $event->isMms
+                || ! empty($event->mediaUrls)
+                || ! empty($event->storedMedia),
+        );
+    }
+
+    private function handleResolvedInbound(
+        InboundMessageEventData $event,
+        callable $storeMedia,
+        bool $isMms
+    ): void {
         messaging_webhook_debug('handleInbound started', [
             'provider' => $event->provider,
             'from' => $event->from,
@@ -39,12 +65,41 @@ class InboundMessagePipeline
             'provider_reference_id' => $event->providerReferenceId,
         ]);
 
-        foreach (array_filter($event->to) as $destination) {
+        $supportsGroups = app(MessageCarrierCapabilities::class)->supportsGroups($event->provider);
+        foreach (array_unique(array_filter($event->localRecipients ?? $event->to)) as $destination) {
+            // A group's participant list also contains external numbers we must not route locally.
+            if ($supportsGroups && !$this->resolver->isLocal($destination)) continue;
             messaging_webhook_debug('Resolving destination', [
                 'destination' => $destination,
             ]);
 
             $route = $this->resolver->resolve($destination);
+            $local = app(MessageParticipantService::class)->normalize($route->domainUuid, $route->destination);
+            $existingMessage = fn () => $event->providerReferenceId ? Messages::where('domain_uuid', $route->domainUuid)
+                ->where('direction', 'in')->where('destination', $local)
+                ->where('reference_id', $event->providerReferenceId)
+                ->where('delivery_meta->provider->name', $event->provider)->first() : null;
+            if ($existing = $existingMessage()) {
+                // Recover a persisted event if queue dispatch failed previously.
+                if ($existing->isWebhookInbound()) app(MessageWebhookDeliveryService::class)->dispatch($existing);
+                app(MessageOptOutService::class)->dispatchConfirmation($existing);
+                app(MessageAutoReplyService::class)->dispatchReply($existing);
+                continue;
+            }
+            $group = null;
+            if ($supportsGroups) {
+                $groups = app(MessageGroupService::class);
+                $country = app(\App\Services\PhoneNumberService::class)->countryCodeForDomain($route->domainUuid);
+                // A short-code sender is not an E.164 group participant. Only exempt it
+                // when the full, validated recipient list contains this local number alone.
+                $shortCodeDirectMessage = preg_match('/\A[0-9]{5,6}\z/', $event->from) === 1
+                    && $event->to !== []
+                    && $groups->recipients($event->to, $local, $country) === [];
+                if (!$shortCodeDirectMessage) {
+                    $recipients = $groups->recipients(array_merge([$event->from], $event->to), $local, $country);
+                    if (count($recipients) > 1) $group = $groups->findOrCreate($route->domainUuid, $local, $recipients);
+                }
+            }
 
             messaging_webhook_debug('Destination resolved', [
                 'domain_uuid' => $route->domainUuid,
@@ -55,40 +110,71 @@ class InboundMessagePipeline
                 'org_id' => $route->orgId,
             ]);
 
-            $storedMedia = $this->mediaIngestor->store(
-                parser: $parser,
-                provider: $event->provider,
-                domainUuid: $route->domainUuid,
-                mediaUrls: $event->mediaUrls,
-            );
+            // Count before ingestion: failed downloads must not look like an
+            // MMS that legitimately contained only a text part.
+            $expectedMediaCount = $event->storedMedia === []
+                ? count($event->mediaUrls)
+                : (array_key_exists($route->destination, $event->storedMedia)
+                    ? count($event->storedMedia[$route->destination]) : null);
+            $storedMedia = $storeMedia($route);
 
             messaging_webhook_debug('Media ingested', [
                 'stored_media_count' => count($storedMedia),
             ]);
 
-            $message = $this->messages->storeInbound(
-                domainUuid: $route->domainUuid,
-                extensionUuid: $route->extensionUuid,
-                source: $event->from,
-                destination: $route->destination,
-                text: $event->text,
-                type: !empty($event->mediaUrls) ? 'mms' : 'sms',
-                providerName: $event->provider,
-                providerReferenceId: $event->providerReferenceId,
-                media: $storedMedia,
-                providerEvent: $event->providerEvent,
-            );
+            [$message, $created] = DB::transaction(function () use ($route, $event, $local, $group, $isMms, $storedMedia, $expectedMediaCount, $existingMessage) {
+                // Serialize duplicate carrier callbacks for this receiving number.
+                // Media downloads stay outside the transaction.
+                if ($route->smsDestinationUuid) {
+                    \App\Models\SmsDestinations::where('domain_uuid', $route->domainUuid)
+                        ->whereKey($route->smsDestinationUuid)->lockForUpdate()->firstOrFail();
+                }
+                if ($existing = $existingMessage()) {
+                    return [$existing, false];
+                }
+
+                $message = $this->messages->storeInbound(
+                    domainUuid: $route->domainUuid,
+                    extensionUuid: $route->extensionUuid,
+                    source: $event->from,
+                    destination: $route->destination,
+                    text: $event->text,
+                    type: $group || $isMms ? 'mms' : 'sms',
+                    providerName: $event->provider,
+                    providerReferenceId: $event->providerReferenceId,
+                    media: $storedMedia,
+                    providerEvent: $event->providerEvent,
+                    messageGroupUuid: $group?->message_group_uuid,
+                    expectedMediaCount: $expectedMediaCount,
+                    inboundDelivery: $route->inboundDelivery + [
+                        'recipients' => array_values(array_unique(array_map(
+                            fn ($number) => app(MessageParticipantService::class)->normalize($route->domainUuid, $number),
+                            $event->to,
+                        ))),
+                        'participants' => $group
+                            ? array_values(array_unique(array_merge([$local], $group->recipients))) : [],
+                    ],
+                );
+                app(MessageOptOutService::class)->recordIncoming($message);
+                app(MessageAutoReplyService::class)->recordIncoming($message);
+                return [$message, true];
+            });
+
+            if ($message->isWebhookInbound()) {
+                app(MessageWebhookDeliveryService::class)->dispatch($message);
+                continue;
+            }
+            if (! $created) {
+                app(MessageOptOutService::class)->dispatchConfirmation($message);
+                app(MessageAutoReplyService::class)->dispatchReply($message);
+                continue;
+            }
 
             messaging_webhook_debug('Message saved', [
                 'message_uuid' => $message->message_uuid,
             ]);
 
-            if ($route->hasMobileApp && $route->orgId && $route->extension) {
-                DeliverMessageToRingotel::dispatch(
-                    $message->message_uuid,
-                    $route->orgId,
-                    $route->extension,
-                )->onQueue('messages');
+            if (app(RingotelSyncDispatcher::class)->dispatch($message)) {
 
                 messaging_webhook_debug('Ringotel delivery queued', [
                     'message_uuid' => $message->message_uuid,
@@ -107,6 +193,8 @@ class InboundMessagePipeline
                     'email' => $route->email,
                 ]);
             }
+            app(MessageOptOutService::class)->dispatchConfirmation($message);
+            app(MessageAutoReplyService::class)->dispatchReply($message);
         }
     }
 
@@ -125,6 +213,9 @@ class InboundMessagePipeline
             status: $event->status,
             description: $event->description,
             providerEvent: $event->providerEvent,
+            recipient: $event->recipient,
+            occurredAt: $event->occurredAt,
+            rawStatus: $event->rawStatus,
         );
     }
 }

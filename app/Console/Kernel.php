@@ -5,6 +5,8 @@ namespace App\Console;
 use App\Jobs\DeleteOldFaxes;
 use App\Models\DefaultSettings;
 use App\Jobs\DeleteOldEmailLogs;
+use App\Jobs\DeleteOldMessages;
+use App\Jobs\DeleteOldMessagingRecords;
 use App\Jobs\ProcessScheduledAnnouncements;
 use App\Jobs\ProcessWakeupCalls;
 use App\Jobs\RenewTlsCertificate;
@@ -12,7 +14,9 @@ use App\Jobs\DeleteOldVoicemails;
 use App\Jobs\DeleteOldCallRecordings;
 use App\Jobs\DeleteOldTranscriptions;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Console\Scheduling\Schedule;
 use Spatie\WebhookClient\Models\WebhookCall;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
@@ -39,15 +43,14 @@ class Kernel extends ConsoleKernel
         $s3UploadTime = $this->getScheduledJobTime($jobSettings, 's3_upload_calls_time', '01:00');
         $backupTime = $this->getScheduledJobTime($jobSettings, 'backup_time', '02:00');
 
-        // Upload call recordings to AWS
-        if (
-            isset($jobSettings['s3_upload_calls_' . $this->getMacAddress()])
-            && $jobSettings['s3_upload_calls_' . $this->getMacAddress()] === "true"
-        ) {
-            $schedule->command('fs:upload-call-recordings-to-s3-storage')
-                ->dailyAt($s3UploadTime)
-                ->timezone($scheduledJobsTimezone);
-        }
+        // Ownership is read fresh when due, then checked again inside the
+        // scheduled command and each recording's claim. Plain CLI runs remain
+        // an explicit operator override of enablement and server selection.
+        $schedule->command('fs:upload-call-recordings-to-s3-storage', ['--scheduled'])
+            ->dailyAt($s3UploadTime)
+            ->timezone($scheduledJobsTimezone)
+            ->when(fn () => app(\App\Services\S3UploadServerSelector::class)->resolve()['allowed'])
+            ->withoutOverlapping();
 
         if (isset($jobSettings['backup']) && $jobSettings['backup'] === "true") {
             $schedule->command('app:backup')
@@ -57,7 +60,9 @@ class Kernel extends ConsoleKernel
 
         // Clear the export directory
         if (isset($jobSettings['clear_export_directory']) && $jobSettings['clear_export_directory'] === "true") {
-            $schedule->command('storage:clear-export-directory')->daily();
+            $schedule->command('storage:clear-export-directory')
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
 
         // Horizon snapshot
@@ -79,7 +84,9 @@ class Kernel extends ConsoleKernel
         if (isset($jobSettings['prune_old_webhook_requests']) && $jobSettings['prune_old_webhook_requests'] === "true") {
             $schedule->command('model:prune', [
                 '--model' => [WebhookCall::class],
-            ])->daily();
+            ])
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
 
         // Check fax service status
@@ -102,7 +109,9 @@ class Kernel extends ConsoleKernel
 
         // Find stale Ringotel users
         if (isset($jobSettings['audit_stale_ringotel_users']) && $jobSettings['audit_stale_ringotel_users'] === "true") {
-            $schedule->job(new \App\Jobs\AuditStaleRingotelUsers())->monthlyOn(1, '00:00');
+            $schedule->job(new \App\Jobs\AuditStaleRingotelUsers())
+                ->monthlyOn(1, '00:00')
+                ->timezone($scheduledJobsTimezone);
         }
 
         if (isset($jobSettings['wake_up_calls']) && $jobSettings['wake_up_calls'] === "true") {
@@ -113,6 +122,9 @@ class Kernel extends ConsoleKernel
             $schedule->job(new ProcessScheduledAnnouncements())->everyMinute();
         }
 
+        $schedule->command('ldap:dispatch-due')->everyFiveMinutes()->withoutOverlapping();
+        $schedule->command('scheduled-jobs:maintain')->everyFiveMinutes()->withoutOverlapping();
+
         if (isset($jobSettings['delete_old_faxes']) && $jobSettings['delete_old_faxes'] === "true") {
             // Retrieve the days to keep faxes from settings or default to 90 days.
             $daysKeepFax = $jobSettings['days_keep_fax'] ?? 90;
@@ -121,7 +133,8 @@ class Kernel extends ConsoleKernel
                 (new DeleteOldFaxes((int)$daysKeepFax))
                     ->delay(now()->addSeconds(random_int(60, 600)))
             )
-                ->daily();
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
 
         if (isset($jobSettings['delete_old_call_recordings']) && $jobSettings['delete_old_call_recordings'] === "true") {
@@ -132,7 +145,8 @@ class Kernel extends ConsoleKernel
                 (new DeleteOldCallRecordings((int)$daysKeepRecordings))
                     ->delay(now()->addSeconds(random_int(60, 600)))
             )
-                ->daily();
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
 
         if (isset($jobSettings['delete_old_voicemails']) && $jobSettings['delete_old_voicemails'] === "true") {
@@ -143,7 +157,8 @@ class Kernel extends ConsoleKernel
                 (new DeleteOldVoicemails((int)$daysKeepVoicemails))
                     ->delay(now()->addSeconds(random_int(60, 600)))
             )
-                ->daily();
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
 
         if (isset($jobSettings['delete_old_email_logs']) && $jobSettings['delete_old_email_logs'] === "true") {
@@ -154,7 +169,33 @@ class Kernel extends ConsoleKernel
                 (new DeleteOldEmailLogs((int)$daysKeepEmailLogs))
                     ->delay(now()->addSeconds(random_int(60, 3600)))
             )
-                ->daily();
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
+        }
+
+        foreach (array_keys(DeleteOldMessagingRecords::TABLES) as $table) {
+            if (($jobSettings['delete_old_' . $table] ?? null) !== 'true') continue;
+            $days = filter_var($jobSettings['days_keep_' . $table] ?? 30, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ]);
+            if ($days !== false) {
+                $schedule->job(new DeleteOldMessagingRecords($table, $days))
+                    ->daily()
+                    ->timezone($scheduledJobsTimezone);
+            }
+        }
+
+        if (($jobSettings['delete_old_messages'] ?? null) === 'true') {
+            $daysKeepMessages = filter_var($jobSettings['days_keep_messages'] ?? 90, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ]);
+
+            // An invalid retention value must never become a zero-day purge.
+            if ($daysKeepMessages !== false) {
+                $schedule->job(new DeleteOldMessages($daysKeepMessages))
+                    ->daily()
+                    ->timezone($scheduledJobsTimezone);
+            }
         }
 
         if (isset($jobSettings['delete_old_transcriptions']) && $jobSettings['delete_old_transcriptions'] === "true") {
@@ -165,8 +206,20 @@ class Kernel extends ConsoleKernel
                 (new DeleteOldTranscriptions((int)$daysKeepTranscriptions))
                     ->delay(now()->addSeconds(random_int(60, 3600)))
             )
-                ->daily();
+                ->daily()
+                ->timezone($scheduledJobsTimezone);
         }
+
+        // Delete cached CNAM records older than six months when the optional table exists.
+        $schedule->call(function () {
+            if (Schema::hasTable('v_cnam')) {
+                DB::table('v_cnam')
+                    ->where('date', '<', now()->subMonthsNoOverflow(6))
+                    ->delete();
+            }
+        })
+            ->daily()
+            ->timezone($scheduledJobsTimezone);
     }
 
     /**

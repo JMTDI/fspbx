@@ -9,6 +9,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class SwitchVariableService
 {
@@ -61,7 +62,7 @@ class SwitchVariableService
 
     public function saveVariable(array $data, ?SwitchVariable $variable = null): SwitchVariable
     {
-        return DB::transaction(function () use ($data, $variable) {
+        $variable = DB::transaction(function () use ($data, $variable) {
             $variable ??= new SwitchVariable();
             $variable->forceFill([
                 'var_uuid' => $variable->var_uuid ?: Str::uuid()->toString(),
@@ -75,15 +76,17 @@ class SwitchVariableService
                 'var_description' => $data['var_description'] ?? null,
             ])->save();
 
-            $this->syncVarsXml();
-
             return $variable;
         });
+
+        $this->syncAndReloadXml();
+
+        return $variable;
     }
 
     public function toggle(array $uuids): int
     {
-        return DB::transaction(function () use ($uuids) {
+        $count = DB::transaction(function () use ($uuids) {
             $variables = SwitchVariable::query()->whereIn('var_uuid', $uuids)->get();
 
             $variables->each(function (SwitchVariable $variable) {
@@ -91,15 +94,17 @@ class SwitchVariableService
                 $variable->save();
             });
 
-            $this->syncVarsXml();
-
             return $variables->count();
         });
+
+        $this->syncAndReloadXml();
+
+        return $count;
     }
 
     public function copy(array $uuids): int
     {
-        return DB::transaction(function () use ($uuids) {
+        $count = DB::transaction(function () use ($uuids) {
             $copied = 0;
 
             foreach (SwitchVariable::query()->whereIn('var_uuid', $uuids)->get() as $variable) {
@@ -110,25 +115,57 @@ class SwitchVariableService
                 $copied++;
             }
 
-            if ($copied > 0) {
-                $this->syncVarsXml();
-            }
-
             return $copied;
         });
+
+        if ($count > 0) {
+            $this->syncAndReloadXml();
+        }
+
+        return $count;
     }
 
     public function delete(array $uuids): int
     {
-        return DB::transaction(function () use ($uuids) {
+        $count = DB::transaction(function () use ($uuids) {
             $deleted = SwitchVariable::query()->whereIn('var_uuid', $uuids)->delete();
-
-            if ($deleted > 0) {
-                $this->syncVarsXml();
-            }
 
             return $deleted;
         });
+
+        if ($count > 0) {
+            $this->syncAndReloadXml();
+        }
+
+        return $count;
+    }
+
+    public function syncAndReloadXml(?string $expectedHostname = null): void
+    {
+        try {
+            $written = $expectedHostname === null ? $this->syncVarsXml() : $this->writeVarsXml(true, $expectedHostname);
+            if (! $written) {
+                throw new \RuntimeException(__('Unable to write vars.xml. Check the switch conf directory setting.'));
+            }
+
+            $esl = app(FreeswitchEslService::class);
+            if (! $esl->isConnected()) {
+                throw new \RuntimeException(__('FreeSWITCH event socket is unavailable.'));
+            }
+
+            $response = $esl->executeCommand('reloadxml');
+            if (! is_string($response) || ! preg_match('/^\+?OK\b/i', trim($response))) {
+                throw new \RuntimeException(
+                    is_string($response) && trim($response) !== ''
+                        ? 'FreeSWITCH reloadxml: ' . trim($response)
+                        : __('FreeSWITCH XML reload was not confirmed.')
+                );
+            }
+        } catch (\Throwable $exception) {
+            throw ValidationException::withMessages([
+                'runtime' => [__('Variables remain saved in the database, but FreeSWITCH synchronization failed. Correct the problem and use Sync to retry.') . ' ' . $exception->getMessage()],
+            ]);
+        }
     }
 
     public function categories(): array
@@ -148,9 +185,16 @@ class SwitchVariableService
             ->all();
     }
 
-    public function syncVarsXml(): bool
+    public function syncVarsXml(bool $clearSessionCache = true): bool
     {
-        session()->forget('user_defined_variables');
+        return $this->writeVarsXml($clearSessionCache);
+    }
+
+    private function writeVarsXml(bool $clearSessionCache, ?string $expectedHostname = null): bool
+    {
+        if ($clearSessionCache) {
+            session()->forget('user_defined_variables');
+        }
 
         $confDir = $this->switchConfDir();
         if (! $confDir) {
@@ -159,7 +203,10 @@ class SwitchVariableService
 
         File::ensureDirectoryExists($confDir);
 
-        $hostname = $this->switchHostname();
+        $hostname = $this->currentHostname();
+        if ($expectedHostname !== null && $hostname !== $expectedHostname) {
+            throw new \RuntimeException(__('The FreeSWITCH hostname changed. Refresh Network Setup on this server before synchronizing.'));
+        }
         $xml = '';
         $previousCategory = null;
 
@@ -191,10 +238,7 @@ class SwitchVariableService
                 $previousCategory = $variable->var_category;
             });
 
-        File::put(rtrim($confDir, '/') . '/vars.xml', $xml . "\n");
-        session(['reload_xml' => true]);
-
-        return true;
+        return File::put(rtrim($confDir, '/') . '/vars.xml', $xml . "\n") !== false;
     }
 
     private function serializeVariable(SwitchVariable $variable): array
@@ -207,7 +251,11 @@ class SwitchVariableService
             'name' => $variable->var_name,
             'value' => $variable->var_value,
             'command' => $variable->var_command ?: 'set',
-            'command_label' => self::COMMAND_OPTIONS[$variable->var_command ?: 'set'] ?? ucfirst((string) $variable->var_command),
+            'command_label' => match ($variable->var_command ?: 'set') {
+                'set' => __('Set'),
+                'exec-set' => __('Exec Set'),
+                default => ucfirst((string) $variable->var_command),
+            },
             'hostname' => $variable->var_hostname,
             'enabled' => $this->boolValue($variable->var_enabled),
             'description' => $variable->var_description,
@@ -285,7 +333,10 @@ class SwitchVariableService
         return filled($path) ? rtrim((string) $path, '/') : null;
     }
 
-    private function switchHostname(): string
+    /**
+     * Return the hostname FreeSWITCH uses to scope node-specific variables.
+     */
+    public function currentHostname(): string
     {
         try {
             $esl = app(FreeswitchEslService::class);
@@ -305,7 +356,7 @@ class SwitchVariableService
     private function formatCategory(string $category): string
     {
         if ($category === '') {
-            return 'Uncategorized';
+            return __('Uncategorized');
         }
 
         return Str::of($category)->replace(['_', '-'], ' ')->title()->toString();

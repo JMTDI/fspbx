@@ -3,10 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Support\Carbon;
-use libphonenumber\PhoneNumberUtil;
 use libphonenumber\PhoneNumberFormat;
 use Illuminate\Database\Eloquent\Model;
-use libphonenumber\NumberParseException;
+use Illuminate\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 
@@ -22,6 +21,7 @@ class Messages extends Model
 
     protected $fillable = [
         'message_uuid',
+        'message_group_uuid',
         'extension_uuid',
         'domain_uuid',
         'source',
@@ -86,6 +86,97 @@ class Messages extends Model
         return $this->belongsTo(Domain::class, 'domain_uuid', 'domain_uuid');
     }
 
+    public function isWebhookInbound(): bool
+    {
+        return $this->direction === 'in' && data_get($this->delivery_meta, 'inbound.method') === 'webhook';
+    }
+
+    public function isApiOutbound(): bool
+    {
+        return $this->direction === 'out' && data_get($this->delivery_meta, 'outbound.origin') === 'api';
+    }
+
+    public function isAutomaticReply(): bool
+    {
+        return $this->direction === 'out' && in_array(data_get($this->delivery_meta, 'outbound.origin'),
+            ['auto_reply', 'opt_out_confirmation'], true);
+    }
+
+    /** Second-precision timestamps can tie: incoming messages must precede automatic replies. */
+    public function scopeConversationOrder(\Illuminate\Database\Eloquent\Builder $query, ?self $before = null): \Illuminate\Database\Eloquent\Builder
+    {
+        $origin = $query->getQuery()->getGrammar()->wrap('messages.delivery_meta->outbound->origin');
+        $rank = new Expression("CASE WHEN messages.direction = 'out' AND $origin IN ('auto_reply', 'opt_out_confirmation') THEN 1 ELSE 0 END");
+        if ($before) {
+            $query->whereRowValues(['messages.created_at', $rank, 'messages.message_uuid'], '<',
+                [$before->getRawOriginal('created_at'), (int) $before->isAutomaticReply(), $before->getKey()]);
+        }
+        return $query->orderByDesc('messages.created_at')->orderByDesc($rank)->orderByDesc('messages.message_uuid');
+    }
+
+    public function isExternalOnly(): bool
+    {
+        return $this->isWebhookInbound() || $this->isApiOutbound();
+    }
+
+    public function scopeForInbox(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        return $query->where(fn ($query) => $query->where('messages.direction', '!=', 'out')
+            ->orWhereNull('messages.delivery_meta->outbound->origin')
+            ->orWhere('messages.delivery_meta->outbound->origin', '!=', 'api'))
+            ->where(fn ($query) => $query->where('messages.direction', '!=', 'in')
+            ->orWhereNull('messages.delivery_meta->inbound->method')
+            ->orWhere('messages.delivery_meta->inbound->method', '!=', 'webhook'));
+    }
+
+    public function group()
+    {
+        return $this->belongsTo(MessageGroup::class, 'message_group_uuid', 'message_group_uuid');
+    }
+
+    public function outboundWebhookEvents()
+    {
+        return $this->hasMany(OutboundMessageWebhookEvent::class, 'message_uuid', 'message_uuid');
+    }
+
+    public function roomId(): string
+    {
+        $local = $this->direction === 'in' ? $this->destination : $this->source;
+        $remote = $this->message_group_uuid ?: ($this->direction === 'in' ? $this->source : $this->destination);
+        return $local.'_'.$remote;
+    }
+
+    /**
+     * Read legacy JSON/URL attachments without changing the stored media.
+     * Preserve original indexes because stored attachment URLs use them.
+     */
+    public function mediaItems(): array
+    {
+        $media = $this->media;
+        if (is_string($media)) {
+            $media = json_decode($media, true);
+        }
+        if (!is_array($media)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($media as $index => $item) {
+            if (is_string($item)) {
+                if (!filter_var($item, FILTER_VALIDATE_URL)
+                    || !in_array(strtolower(parse_url($item, PHP_URL_SCHEME) ?? ''), ['http', 'https'], true)) {
+                    continue;
+                }
+                $item = ['url' => $item, 'access_path' => $item];
+            }
+            if (is_array($item) && $item !== []) {
+                $items[$index] = $item;
+            }
+        }
+
+        return $items;
+    }
+
     public function updateDeliveryMeta(string $path, mixed $value): void
     {
         $meta = $this->delivery_meta ?? [];
@@ -95,17 +186,6 @@ class Messages extends Model
 
     public function formatPhoneNumber($value)
     {
-        $phoneNumberUtil = PhoneNumberUtil::getInstance();
-
-        try {
-            $phoneNumberObject = $phoneNumberUtil->parse($value, 'US');
-
-            if ($phoneNumberUtil->isValidNumber($phoneNumberObject)) {
-                return $phoneNumberUtil->format($phoneNumberObject, PhoneNumberFormat::NATIONAL);
-            }
-        } catch (NumberParseException $e) {
-        }
-
-        return $value;
+        return app(\App\Services\PhoneNumberService::class)->formatForDomain($value, $this->domain_uuid, PhoneNumberFormat::NATIONAL);
     }
 }

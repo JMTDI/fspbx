@@ -5,7 +5,8 @@ namespace App\Http\Middleware;
 use Inertia\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
-use PhpParser\Node\Expr\FuncCall;
+use App\Support\Localization\LocaleRegistry;
+use App\Support\ModuleMenuItems;
 
 class HandleInertiaRequests extends Middleware
 {
@@ -26,6 +27,8 @@ class HandleInertiaRequests extends Middleware
      */
     public function version(Request $request): ?string
     {
+        $assets = storage_path('app/frontend/active.json');
+        if (is_file($assets)) return hash_file('sha256', $assets);
         return parent::version($request);
     }
 
@@ -39,7 +42,18 @@ class HandleInertiaRequests extends Middleware
     public function share(Request $request): array
     {
         return array_merge(parent::share($request), [
-            'menus' => Session::get('menu'),
+            'locale' => fn() => app()->getLocale(),
+
+            // Base-first list of locale codes to merge for the frontend's
+            // $t()/trans() (e.g. ['en-us', 'es-es', 'es-419', 'es-mx']) --
+            // mirrors the dialect-chain merge LocaleFileLoader already does
+            // for backend __() calls, since the frontend loads its JSON
+            // bundle directly via Vite (see resources/js/vue.js) and has no
+            // other way to know a dialect's fallback parents.
+            'localeChain' => fn() => app(LocaleRegistry::class)->chain(app()->getLocale()),
+
+            // The login-time menu plus entries from enabled modules the user may see.
+            'menus' => fn () => app(ModuleMenuItems::class)->apply(Session::get('menu')),
 
             'domainSelectPermission' => Session::get('domain_select'),
 
@@ -70,20 +84,6 @@ class HandleInertiaRequests extends Middleware
     {
         $permissions = [];
         $permissions['domain_select'] = session('domain_select');
-        $permissions['device_create'] = userCheckPermission('device_add');
-        $permissions['device_view_global'] = userCheckPermission('device_all');
-        $permissions['device_destroy'] = userCheckPermission('device_delete');
-        $permissions['device_update'] = userCheckPermission('device_edit');
-        $permissions['device_import'] = userCheckPermission('device_import');
-        $permissions['device_edit_domain'] = userCheckPermission('device_domain');
-        $permissions['device_edit_address'] = userCheckPermission('device_address');
-        $permissions['device_edit_line'] = userCheckPermission('device_line_edit');
-        $permissions['device_edit_template'] = userCheckPermission('device_template');
-
-        $permissions['device_profile_index'] = userCheckPermission('device_profile_view');
-
-        $permissions['manage_cloud_provision_providers'] = userCheckPermission('manage_cloud_provision_providers');
-        $permissions['polycom_api_token_edit'] = userCheckPermission('polycom_api_token_edit');
 
         $permissions['cdrs_view_global'] = userCheckPermission('xml_cdr_all');
         $permissions['cdrs_export'] = userCheckPermission('xml_cdr_export');

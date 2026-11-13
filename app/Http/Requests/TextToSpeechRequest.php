@@ -2,8 +2,10 @@
 
 namespace App\Http\Requests;
 
+use App\Services\OpenAIService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Support\Localization\ValidationMessages;
 
 class TextToSpeechRequest extends FormRequest
 {
@@ -28,8 +30,8 @@ class TextToSpeechRequest extends FormRequest
             'input' => 'required|string|max:1000',
             'model' => 'nullable|string',
             'voice' => 'string',
-            'response_format' => 'nullable|string',
-            'speed' => 'string',
+            'response_format' => 'nullable|string|in:wav,mp3,opus,aac,flac,pcm',
+            'speed' => 'required|numeric|between:0.25,4',
         ];
     }
 
@@ -40,8 +42,8 @@ class TextToSpeechRequest extends FormRequest
     {
         
         $this->merge([
-            'model' => $this->input('model', 'gpt-4o-mini-tts-2025-12-15'),
-            'response_format' => $this->input('response_format', 'wav'),
+            'model' => $this->input('model') ?: OpenAIService::DEFAULT_SPEECH_MODEL,
+            'response_format' => $this->input('response_format') ?: 'wav',
         ]);
 
         if ($this->has('voice')) {
@@ -65,14 +67,25 @@ class TextToSpeechRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'input.required' => 'The message is required.',
-            'input.max' => 'Your message can not exceed 1000 characters',
-            'input.string' => 'The text input must be a string.',
-            'model.string' => 'The model name must be a string.',
-            'voice.string' => 'The voice must be selected',
-            'response_format.string' => 'The response format must be a string.',
-            'speed.string' => 'The speed must be selected.',
+            ...ValidationMessages::common(),
+            'input.required' => __('The message is required.'),
+            'input.max' => __('Your message can not exceed 1000 characters'),
+            'input.string' => __('The text input must be a string.'),
+            'model.string' => __('The model name must be a string.'),
+            'voice.string' => __('The voice must be selected'),
+            'response_format.string' => __('The response format must be a string.'),
+            'speed.string' => __('The speed must be selected.'),
+        ];
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'input' => __('Custom greeting message'),
+            'model' => __('Model'),
+            'voice' => __('Voice'),
+            'response_format' => __('Audio Format'),
+            'speed' => __('Speed'),
         ];
     }
 }
-

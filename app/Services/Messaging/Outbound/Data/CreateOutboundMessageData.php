@@ -19,5 +19,8 @@ class CreateOutboundMessageData extends Data
         public array $mediaFiles = [],
         public array $mediaRemoteUrls = [],
         public array $meta = [],
+        public ?string $messageGroupUuid = null,
+        public bool $dispatch = true,
+        public ?string $type = null,
     ) {}
 }

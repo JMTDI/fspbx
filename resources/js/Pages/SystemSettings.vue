@@ -1,17 +1,67 @@
 <template>
-    <PageWithSideMenu title="System Settings" :navigation="navigation" :pages="pages" :header-icon="Cog6ToothIcon"
+    <PageWithSideMenu :title="$t('System Settings')" :navigation="navigation" :pages="pages" :header-icon="Cog6ToothIcon"
         :initial-menu-option="initialMenuOption" @update-selected-menu-option="handleUpdateSelectedMenuOption">
 
         <template #default="{ selectedMenuOption }">
-            <section v-show="selectedMenuOption === 'payment_gateways'">
-                <Vueform ref="form$" :endpoint="submitForm" @success="handleSuccess" @error="handleError"
-                    @response="handleResponse" :display-errors="false">
+            <section v-if="permissions?.default_setting_view && messagingSettings" v-show="selectedMenuOption === 'messaging'">
+                <MessagingSettingsForm :settings="messagingSettings" :route="routes.messaging_update" system
+                    :can-manage="permissions?.default_setting_edit"
+                    @success="messages => showNotification('success', messages)"
+                    @error="messages => showNotification('error', messages)" />
+            </section>
+
+            <!-- GENERAL: system-wide default settings (default_settings) -->
+            <section v-show="selectedMenuOption === 'general'">
+                <Vueform ref="generalForm$" :endpoint="submitForm" @success="handleSuccess" @error="handleError"
+                    @response="handleResponse" :display-errors="false" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
                     <template #empty>
                         <div class="lg:grid lg:grid-cols-12 lg:gap-x-5">
                             <div class="lg:col-span-12">
                                 <FormElements>
-                                    <StaticElement name="payment_gateways_tab_label" tag="h4" content="Payment Gateways"
-                                        description="Manage Payment Providers" />
+                                    <StaticElement name="general_tab_label" tag="h4" :content="$t('General')"
+                                        :description="$t('System-wide defaults. Every account inherits these unless it sets its own.')" />
+
+                                    <!-- Schema-driven defaults, grouped. Add a field in
+                                         SystemSettingsSchema and it renders here. -->
+                                    <template v-for="group in settingGroups" :key="group">
+                                        <StaticElement :name="`settings_group_${group}`" tag="h4" :content="group" />
+                                        <template v-for="field in settingsByGroup[group]" :key="field.key">
+                                            <SelectElement v-if="field.type === 'select'" :name="field.key"
+                                                :label="field.label" :items="settings_options[field.options] ?? []"
+                                                :groups="!!field.grouped" :search="!!field.searchable" :native="false"
+                                                input-type="search" autocomplete="off" :placeholder="field.placeholder"
+                                                :floating="false" :strict="false" :info="field.info || undefined"
+                                                :description="field.description || undefined"
+                                                :disabled="!permissions?.default_setting_edit"
+                                                :columns="{ sm: { container: 6 } }" />
+                                            <TextElement v-else-if="field.type === 'text'" :name="field.key"
+                                                :label="field.label" :placeholder="field.placeholder" :floating="false"
+                                                :info="field.info || undefined" :description="field.description || undefined"
+                                                :disabled="!permissions?.default_setting_edit"
+                                                :columns="{ sm: { container: 6 } }" />
+                                            <ToggleElement v-else-if="field.type === 'toggle'" :name="field.key"
+                                                :text="field.label" :disabled="!permissions?.default_setting_edit" />
+                                        </template>
+                                    </template>
+
+                                    <ButtonElement v-if="permissions?.default_setting_edit" name="general_submit"
+                                        :button-label="$t('Save')" :submits="true" align="right" />
+                                </FormElements>
+                            </div>
+                        </div>
+                    </template>
+                </Vueform>
+            </section>
+
+            <section v-show="selectedMenuOption === 'payment_gateways'">
+                <Vueform ref="form$" :endpoint="submitForm" @success="handleSuccess" @error="handleError"
+                    @response="handleResponse" :display-errors="false" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
+                    <template #empty>
+                        <div class="lg:grid lg:grid-cols-12 lg:gap-x-5">
+                            <div class="lg:col-span-12">
+                                <FormElements>
+                                    <StaticElement name="payment_gateways_tab_label" tag="h4" :content="$t('Payment Gateways')"
+                                        :description="$t('Manage Payment Providers')" />
                                     <ListElement name="gateways" :controls="{ add: false, remove: false }"
                                         :add-classes="{ ListElement: { listItem: 'bg-white p-4 mb-4 rounded-lg shadow-md' } }">
                                         <template #default="{ index }">
@@ -22,23 +72,23 @@
                                                     :attrs="{ class: 'text-base font-semibold' }">
                                                     <template #after="{ el$ }">
                                                         <Badge v-if="el$.form$.el$('gateways').value[index].is_enabled"
-                                                            class="mt-1" :text="'Activated'"
+                                                            class="mt-1" :text="$t('Activated')"
                                                             :backgroundColor="'bg-green-50'"
                                                             :textColor="'text-green-700'"
                                                             :ringColor="'ring-green-600/20'" />
-                                                        <Badge v-else class="mt-1" :text="'Disabled'"
+                                                        <Badge v-else class="mt-1" :text="$t('Disabled')"
                                                             :backgroundColor="'bg-rose-50'" :textColor="'text-rose-700'"
                                                             :ringColor="'ring-rose-600/20'" />
                                                     </template>
                                                 </StaticElement>
                                                 <HiddenElement name="is_enabled" :meta="true" />
-                                                <ButtonElement name="gateway_activate" button-label="Configure"
+                                                <ButtonElement name="gateway_activate" :button-label="$t('Configure')"
                                                     @click="handlePaymentGatewaySettingsClick(index)" :columns="{
                                                         container: 6,
                                                     }" align="right" :conditions="[
                                                         ['gateways.*.is_enabled', false]
                                                     ]" />
-                                                <ButtonElement name="gwateway_deactivate" button-label="Deactivate"
+                                                <ButtonElement name="gwateway_deactivate" :button-label="$t('Deactivate')"
                                                     @click="handlePaymentGatewayDeactivateClick(index)"
                                                     :secondary="true" :columns="{
                                                         container: 6,
@@ -53,6 +103,35 @@
                         </div>
                     </template>
                 </Vueform>
+            </section>
+
+            <section v-if="selectedMenuOption === 'sip_capture'">
+                <fieldset :disabled="savingSipSettings" :aria-busy="savingSipSettings" class="min-w-0">
+                <SipCaptureSettingsForm ref="sipCaptureForm" v-if="permissions?.sip_capture_view" :route="routes.sip_capture_update" :settings="sip_capture"
+                    :can-edit="permissions?.sip_capture_edit" @error="handleErrorResponse"
+                    @success="showNotification" />
+                <HomerApiSettingsForm ref="homerApiForm" v-if="permissions?.homer_api_manage && homer_api" :settings="homer_api"
+                    :save-route="routes.homer_api_update" :test-route="routes.homer_api_test"
+                    @error="handleErrorResponse" @success="showNotification" />
+                <div v-if="permissions?.sip_capture_edit || (permissions?.homer_api_manage && homer_api)"
+                    class="flex justify-end bg-gray-50 px-4 pb-6 sm:px-6">
+                    <button type="button" :disabled="savingSipSettings" @click="saveSipSettings"
+                        class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-wait disabled:opacity-50">
+                        {{ savingSipSettings ? $t('Saving…') : $t('Save') }}
+                    </button>
+                </div>
+                </fieldset>
+            </section>
+
+            <section v-if="selectedMenuOption === 'number_translations' && permissions?.number_translation_view">
+                <NumberTranslations :routes="routes.number_translations" :permissions="permissions"
+                    @error="handleErrorResponse" @success="showNotification" />
+            </section>
+
+            <section v-if="selectedMenuOption === 'scheduled_jobs' && permissions?.scheduled_jobs_manage && scheduled_jobs">
+                <ScheduledJobServerControl :initial-state="scheduled_jobs.active_node" :routes="scheduled_jobs.routes"
+                    :manage="scheduled_jobs.manage" @success="messages => showNotification('success', messages)"
+                    @error="messages => showNotification('error', messages)" />
             </section>
 
             <!--  Transcription - General Settings -->
@@ -83,24 +162,88 @@
 </template>
 
 <script setup>
-import { ref, markRaw, onMounted } from 'vue'
+import { clearServerFormErrors } from '../composables/serverFormErrors.js';
+import { trans } from '@i18n';
+import { ref, computed, markRaw, onMounted } from 'vue'
 import PageWithSideMenu from '../Layouts/PageWithSideMenu.vue'
 import Notification from "./components/notifications/Notification.vue";
 import UpdateStripeSettingsModal from "./components/modal/UpdateStripeSettingsModal.vue";
 import Badge from "@generalComponents/Badge.vue";
-import { CreditCardIcon, Cog6ToothIcon } from '@heroicons/vue/24/outline'
+import { CreditCardIcon, Cog6ToothIcon, ServerStackIcon, ChatBubbleLeftRightIcon } from '@heroicons/vue/24/outline'
+import ScheduledJobServerControl from './components/ScheduledJobServerControl.vue'
 import GraphicEqIcon from "@icons/GraphicEqIcon.vue"
 import AssemblyAiForm from "./components/forms/AssemblyAiForm.vue"
+import MessagingSettingsForm from "./components/forms/MessagingSettingsForm.vue"
 import CallTranscriptionOptionsForm from "./components/forms/CallTranscriptionOptionsForm.vue"
-import { AdjustmentsVerticalIcon } from "@heroicons/vue/24/outline";
+import SipCaptureSettingsForm from "./components/forms/SipCaptureSettingsForm.vue"
+import HomerApiSettingsForm from "./components/forms/HomerApiSettingsForm.vue"
+import NumberTranslations from './components/NumberTranslations.vue'
+import { ArrowsRightLeftIcon } from '@heroicons/vue/24/outline'
+import { AdjustmentsVerticalIcon, SignalIcon } from "@heroicons/vue/24/outline";
 
 
 const props = defineProps({
     routes: Object,
     permissions: Object,
+    homer_api: { type: Object, default: null },
+    messagingSettings: { type: Object, default: null },
+    scheduled_jobs: { type: Object, default: null },
+    // Declarative system-default fields (SystemSettingsSchema), the option
+    // lists they reference, and the current global default values. The
+    // General tab renders and saves from these.
+    settings_schema: {
+        type: Array,
+        default: () => [],
+    },
+    settings_options: {
+        type: Object,
+        default: () => ({}),
+    },
+    settings_values: {
+        type: Object,
+        default: () => ({}),
+    },
+    sip_capture: {
+        type: Object,
+        default: () => ({}),
+    },
 })
 
+const sipCaptureForm = ref(null)
+const homerApiForm = ref(null)
+const savingSipSettings = ref(false)
+
+const saveSipSettings = async () => {
+    if (savingSipSettings.value) return
+    savingSipSettings.value = true
+    try {
+        const forms = []
+        if (props.permissions?.sip_capture_edit && sipCaptureForm.value) forms.push(sipCaptureForm.value)
+        if (props.permissions?.homer_api_manage && homerApiForm.value) forms.push(homerApiForm.value)
+        const results = await Promise.allSettled(forms.map(form => form.save()))
+        const messages = {}
+        let failed = false
+        results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+                failed = true
+                const errors = result.reason?.response?.data?.errors
+                    ?? { request: [trans('Could not submit the SIP capture settings.')] }
+                Object.entries(errors).forEach(([key, value]) => { messages[`${index}_${key}`] = value })
+            } else if (result.value) {
+                if (result.value.runtime_synchronized === false) failed = true
+                Object.entries(result.value.messages ?? {}).forEach(([key, value]) => {
+                    messages[`${index}_${key}`] = value
+                })
+            }
+        })
+        if (results.length) showNotification(failed ? 'error' : 'success', messages)
+    } finally {
+        savingSipSettings.value = false
+    }
+}
+
 const form$ = ref(null)
+const generalForm$ = ref(null)
 const showStripeSettingsModal = ref(false);
 const gatewaySettings = ref(null);
 const gatewayUuid = ref(null);
@@ -108,9 +251,19 @@ const gatewayEnabled = ref(null);
 const navigation = ref([])
 const initialMenuOption = ref(null)
 
+// Group the schema fields for grouped rendering in the General tab.
+const settingsByGroup = computed(() => {
+    const map = {}
+    ;(props.settings_schema ?? []).forEach((field) => {
+        ;(map[field.group] ??= []).push(field)
+    })
+    return map
+})
+const settingGroups = computed(() => Object.keys(settingsByGroup.value))
+
 const pages = [
-    { name: 'Dashboard', href: props.routes.dashboard_route, current: true },
-    { name: 'System Settings', href: '#', current: true },
+    { name: trans('Dashboard'), href: props.routes.dashboard_route, current: true },
+    { name: trans('System Settings'), href: '#', current: true },
 ]
 
 const handleUpdateSelectedMenuOption = (key) => {
@@ -124,17 +277,34 @@ const notificationMessages = ref(null);
 onMounted(() => {
     navigation.value = [] // reset if needed
 
+    if (props.permissions?.default_setting_view) {
+        navigation.value.push({ key: 'general', name: trans('General'), icon: Cog6ToothIcon })
+        navigation.value.push({ key: 'messaging', name: trans('Messaging'), icon: ChatBubbleLeftRightIcon })
+    }
+
     if (props.permissions?.payment_gateways_view) {
-        navigation.value.push({ key: 'payment_gateways', name: 'Payment Gateways', icon: CreditCardIcon })
+        navigation.value.push({ key: 'payment_gateways', name: trans('Payment Gateways'), icon: CreditCardIcon })
+    }
+
+    if (props.permissions?.sip_capture_view || props.permissions?.homer_api_manage) {
+        navigation.value.push({ key: 'sip_capture', name: trans('SIP Capture'), icon: SignalIcon })
+    }
+
+    if (props.permissions?.number_translation_view) {
+        navigation.value.push({ key: 'number_translations', name: trans('Number Translations'), icon: ArrowsRightLeftIcon })
+    }
+
+    if (props.permissions?.scheduled_jobs_manage) {
+        navigation.value.push({ key: 'scheduled_jobs', name: trans('Scheduled Jobs'), icon: ServerStackIcon })
     }
 
     if (props.permissions?.call_transcription_settings_view) {
         navigation.value.push({
             key: 'call_transcription',
-            name: 'Call Transcription',
+            name: trans('Call Transcription'),
             icon: markRaw(GraphicEqIcon),
             children: [
-                { key: 'transcription_options', name: 'Options', icon: markRaw(AdjustmentsVerticalIcon) },
+                { key: 'transcription_options', name: trans('Options'), icon: markRaw(AdjustmentsVerticalIcon) },
                 { key: 'assemblyai', name: 'AssemblyAI', icon: markRaw(GraphicEqIcon) }
             ],
         })
@@ -143,6 +313,15 @@ onMounted(() => {
     if (navigation.value.length) {
         initialMenuOption.value = navigation.value[0].key
         // handleUpdateSelectedMenuOption(navigation.value[0].key)
+    }
+
+    // Populate the General tab with the current global default values.
+    if (generalForm$.value) {
+        const settingValues = Object.fromEntries(
+            (props.settings_schema ?? []).map((field) => [field.key, props.settings_values?.[field.key] ?? null])
+        )
+        generalForm$.value.update(settingValues)
+        generalForm$.value.clean()
     }
 })
 
@@ -186,73 +365,18 @@ const handlePaymentGatewayDeactivateClick = (index) => {
 }
 
 const submitForm = async (FormData, form$) => {
-    // Using form$.requestData will EXCLUDE conditional elements and it 
-    // will submit the form as Content-Type: application/json . 
+    // form$.requestData EXCLUDES conditional elements and submits as JSON.
     const requestData = form$.requestData
 
-    // Build a lookup of original settings by subcategory
-    const originalMap = props.data.settings.reduce((map, s) => {
-        map[s.domain_setting_subcategory] = {
-            value: s.domain_setting_value,
-            category: s.domain_setting_category,
-            uuid: s.domain_setting_uuid,
-            enabled: s.domain_setting_enabled,
-        }
-        return map
-    }, {})
-
-    const updatedSettings = []
-    const newSettings = []
-
-    // Meta‐fields that are NOT “settings”
-    const metaKeys = [
-        'domain_uuid',
-        'domain_enabled',
-        'domain_description',
-        'domain_name',
-        // plus anything else your form has at top‐level
-    ]
-
-    // Handle updates to EXISTING settings
-    Object.entries(originalMap).forEach(([subcat, orig]) => {
-        // if the form actually sent us this subcat...
-        if (requestData.hasOwnProperty(subcat)) {
-            const newValue = requestData[subcat]
-            if (newValue !== orig.value) {
-                updatedSettings.push({
-                    domain_uuid: props.data.domain_uuid,
-                    domain_setting_uuid: orig.uuid,
-                    domain_setting_category: orig.category,
-                    domain_setting_subcategory: subcat,
-                    domain_setting_value: newValue,
-                    domain_setting_enabled: true,
-                })
-            }
-        }
+    // Collect the schema fields into a clean {key: value} map. The backend
+    // (SystemSettingsController::applyDefaults) maps each key to its
+    // default_settings row via the schema and updates it in place.
+    const settings = {}
+    ;(props.settings_schema ?? []).forEach((field) => {
+        settings[field.key] = requestData[field.key] ?? null
     })
 
-    // Handle brand-new settings
-    Object.keys(requestData).forEach(key => {
-        // if it’s not one of the meta-fields AND not in originalMap
-        if (!metaKeys.includes(key) && !originalMap.hasOwnProperty(key)) {
-            newSettings.push({
-                domain_uuid: props.data.domain_uuid,
-                domain_setting_subcategory: key,
-                domain_setting_value: requestData[key],
-                domain_setting_enabled: true,
-            })
-        }
-    })
-
-    // Overwrite the “settings” payload and add “newSettings”
-    const payload = {
-        ...requestData,
-        updatedSettings,
-        newSettings
-    }
-
-    // console.log(requestData);
-    return await form$.$vueform.services.axios.put(props.routes.settings_update, payload)
+    return await form$.$vueform.services.axios.put(props.routes.settings_update, { settings })
 };
 
 function clearErrorsRecursive(el$) {
@@ -276,8 +400,9 @@ const handleResponse = (response, form$) => {
     // Display custom errors for elements
     if (response?.data?.errors) {
         Object.keys(response.data.errors).forEach((elName) => {
-            if (form$.el$(elName)) {
-                form$.el$(elName).messageBag.append(response.data.errors[elName][0])
+            const field = elName.replace(/^settings\./, '')
+            if (form$.el$(field)) {
+                form$.el$(field).messageBag.append(response.data.errors[elName][0])
             }
         })
     }
@@ -300,7 +425,7 @@ const handleError = (error, details, form$) => {
         case 'prepare':
             console.log(error) // Error object
 
-            form$.messageBag.append('Could not prepare form')
+            form$.messageBag.append(trans('Could not prepare form'))
             break
 
         // Error occured because response status is outside of 2xx
@@ -320,14 +445,14 @@ const handleError = (error, details, form$) => {
         case 'cancel':
             console.log(error) // Error object
 
-            form$.messageBag.append('Request cancelled')
+            form$.messageBag.append(trans('Request cancelled'))
             break
 
         // Some other errors happened (no response object)
         case 'other':
             console.log(error) // Error object
 
-            form$.messageBag.append('Couldn\'t submit form')
+            form$.messageBag.append(trans('Couldn\'t submit form'))
             break
     }
 }

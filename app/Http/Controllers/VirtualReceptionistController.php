@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\DB;
 use Spatie\QueryBuilder\QueryBuilder;
 use Spatie\QueryBuilder\AllowedFilter;
 use App\Services\CallRoutingOptionsService;
+use App\Services\FlagService;
+use App\Models\FlagOverride;
 use App\Http\Requests\StoreVirtualReceptionistRequest;
 use App\Http\Requests\UpdateVirtualReceptionistRequest;
 use App\Http\Requests\CreateVirtualReceptionistKeyRequest;
@@ -136,20 +138,16 @@ class VirtualReceptionistController extends Controller
 
             $this->generateDialPlanXML($instance);
 
-            if (isset($_SESSION['destinations']['array'])) {
-                unset($_SESSION['destinations']['array']);
-            }
-
             return response()->json([
                 'item_uuid' => $instance->ivr_menu_uuid,
-                'messages' => ['success' => ['Virtual receptionist created successfully.']]
+                'messages' => ['success' => [__('Virtual receptionist created successfully.')]]
             ], 201);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Unable to create the virtual receptionist. Please try again.']]
+                'errors' => ['server' => [__('Unable to create the virtual receptionist. Please try again.')]]
             ], 500);
         }
     }
@@ -160,7 +158,8 @@ class VirtualReceptionistController extends Controller
 
         try {
             // Retrieve the IVR menu by UUID
-            $instance = $this->model::where('ivr_menu_uuid', $inputs['ivr_menu_uuid'])->firstOrFail();
+            $instance = $this->model::where('domain_uuid', session('domain_uuid'))
+                ->where('ivr_menu_uuid', $request->route('virtual_receptionist'))->firstOrFail();
 
             $exit_data = $this->buildExitDestinationAction($inputs);
 
@@ -188,16 +187,21 @@ class VirtualReceptionistController extends Controller
             // Save the updated IVR menu
             $instance->save();
 
-            $this->generateDialPlanXML($instance);
-
-            //clear the destinations session array
-            if (isset($_SESSION['destinations']['array'])) {
-                unset($_SESSION['destinations']['array']);
+            if (array_key_exists('flag_overrides', $inputs)) {
+                app(FlagService::class)->syncOverrides(
+                    FlagOverride::OWNER_IVR_MENU,
+                    $instance->ivr_menu_uuid,
+                    $instance->domain_uuid,
+                    $inputs['flag_overrides'] ?? [],
+                    session('domain_name')
+                );
             }
+
+            $this->generateDialPlanXML($instance);
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['Virtual receptionist settings have been updated successfully.']]
+                'messages' => ['success' => [__('Virtual receptionist settings have been updated successfully.')]]
             ], 200);  // 200 OK for successful update
         } catch (\Exception $e) {
             // Log the error message
@@ -206,7 +210,7 @@ class VirtualReceptionistController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Unable to update the virtual receptionist settings. Please try again.']]
+                'errors' => ['server' => [__('Unable to update the virtual receptionist settings. Please try again.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -217,13 +221,16 @@ class VirtualReceptionistController extends Controller
      */
     public function bulkDelete()
     {
+        abort_unless(session('domain_uuid') && userCheckPermission('ivr_menu_delete'), 403);
+
         try {
             // Begin Transaction
             DB::beginTransaction();
 
             // Retrieve all items at once
-            $items = $this->model::whereIn('ivr_menu_uuid', request('items'))
-                ->get(['ivr_menu_uuid', 'dialplan_uuid']);
+            $items = $this->model::where('domain_uuid', session('domain_uuid'))
+                ->whereIn('ivr_menu_uuid', request('items'))
+                ->get(['ivr_menu_uuid', 'dialplan_uuid', 'domain_uuid']);
 
             foreach ($items as $item) {
                 // Delete related IVR menu options (keys)
@@ -235,6 +242,8 @@ class VirtualReceptionistController extends Controller
                 // Clear cache
                 $this->clearCache($item);
 
+                app(FlagService::class)->deleteOverrides(FlagOverride::OWNER_IVR_MENU, [$item->ivr_menu_uuid], $item->domain_uuid);
+
                 // Delete the item itself
                 $item->delete();
             }
@@ -243,7 +252,7 @@ class VirtualReceptionistController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['All selected items have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected items have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             // Rollback Transaction if any error occurs
@@ -253,7 +262,7 @@ class VirtualReceptionistController extends Controller
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while deleting the selected items.']]
+                'errors' => ['server' => [__('Server returned an error while deleting the selected items.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -266,6 +275,8 @@ class VirtualReceptionistController extends Controller
      */
     public function duplicate(Request $request)
     {
+        abort_unless(session('domain_uuid') && userCheckPermission('ivr_menu_add'), 403);
+
         $request->validate([
             'ivr_menu_uuid' => 'required|uuid|exists:v_ivr_menus,ivr_menu_uuid',
         ]);
@@ -297,12 +308,22 @@ class VirtualReceptionistController extends Controller
                 $newOption->save();
             }
 
+            app(FlagService::class)->copyOverrides(
+                FlagOverride::OWNER_IVR_MENU,
+                $original->ivr_menu_uuid,
+                $newIvr->ivr_menu_uuid,
+                $original->domain_uuid
+            );
+
             $this->generateDialPlanXML($newIvr);
 
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Virtual Receptionist duplicated successfully', 'New Extension: ' . $newIvr->ivr_menu_extension]],
+                'messages' => ['success' => [
+                    __('Virtual Receptionist duplicated successfully'),
+                    __('New Extension: :extension', ['extension' => $newIvr->ivr_menu_extension]),
+                ]],
                 'ivr_menu_uuid' => $newIvr->ivr_menu_uuid
             ], 201);
         } catch (\Exception $e) {
@@ -311,25 +332,14 @@ class VirtualReceptionistController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to duplicate the virtual receptionist.']]
+                'errors' => ['server' => [__('Failed to duplicate the virtual receptionist.')]]
             ], 500);
         }
     }
 
     private function generateDialPlanXML(IvrMenus $ivr): void
     {
-        $data = [
-            'ivr' => $ivr,
-            'dialplan_continue' => 'false',
-        ];
-
-        $xml = trim(view('layouts.xml.ivr-dial-plan-template', $data)->render());
-
-        $dom = new \DOMDocument();
-        $dom->preserveWhiteSpace = false;
-        $dom->loadXML($xml);
-        $dom->formatOutput = true;
-        $xml = $dom->saveXML($dom->documentElement);
+        $xml = app(\App\Services\FlagDialplanRenderer::class)->ivr($ivr);
 
         $dialPlan = Dialplans::where('dialplan_uuid', $ivr->dialplan_uuid)->first();
 
@@ -343,7 +353,7 @@ class VirtualReceptionistController extends Controller
             $dialPlan->dialplan_context = session('domain_name');
             $dialPlan->dialplan_name = $ivr->ivr_menu_name;
             $dialPlan->dialplan_number = $ivr->ivr_menu_extension;
-            $dialPlan->dialplan_continue = $data['dialplan_continue'];
+            $dialPlan->dialplan_continue = 'false';
             $dialPlan->dialplan_xml = $xml;
             $dialPlan->dialplan_order = 101;
             $dialPlan->dialplan_enabled = $ivr->ivr_menu_enabled;
@@ -376,6 +386,9 @@ class VirtualReceptionistController extends Controller
 
     public function getItemOptions(Request $request)
     {
+        abort_unless(session('domain_uuid') && userCheckPermission($request->input('item_uuid') ? 'ivr_menu_edit' : 'ivr_menu_add'), 403);
+        abort_if($request->input('domain_uuid') !== null && $request->input('domain_uuid') !== session('domain_uuid'), 403);
+
         try {
             $domainUuid = $request->input('domain_uuid') ?? session('domain_uuid');
             $itemUuid = $request->input('item_uuid');
@@ -473,19 +486,19 @@ class VirtualReceptionistController extends Controller
             $permissions = $this->getUserPermissions();
 
             $phoneCallInstructions = [
-                'Dial <strong>*732</strong> from your phone.',
-                'Enter the virtual receptionist extension number when prompted and press <strong>#</strong>.',
-                'Follow the prompts to record your greeting.',
+                __('Dial <strong>*732</strong> from your phone.'),
+                __('Enter the virtual receptionist extension number when prompted and press <strong>#</strong>.'),
+                __('Follow the prompts to record your greeting.'),
             ];
 
-            $sampleMessage = 'Thank you for calling. For Sales, press 1. For Support, press 2. To repeat this menu, press 9.';
+            $sampleMessage = __('Thank you for calling. For Sales, press 1. For Support, press 2. To repeat this menu, press 9.');
 
             $promptRepeatOptions = [
-                ['value' => '1', 'label' => '1 Time'],
-                ['value' => '2', 'label' => '2 Times'],
-                ['value' => '3', 'label' => '3 Times'],
-                ['value' => '4', 'label' => '4 Times'],
-                ['value' => '5', 'label' => '5 Times'],
+                ['value' => '1', 'label' => __(':count Time(s)', ['count' => 1])],
+                ['value' => '2', 'label' => __(':count Time(s)', ['count' => 2])],
+                ['value' => '3', 'label' => __(':count Time(s)', ['count' => 3])],
+                ['value' => '4', 'label' => __(':count Time(s)', ['count' => 4])],
+                ['value' => '5', 'label' => __(':count Time(s)', ['count' => 5])],
             ];
 
             $ringBackTones = getRingBackTonesCollectionGrouped($domainUuid);
@@ -506,13 +519,17 @@ class VirtualReceptionistController extends Controller
                 'prompt_repeat_options' => $promptRepeatOptions,
                 'ring_back_tones' => $ringBackTones,
                 'sounds' => $sounds,
+                'flag_options' => $permissions['manage_flags'] ? app(FlagService::class)->flagOptions($domainUuid) : [],
+                'flag_overrides' => $permissions['manage_flags'] && $itemUuid
+                    ? app(FlagService::class)->overrideFormRows($ivr->flagOverrides()->get(), $domainUuid)
+                    : [],
             ]);
         } catch (\Throwable $e) {
             logger('Error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details.']]
+                'errors' => ['server' => [__('Failed to fetch item details.')]]
             ], 500);
         }
     }
@@ -555,6 +572,7 @@ class VirtualReceptionistController extends Controller
         $permissions['virtual_receptionist_update'] = userCheckPermission('ivr_menu_edit');
         $permissions['virtual_receptionist_destroy'] = userCheckPermission('ivr_menu_delete');
         $permissions['is_superadmin'] = isSuperAdmin();
+        $permissions['manage_flags'] = app(\App\Services\FlagFeature::class)->canAssign('ivr_menu_edit');
 
         return $permissions;
     }
@@ -568,7 +586,7 @@ class VirtualReceptionistController extends Controller
 
             return response()->json([
                 'success' => true,
-                'messages' => ['success' => ['Your AI-generated greeting has been saved and successfully activated.']]
+                'messages' => ['success' => [__('Your AI-generated greeting has been saved and successfully activated.')]]
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
@@ -591,21 +609,21 @@ class VirtualReceptionistController extends Controller
                 'ivr_menu_option_digits' => $inputs['key'],
                 'ivr_menu_option_action' => 'menu-exec-app',
                 'ivr_menu_option_param' => $this->buildKeyDestinationAction($inputs),
-                'ivr_menu_option_description' => $inputs['description'],
+                'ivr_menu_option_description' => $inputs['description'] ?? null,
                 'ivr_menu_option_enabled' => $inputs['status'],
             ]);
 
             $this->clearCache($ivrMenuOption->ivrMenu);
 
             return response()->json([
-                'messages' => ['success' => ['Virtual Receptionist Key successfully created']],
+                'messages' => ['success' => [__('Virtual Receptionist Key successfully created')]],
                 'data' => $ivrMenuOption,
             ], 201);
         } catch (\Exception $e) {
-            logger('VirtualReceptioninstController@createKey error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            logger('VirtualReceptionistController@createKey error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Unable to create Virtual Receptionist Key.']]
+                'errors' => ['server' => [__('Unable to create Virtual Receptionist Key.')]]
             ], 500);
         }
     }
@@ -622,7 +640,7 @@ class VirtualReceptionistController extends Controller
             if (!$ivrMenuOption) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['Virtual Receptionist Key not found.']],
+                    'errors' => ['server' => [__('Virtual Receptionist Key not found.')]],
                 ], 404);
             }
 
@@ -630,20 +648,20 @@ class VirtualReceptionistController extends Controller
                 'ivr_menu_option_digits' => $inputs['key'],
                 'ivr_menu_option_action' => 'menu-exec-app',
                 'ivr_menu_option_param' => $this->buildKeyDestinationAction($inputs),
-                'ivr_menu_option_description' => $inputs['description'],
+                'ivr_menu_option_description' => $inputs['description'] ?? null,
                 'ivr_menu_option_enabled' => $inputs['status'],
             ]);
 
             $this->clearCache($ivrMenuOption->ivrMenu);
 
             return response()->json([
-                'messages' => ['success' => ['Virtual Receptionist Key successfully updated']],
+                'messages' => ['success' => [__('Virtual Receptionist Key successfully updated')]],
             ], 201);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Unable to update Virtual Receptionist Key.']]
+                'errors' => ['server' => [__('Unable to update Virtual Receptionist Key.')]]
             ], 500);
         }
     }
@@ -660,7 +678,7 @@ class VirtualReceptionistController extends Controller
             if (!$ivrMenuOption) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['server' => ['Virtual Receptionist Key not found.']],
+                    'errors' => ['server' => [__('Virtual Receptionist Key not found.')]],
                 ], 404);
             }
 
@@ -668,77 +686,40 @@ class VirtualReceptionistController extends Controller
             $this->clearCache($ivrMenuOption->ivrMenu);
 
             return response()->json([
-                'messages' => ['success' => ['Virtual Receptionist Key successfully deleted']],
+                'messages' => ['success' => [__('Virtual Receptionist Key successfully deleted')]],
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Unable to delete Virtual Receptionist Key.']]
+                'errors' => ['server' => [__('Unable to delete Virtual Receptionist Key.')]]
             ], 500);
         }
     }
 
     protected function buildKeyDestinationAction($key)
     {
-        switch ($key['action']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'conferences':
-            case 'faxes':
-            case 'call_flows':
-                return 'transfer ' . $key['extension'] . ' XML ' . session('domain_name');
-            case 'bridges':
-                return 'bridge ' . $key['extension'];
-            case 'voicemails':
-                return 'transfer *99' . $key['extension'] . ' XML ' . session('domain_name');
-            case 'recordings':
-                return 'lua streamfile.lua ' . $key['extension'];
-            case 'check_voicemail':
-                return 'transfer *98 XML ' . session('domain_name');
-            case 'company_directory':
-                return 'transfer *411 XML ' . session('domain_name');
-            case 'hangup':
-                return 'hangup';
-            default:
-                return [];
-        }
+        $destination = buildDestinationAction([
+            'type' => $key['action'],
+            'extension' => $key['extension'] ?? null,
+            'bridge_uuid' => $key['action'] === 'bridges' ? ($key['target'] ?? null) : null,
+        ]);
+
+        return trim($destination['destination_app'] . ' ' . $destination['destination_data']);
     }
 
     protected function buildExitDestinationAction($inputs)
     {
-        $target = $inputs['exit_target'] ?? null;
-
-        switch ($inputs['exit_action']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'conferences':
-            case 'faxes':
-            case 'call_flows':
-                return ['action' => 'transfer', 'data' => $target . ' XML ' . session('domain_name')];
-            case 'bridges':
-                return ['action' => 'bridge', 'data' => $target];
-            case 'voicemails':
-                return ['action' => 'transfer', 'data' => '*99' . $target . ' XML ' . session('domain_name')];
-            case 'recordings':
-                return ['action' => 'lua', 'data' => 'streamfile.lua ' . $target];
-            case 'check_voicemail':
-                return ['action' => 'transfer', 'data' => '*98 XML ' . session('domain_name')];
-            case 'company_directory':
-                return ['action' => 'transfer', 'data' => '*411 XML ' . session('domain_name')];
-            case 'hangup':
-                return ['action' => 'hangup', 'data' => ''];
-            default:
-                return ['action' => null, 'data' => null];
+        if (blank($inputs['exit_action'] ?? null)) {
+            return ['action' => null, 'data' => null];
         }
+
+        $destination = buildDestinationAction([
+            'type' => $inputs['exit_action'],
+            'extension' => $inputs['exit_target'] ?? null,
+        ]);
+
+        return ['action' => $destination['destination_app'], 'data' => $destination['destination_data']];
     }
 
     public function selectAll()
@@ -748,14 +729,14 @@ class VirtualReceptionistController extends Controller
                 ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
 
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
             logger($e);
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500);
         }
     }

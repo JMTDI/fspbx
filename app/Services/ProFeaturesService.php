@@ -5,8 +5,8 @@ namespace App\Services;
 use App\Models\ProFeatures;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Process;
 use Nwidart\Modules\Facades\Module;
-use Symfony\Component\Console\Exception\CommandNotFoundException;
 
 class ProFeaturesService
 {
@@ -20,13 +20,35 @@ class ProFeaturesService
     public function refreshModules(): array
     {
         $enabled = collect(Module::allEnabled())->map(fn($m) => $m->getName())->values();
+        $result = ['updated' => [], 'skipped' => [], 'errors' => []];
+        $releaseModules = collect();
 
-        if ($enabled->count() == 0) return ['updated' => [], 'skipped' => [], 'errors' => []];
+        foreach ($enabled as $moduleName) {
+            if (! $this->isGitManagedModule($moduleName)) {
+                $releaseModules->push($moduleName);
+                continue;
+            }
 
-        return $this->syncModules(
-            mode: 'enabled_only',
-            enabledModules: $enabled
-        );
+            // Manual pulls supply source and Resources/dist together. Install
+            // matching local assets without contacting the module repository.
+            try {
+                app(GitModuleUpdater::class)->update($moduleName, function () use ($moduleName) {
+                    $this->runModuleCommand(['modules:configure', $moduleName, '--update-only']);
+                });
+                $result['updated'][] = "{$moduleName}: frontend assets checked and update hooks completed; Git source unchanged";
+            } catch (\Throwable $error) {
+                $result['errors'][] = "{$moduleName}: local update failed: {$error->getMessage()}";
+            }
+        }
+
+        if ($releaseModules->isNotEmpty()) {
+            $releases = $this->syncModules(mode: 'enabled_only', enabledModules: $enabled);
+            foreach (array_keys($result) as $key) {
+                $result[$key] = array_merge($result[$key], $releases[$key]);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -56,7 +78,7 @@ class ProFeaturesService
                 $moduleName = $module->getName();
 
                 // optional uninstall hook
-                $this->callIfExists("module:uninstall-{$moduleName}");
+                $this->runModuleCommand(['modules:configure', $moduleName, '--uninstall']);
 
                 Module::disable($moduleName);
                 Module::delete($moduleName);
@@ -66,7 +88,7 @@ class ProFeaturesService
 
             return $result;
         } catch (\Throwable $e) {
-            $result['errors'][] = "Failed to uninstall modules: {$e->getMessage()}";
+            $result['errors'][] = __('Failed to uninstall modules: :error', ['error' => $e->getMessage()]);
             return $result;
         }
     }
@@ -93,16 +115,19 @@ class ProFeaturesService
                 && in_array(($licenseResponse['meta']['code'] ?? ''), ['NO_MACHINE', 'NO_MACHINES', 'FINGERPRINT_SCOPE_MISMATCH'], true);
 
             if ($needsActivation) {
-                $machineCount = $licenseResponse['data']['attributes']['machines']['meta']['count'] ?? 0;
-                $maxMachines  = $licenseResponse['data']['attributes']['maxMachines'] ?? 1;
+                $machineCount = $licenseResponse['data']['relationships']['machines']['meta']['count'] ?? 0;
+                $maxMachines = $licenseResponse['data']['attributes']['maxMachines'] ?? null;
 
-                if ($machineCount < $maxMachines) {
-                    $licenseId = $licenseResponse['data']['id'] ?? null;
-                    if ($licenseId) {
-                        $this->keygenApiService->activateMachine($licenseKey, $licenseId);
-                    }
-                } else {
-                    $result['errors'][] = 'Max machine limit reached';
+                if ($maxMachines !== null && $machineCount >= $maxMachines) {
+                    $result['errors'][] = __('Max machine limit reached');
+                    return $result;
+                }
+
+                $licenseId = $licenseResponse['data']['id'] ?? null;
+                if (! $licenseId
+                    || ! $this->keygenApiService->activateMachine($licenseKey, $licenseId)
+                    || ! $this->keygenApiService->isLicenseValid($licenseKey)) {
+                    $result['errors'][] = __('The license key has not been activated on this machine');
                     return $result;
                 }
             }
@@ -110,9 +135,7 @@ class ProFeaturesService
 
         $proFeature->update($inputs);
 
-        if ($licenseKey) {
-            $this->clearLicenseCaches($licenseKey);
-        }
+        $this->clearLicenseCaches($licenseKey);
 
         $result['updated'][] = 'License updated';
         return $result;
@@ -128,13 +151,13 @@ class ProFeaturesService
         try {
             $pro = $this->getProRow();
             if (!$pro) {
-                $result['errors'][] = 'ProFeatures row not found (slug=fspbx).';
+                $result['errors'][] = __('ProFeatures row not found (slug=fspbx).');
                 return $result;
             }
 
             $licenseKey = $licenseOverride ?: $pro->license;
             if (!$licenseKey) {
-                $result['errors'][] = 'No Pro Features license key found.';
+                $result['errors'][] = __('No Pro Features license key found.');
                 return $result;
             }
 
@@ -174,17 +197,22 @@ class ProFeaturesService
                             $result['skipped'][] = "{$moduleName}: not enabled";
                             continue;
                         }
+
+                        // refreshModules already reported these modules' local update results.
+                        if ($this->isGitManagedModule($moduleName)) {
+                            continue;
+                        }
                     }
 
                     $latest = $this->findLatestReleaseForCode($releases, $code);
                     if (!$latest) {
-                        $result['errors'][] = "{$moduleName}: no release found for {$code}";
+                        $result['errors'][] = __(':module: no release found for :code', ['module' => $moduleName, 'code' => $code]);
                         continue;
                     }
 
                     $version = $latest['attributes']['version'] ?? null;
                     if (!$version) {
-                        $result['errors'][] = "{$moduleName}: latest release missing version";
+                        $result['errors'][] = __(':module: latest release missing version', ['module' => $moduleName]);
                         continue;
                     }
 
@@ -193,6 +221,7 @@ class ProFeaturesService
                         if ($mode === 'all_entitled') {
                             $this->enableInstalledModule($moduleName);
                         }
+                        $this->publishModuleAssets($moduleName, $installedVersion);
 
                         $result['skipped'][] = "{$moduleName}: already latest ({$installedVersion})";
                         continue;
@@ -210,7 +239,7 @@ class ProFeaturesService
                     $result['updated'][] = "{$moduleName}: refreshed{$from} to latest ({$version})";
                 } catch (\Throwable $e) {
                     // Don't let one module kill the rest
-                    $result['errors'][] = "Module loop failure: {$e->getMessage()}";
+                    $result['errors'][] = __('Module processing failed: :error', ['error' => $e->getMessage()]);
                     continue;
                 }
             }
@@ -219,20 +248,20 @@ class ProFeaturesService
                 try {
                     Artisan::call('route:cache');
                 } catch (\Throwable $e) {
-                    $result['errors'][] = "route:cache failed: {$e->getMessage()}";
+                    $result['errors'][] = __('Failed to cache routes: :error', ['error' => $e->getMessage()]);
                 }
             }
 
             try {
                 $this->clearLicenseCaches($licenseKey);
             } catch (\Throwable $e) {
-                $result['errors'][] = "Failed clearing license caches: {$e->getMessage()}";
+                $result['errors'][] = __('Failed to clear license caches: :error', ['error' => $e->getMessage()]);
             }
 
             return $result;
         } catch (\Throwable $e) {
             // Absolute last line of defense — never throw.
-            $result['errors'][] = "syncModules crashed: {$e->getMessage()}";
+            $result['errors'][] = __('Module synchronization failed: :error', ['error' => $e->getMessage()]);
             return $result;
         }
     }
@@ -240,25 +269,33 @@ class ProFeaturesService
 
     protected function downloadAndDeployModule(string $licenseKey, string $moduleName, string $version, string $artifactName): bool|string
     {
+        $backup = null;
         try {
             // Don't overwrite a git-managed module folder
             if ($this->isGitManagedModule($moduleName)) {
-                return "skipped artifact deploy for {$moduleName} (git-managed dev module)";
+                return __('Skipped deployment for :module (managed by Git)', ['module' => $moduleName]);
             }
 
             $content = $this->keygenApiService->downloadArtifact($licenseKey, $version, $artifactName);
             if (!$content) {
-                return "failed to download artifact {$artifactName}";
+                return __('Failed to download :artifact', ['artifact' => $artifactName]);
             }
 
-            $this->saveAndExtract($artifactName, $content, $moduleName);
-            $this->recordInstalledModuleVersion($moduleName, $version);
-
+            $backup = $this->saveAndExtract($artifactName, $content, $moduleName);
             $this->enableInstalledModule($moduleName);
+            $this->recordInstalledModuleVersion($moduleName, $version);
+            $this->publishModuleAssets($moduleName, $version);
+            if ($backup) $this->deleteDirectory($backup);
 
             return true;
         } catch (\Throwable $e) {
-            return "deploy failed: {$e->getMessage()}";
+            if ($backup && is_dir($backup)) {
+                $this->deleteDirectory(base_path("Modules/{$moduleName}"));
+                if (!rename($backup, base_path("Modules/{$moduleName}"))) {
+                    return __('Deployment failed: :error', ['error' => $e->getMessage().' Previous module source remains at '.$backup]);
+                }
+            }
+            return __('Deployment failed: :error', ['error' => $e->getMessage()]);
         }
     }
 
@@ -273,6 +310,15 @@ class ProFeaturesService
         $version = is_array($data) ? ($data['version'] ?? null) : null;
 
         return is_string($version) && $version !== '' ? $version : null;
+    }
+
+    protected function publishModuleAssets(string $name, string $version): void
+    {
+        $directory = base_path("Modules/{$name}/Resources/dist");
+        if (!is_dir($directory)) return;
+        $assets = app(FrontendAssets::class);
+        $assets->validateModule($directory, $name, $version);
+        $assets->publish([$directory]);
     }
 
     protected function normalizeVersion(string $version): string
@@ -291,25 +337,46 @@ class ProFeaturesService
 
         $data['version'] = $version;
 
-        file_put_contents(
+        if (file_put_contents(
             $moduleJson,
             json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL
-        );
+        ) === false) {
+            throw new \RuntimeException("Unable to record installed version for {$moduleName}");
+        }
     }
 
     protected function enableInstalledModule(string $moduleName): void
     {
-        Artisan::call('module:enable', ['module' => $moduleName]);
-        Artisan::call('module:migrate', ['module' => $moduleName, '--force' => true]);
+        // The parent application booted before the artifact was extracted.
+        // Bootstrap again after enabling so newly shipped commands are registered.
+        $this->runModuleCommand(['module:enable', $moduleName]);
+        $this->runModuleCommand(['modules:configure', $moduleName]);
+    }
 
-        try {
-            Artisan::call('module:seed', ['module' => $moduleName, '--force' => true]);
-        } catch (\Throwable $e) {
-            // optional
+    protected function runModuleCommand(array $arguments): void
+    {
+        $result = Process::path(base_path())->timeout(600)->run([
+            '/usr/bin/php', base_path('artisan'), ...$arguments, '--no-interaction',
+        ]);
+        if (! $result->successful()) {
+            throw new \RuntimeException($arguments[0].' failed: '.trim($result->errorOutput().' '.$result->output()));
         }
+    }
 
-        $this->callIfExists("module:install-{$moduleName}");
-        $this->callIfExists("module:update-{$moduleName}");
+    public function getSupervisorProgramsToRestart(string $configurationDirectory = '/etc/supervisor/conf.d'): array
+    {
+        $programs = [];
+        foreach (Module::allEnabled() as $module) {
+            // Read the newly downloaded manifest, not the parent process's module cache.
+            $manifest = json_decode((string) file_get_contents($module->getPath().'/module.json'), true);
+            foreach (($manifest['supervisor'] ?? []) as $program) {
+                if (is_string($program) && preg_match('/^[a-zA-Z0-9_-]+$/D', $program)
+                    && is_file($configurationDirectory.'/'.$program.'.conf')) {
+                    $programs[] = $program;
+                }
+            }
+        }
+        return array_values(array_unique($programs));
     }
 
     protected function isGitManagedModule(string $moduleName): bool
@@ -333,7 +400,7 @@ class ProFeaturesService
         // logger($licenseResponse);
 
         if (!$licenseResponse || !($licenseResponse['meta']['valid'] ?? false)) {
-            return ['__error' => 'Pro Features License invalid or expired.'];
+            return ['__error' => __('Pro Features License invalid or expired.')];
         }
 
         return $licenseResponse;
@@ -343,7 +410,7 @@ class ProFeaturesService
     {
         $entitlements = $this->keygenApiService->getEntitlementsByLicense($licenseResponse) ?? [];
         if (empty($entitlements)) {
-            return ['__error' => 'No entitlements found for this license.'];
+            return ['__error' => __('No entitlements found for this license.')];
         }
         return $entitlements;
     }
@@ -352,7 +419,7 @@ class ProFeaturesService
     {
         $releases = $this->keygenApiService->getReleases($licenseKey) ?? [];
         if (empty($releases)) {
-            return ['__error' => 'No releases found for this license.'];
+            return ['__error' => __('No releases found for this license.')];
         }
         return $releases;
     }
@@ -396,24 +463,19 @@ class ProFeaturesService
         return $matched[0] ?? null;
     }
 
-    protected function clearLicenseCaches(string $licenseKey): void
+    protected function clearLicenseCaches(?string $licenseKey): void
     {
-        Cache::forget("stir_shaken_license_validation_{$licenseKey}");
-        Cache::forget("license_validation_{$licenseKey}");
-    }
-
-    protected function callIfExists(string $command): void
-    {
-        try {
-            Artisan::call($command);
-        } catch (CommandNotFoundException $e) {
-            // ignore
+        if ($licenseKey) {
+            Cache::forget("stir_shaken_license_validation_{$licenseKey}");
+            Cache::forget("license_validation_{$licenseKey}");
         }
+
+        Cache::forget('pro_feature:fspbx:license');
     }
 
     // --- move your existing extraction helpers here (same as you already have) ---
 
-    protected function saveAndExtract(string $artifactName, string $artifactContent, string $moduleName): void
+    protected function saveAndExtract(string $artifactName, string $artifactContent, string $moduleName): ?string
     {
         $modulesPath = base_path('Modules');
         $filePath = "{$modulesPath}/{$artifactName}";
@@ -461,11 +523,37 @@ class ProFeaturesService
                 throw new \RuntimeException("artifact {$artifactName} did not contain module.json");
             }
 
-            if (file_exists($extractPath)) {
-                $this->deleteDirectory($extractPath);
+            // A release is installed only after its lifecycle hooks succeed.
+            // Preserve the previous version in the staged tree so a failed hook
+            // remains eligible for retry on the next module refresh.
+            $manifestPath = "{$tmpExtractPath}/module.json";
+            $manifest = json_decode((string) file_get_contents($manifestPath), true);
+            if (! is_array($manifest)) {
+                throw new \RuntimeException("artifact {$artifactName} contains invalid module.json");
+            }
+            // Reject missing/incompatible assets before replacing installed code.
+            if (is_dir($tmpExtractPath.'/Resources/assets/js/Pages')) {
+                $assets = app(FrontendAssets::class);
+                $metadata = $assets->validateModule(
+                    $tmpExtractPath.'/Resources/dist', $moduleName, $manifest['version'] ?? ''
+                );
+                $assets->verifyModuleSource($tmpExtractPath, $metadata);
+            }
+            $manifest['version'] = $this->installedModuleVersion($moduleName) ?? '0.0.0';
+            if (file_put_contents($manifestPath, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).PHP_EOL) === false) {
+                throw new \RuntimeException('Unable to prepare module version.');
             }
 
-            rename($tmpExtractPath, $extractPath);
+            $backup = null;
+            if (is_dir($extractPath)) {
+                $backup = $modulesPath.'/.'.$moduleName.'-previous-'.bin2hex(random_bytes(8));
+                if (!rename($extractPath, $backup)) throw new \RuntimeException('Unable to preserve previous module source.');
+            }
+            if (!rename($tmpExtractPath, $extractPath)) {
+                if ($backup) rename($backup, $extractPath);
+                throw new \RuntimeException('Unable to activate module source.');
+            }
+            return $backup;
         } finally {
             if (file_exists($filePath)) {
                 unlink($filePath);
@@ -488,7 +576,7 @@ class ProFeaturesService
         $files = array_diff(scandir($dirPath), ['.', '..']);
         foreach ($files as $file) {
             $filePath = "{$dirPath}/{$file}";
-            is_dir($filePath) ? $this->deleteDirectory($filePath) : @unlink($filePath);
+            is_dir($filePath) && !is_link($filePath) ? $this->deleteDirectory($filePath) : @unlink($filePath);
         }
         @rmdir($dirPath);
     }

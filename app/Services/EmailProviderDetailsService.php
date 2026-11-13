@@ -15,7 +15,7 @@ class EmailProviderDetailsService
         if ($provider === '') {
             return [
                 'available' => false,
-                'message' => 'No email provider was recorded for this email. Send a new email after the latest update, then check again.',
+                'message' => __('No email provider was recorded for this email. Send a new email after the latest update, then check again.'),
             ];
         }
 
@@ -23,7 +23,7 @@ class EmailProviderDetailsService
             'postmark' => $this->getPostmarkDetails($log),
             default => [
                 'available' => false,
-                'message' => 'Delivery details are not available for this email provider.',
+                'message' => __('Delivery details are not available for this email provider.'),
             ],
         };
     }
@@ -35,7 +35,7 @@ class EmailProviderDetailsService
         if (blank($token)) {
             return [
                 'available' => false,
-                'message' => 'Postmark API token is not configured.',
+                'message' => __('Postmark API token is not configured.'),
             ];
         }
 
@@ -47,7 +47,7 @@ class EmailProviderDetailsService
             if ($messageId === '') {
                 return [
                     'available' => false,
-                    'message' => 'Postmark did not return a matching message for this email log. It may not have received the metadata yet, or the message may be outside retention.',
+                    'message' => __('Postmark did not return a matching message for this email log. It may not have received the metadata yet, or the message may be outside retention.'),
                 ];
             }
 
@@ -66,21 +66,21 @@ class EmailProviderDetailsService
 
             return [
                 'available' => false,
-                'message' => 'Unable to connect to Postmark for delivery details.',
+                'message' => __('Unable to connect to Postmark for delivery details.'),
             ];
         }
 
         if ($response->status() === 404) {
             return [
                 'available' => false,
-                'message' => 'Postmark no longer has details for this message.',
+                'message' => __('Postmark no longer has details for this message.'),
             ];
         }
 
         if (! $response->successful()) {
             return [
                 'available' => false,
-                'message' => 'Postmark returned an error while fetching delivery details.',
+                'message' => __('Postmark returned an error while fetching delivery details.'),
                 'status' => $response->status(),
                 'details' => $response->json(),
             ];
@@ -109,11 +109,33 @@ class EmailProviderDetailsService
                 : now();
 
             $params = [
-                'count' => 1,
+                'count' => 10,
                 'offset' => 0,
                 'metadata_email_log_uuid' => (string) $log->uuid,
                 'fromdate' => $createdAt->copy()->subDay()->setTimezone('America/New_York')->format('Y-m-d\TH:i:s'),
                 'todate' => $createdAt->copy()->addDay()->setTimezone('America/New_York')->format('Y-m-d\TH:i:s'),
+            ];
+
+            if (! blank($log->provider_message_stream)) {
+                $params['messagestream'] = $log->provider_message_stream;
+            }
+
+            $response = Http::acceptJson()
+                ->withHeaders(['X-Postmark-Server-Token' => $token])
+                ->timeout(15)
+                ->get('https://api.postmarkapp.com/messages/outbound', $params);
+
+            if ($response->successful() && filled(data_get($response->json(), 'Messages.0.MessageID'))) {
+                return $this->closestMessageId($response->json(), $createdAt);
+            }
+
+            $params = [
+                'count' => 10,
+                'offset' => 0,
+                'recipient' => $this->emailAddress($log->to),
+                'subject' => (string) $log->subject,
+                'fromdate' => $createdAt->copy()->subHours(2)->setTimezone('America/New_York')->format('Y-m-d\TH:i:s'),
+                'todate' => $createdAt->copy()->addHours(2)->setTimezone('America/New_York')->format('Y-m-d\TH:i:s'),
             ];
 
             if (! blank($log->provider_message_stream)) {
@@ -140,7 +162,35 @@ class EmailProviderDetailsService
             return '';
         }
 
-        return (string) data_get($response->json(), 'Messages.0.MessageID', '');
+        return $this->closestMessageId($response->json(), $createdAt);
+    }
+
+    private function closestMessageId(array $payload, Carbon $createdAt): string
+    {
+        $message = collect($payload['Messages'] ?? [])
+            ->sortBy(function ($message) use ($createdAt) {
+                if (empty($message['ReceivedAt'])) {
+                    return PHP_INT_MAX;
+                }
+
+                try {
+                    return abs(Carbon::parse($message['ReceivedAt'])->diffInSeconds($createdAt));
+                } catch (\Throwable) {
+                    return PHP_INT_MAX;
+                }
+            })
+            ->first();
+
+        return (string) data_get($message, 'MessageID', '');
+    }
+
+    private function emailAddress(?string $value): string
+    {
+        if (preg_match('/<([^>]+)>/', (string) $value, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return trim((string) $value);
     }
 
     private function syncPostmarkStatusFromDetails(EmailLog $log, array $payload, string $messageId): ?string

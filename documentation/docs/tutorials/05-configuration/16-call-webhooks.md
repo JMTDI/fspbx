@@ -1,0 +1,166 @@
+---
+sidebar_position: 16
+title: Call Webhooks
+---
+
+# Call Webhooks
+
+Call webhooks let a CRM react when an inbound call is offered to a specific extension or Basic Queue agent. FS PBX does not send events for IVR navigation, queue entry, voicemail, trunks, fax, or other account-wide call activity.
+
+## Enable the listener
+
+On new installations, the call webhook listener is installed but disabled by default with `numprocs=0`. It stays off during server restarts and `supervisorctl restart all`. Enable it only on servers that use call webhooks. One listener handles every configured account on the server.
+
+Edit `/etc/supervisor/conf.d/fs-esl-listener-call-webhooks.conf` and set:
+
+```ini
+numprocs=1
+autostart=true
+```
+
+If an older configuration has no `numprocs` line, add it. Apply the changes:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status fs-esl-listener-call-webhooks
+```
+
+After `supervisorctl update`, the status should be `RUNNING`. If it remains `STOPPED`, start it explicitly:
+
+```bash
+sudo supervisorctl start fs-esl-listener-call-webhooks
+```
+
+Enabling a webhook in Account Settings controls event delivery but does not start the server listener. The Supervisor service must also be enabled.
+
+The listener caches the enabled account configurations for 24 hours. Saving, enabling, disabling, rotating, or deleting a configuration in Account Settings invalidates that cache immediately. Direct database changes can take up to 24 hours to be detected and should be avoided.
+
+To disable the listener again, set these values in the same file:
+
+```ini
+numprocs=0
+autostart=true
+```
+
+Then apply the changes:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+```
+
+This stops the listener and removes its process instance. While disabled, it does not appear in `supervisorctl status`; asking for its status or trying to start it directly reports `no such process`. Set `numprocs=1` and apply the configuration to enable it again.
+
+Use `numprocs=0` for a disabled listener. `autostart=false` alone only prevents automatic startup and still allows `supervisorctl restart all` to start it.
+
+Listener output is available in:
+
+```text
+/var/log/fs-esl-listener-call-webhooks.out.log
+/var/log/fs-esl-listener-call-webhooks.err.log
+```
+
+## Configure a webhook
+
+1. Open **Account Settings** and select **Call Webhooks**.
+2. Enter a public HTTPS endpoint.
+3. Select the Ringing, Answered, and Ended events your CRM needs.
+4. Save the configuration and copy the signing secret. The complete secret is shown only once.
+5. Use **Test Webhook** to send a signed `call.test` request.
+
+One endpoint receives events for every mapped extension and Basic Queue agent in the account. Use `data.target` to select the correct CRM user.
+
+## Events
+
+- `call.ringing`: the extension or queue agent is being offered the call.
+- `call.answered`: that target answered the call.
+- `call.ended`: that target's interaction finished or stopped ringing.
+
+For ring-all calls, each offered target has its own lifecycle. Losing targets receive `call.ended`, normally with `state.outcome` set to `canceled`.
+
+## Request format
+
+```json
+{
+  "id": "event-uuid",
+  "type": "call.ringing",
+  "occurred_at": "2026-07-12T15:04:05.123Z",
+  "data": {
+    "interaction_id": "stable-call-or-member-uuid",
+    "channel_uuid": "current-agent-channel-uuid",
+    "domain_uuid": "account-uuid",
+    "direction": "inbound",
+    "caller": {
+      "name": "Alice",
+      "number": "12025550100"
+    },
+    "destination_number": "100",
+    "target": {
+      "type": "queue_agent",
+      "extension_uuid": "extension-uuid",
+      "extension": "100",
+      "call_center_agent_uuid": "agent-uuid",
+      "agent_id": "100",
+      "agent_name": "Support Agent",
+      "call_center_queue_uuid": "queue-uuid",
+      "queue_extension": "700",
+      "queue_name": "Support"
+    },
+    "state": {
+      "answered_at": null,
+      "ended_at": null,
+      "outcome": null,
+      "hangup_cause": null
+    }
+  }
+}
+```
+
+Direct calls use `target.type: extension` and have `null` queue fields. Queue calls use `target.type: queue_agent` and include the underlying extension when it can be mapped uniquely.
+
+Use `interaction_id`, `target.type`, and the target UUID as the screen-pop lifecycle key. Do not use `channel_uuid`; it can change or be absent during a queue offer.
+
+## Verify requests
+
+By default, requests include these headers:
+
+- `Signature`: lowercase HMAC-SHA256 of the exact JSON request body using the signing secret.
+- `Timestamp`: Unix timestamp generated for the delivery attempt.
+- `X-FS-PBX-Event-ID`: the event UUID.
+- `X-FS-PBX-Event-Type`: the event type.
+- `User-Agent`: `FS-PBX-Call-Webhooks/1.0`.
+
+Reject stale timestamps according to your security policy and compare signatures with a constant-time comparison. Deduplicate requests by the event ID because a retry can deliver the same event more than once. Strict delivery order is not guaranteed.
+
+## Customize header branding
+
+Set one environment variable to replace `FS-PBX` in both event header names and the User-Agent value for every account on the server:
+
+```dotenv
+CALL_WEBHOOK_BRAND=Acme
+```
+
+Use letters, numbers, and hyphens without spaces. Unset or blank values keep the default `FS-PBX` branding. With `Acme`, requests use:
+
+```text
+X-Acme-Event-ID: <event UUID>
+X-Acme-Event-Type: call.ended
+User-Agent: Acme-Call-Webhooks/1.0
+```
+
+The event values, JSON payload, `Signature`, and `Timestamp` stay the same. Update receivers that read the old event header names before switching.
+
+After editing `.env`, refresh Laravel configuration:
+
+```bash
+php artisan config:cache
+```
+
+If the call webhook listener is running, restart it to load the new configuration:
+
+```bash
+sudo supervisorctl restart fs-esl-listener-call-webhooks
+```
+
+Already queued deliveries and their retries retain the headers captured when they were queued. Use **Test Webhook** to check the new headers at your endpoint.

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\RegistrationActionRequest;
 use App\Services\DeviceActionService;
 use App\Services\FreeswitchEslService;
 use Illuminate\Http\JsonResponse;
@@ -137,14 +138,13 @@ class RegistrationsController extends Controller
     }
 
 
-    public function handleAction(Request $request, DeviceActionService $deviceActionService, FreeswitchEslService $eslService): JsonResponse
+    public function handleAction(
+        RegistrationActionRequest $request,
+        DeviceActionService $deviceActionService,
+        FreeswitchEslService $eslService
+    ): JsonResponse
     {
-        $validated = $request->validate([
-            'action' => ['required', 'in:reboot,provision,unregister'],
-            'items' => ['required_without:regs', 'array'],
-            'items.*' => ['string'],
-            'regs' => ['required_without:items', 'array'],
-        ]);
+        $validated = $request->validated();
 
         try {
             $action = $validated['action'];
@@ -152,8 +152,17 @@ class RegistrationsController extends Controller
 
             if ($registrations->isEmpty()) {
                 return response()->json([
-                    'messages' => ['error' => ['No registrations selected.']],
+                    'messages' => ['error' => [__('No registrations selected.')]],
                 ], 422);
+            }
+
+            if ($action !== 'unregister') {
+                $deviceActionService->scheduleDeviceActions($registrations, $action);
+                $eslService->disconnect();
+
+                return response()->json([
+                    'messages' => ['success' => [__('Request successfully processed.')]],
+                ], 201);
             }
 
             foreach ($registrations as $reg) {
@@ -162,7 +171,7 @@ class RegistrationsController extends Controller
                 $realm = (string) ($reg['sip_auth_realm'] ?? '');
                 $target = ($user && $realm) ? "{$user}@{$realm}" : '';
 
-                if ($action === 'unregister' && $target && $profile) {
+                if ($target && $profile) {
                     // Use native FreeSWITCH unregister first, then fall back to vendor-specific handling.
                     $commandsToTry = [
                         "sofia profile {$profile} flush_inbound_reg {$target} reboot",
@@ -196,7 +205,7 @@ class RegistrationsController extends Controller
             $eslService->disconnect();
 
             return response()->json([
-                'messages' => ['success' => ['Request successfully processed.']],
+                'messages' => ['success' => [__('Request successfully processed.')]],
             ], 201);
 
         } catch (\Exception $e) {
@@ -224,14 +233,14 @@ class RegistrationsController extends Controller
                 ->values();
     
             return response()->json([
-                'messages' => ['success' => ['All matching registrations selected.']],
+                'messages' => ['success' => [__('All matching registrations selected.')]],
                 'items' => $items,
             ], 200);
         } catch (\Exception $e) {
             logger($e->getMessage());
     
             return response()->json([
-                'messages' => ['error' => ['Failed to select all registrations.']],
+                'messages' => ['error' => [__('Failed to select all registrations.')]],
             ], 500); // 500 Internal Server Error for any other errors
         }
     }

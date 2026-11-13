@@ -6,10 +6,18 @@ use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
+use App\Services\Provisioning\ProvisioningAuthPolicy;
+use App\Services\Provisioning\ProvisioningSettingsResolver;
 use App\Services\Provisioning\VendorRouter;
 
 class DigestProvisionAuth
 {
+    public function __construct(
+        private ProvisioningSettingsResolver $settingsResolver,
+        private ProvisioningAuthPolicy $authPolicy
+    ) {
+    }
+
     public function handle(Request $request, Closure $next)
     {
         // turn debug off or on 
@@ -32,35 +40,56 @@ class DigestProvisionAuth
         }
 
         $token = VendorRouter::tokenFromId($id);
-        if (!$token) {
-            $this->dbg($debug, 'early-404.no-token', ['id' => $id]);
-            return response('', 404);
-        }
+        $device = $token ? VendorRouter::findDeviceByToken($token) : null;
 
-        $device = VendorRouter::findDeviceByToken($token);
         if (!$device) {
-            $this->dbg($debug, '404.device-not-found', ['token' => $token]);
+            // Some phones append a fixed filename to a directory path (e.g.
+            // Grandstream requests <server>/phonebook.xml), so the device token
+            // is an earlier path segment rather than the basename. Fall back to
+            // scanning the path segments for a resolvable device token.
+            $device = $this->deviceFromPathSegments($request);
+        }
+
+        if (!$device) {
+            $this->dbg($debug, '404.device-not-found', ['token' => $token, 'id' => $id]);
             return response('', 404);
         }
 
-        $domainUuid = $device->domain_uuid;
-        $username   = get_domain_setting('http_auth_username', $domainUuid);
-        $password   = get_domain_setting('http_auth_password', $domainUuid);
-        if (!$username || !$password) {
-            $this->dbg($debug, '401.missing-creds', ['domain_uuid' => $domainUuid]);
-            return response('', 401);
+        $domainUuid = (string) $device->domain_uuid;
+        $settings = $this->settingsResolver->resolve($domainUuid);
+        $cidrs = $this->authPolicy->cidrs($settings);
+
+        if (!$this->authPolicy->clientIpAllowed($cidrs, (string) $request->ip())) {
+            $this->dbg($debug, '404.cidr-denied', [
+                'domain_uuid' => $domainUuid,
+                'client_ip' => $request->ip(),
+            ]);
+
+            return response('', 404);
         }
 
         $hash  = substr(hash_hmac('sha256', (string) $domainUuid, config('app.key')), 0, 16);
         $realm = "Prov-$hash";
+        $username = $this->authPolicy->username($settings);
+        $passwords = $this->authPolicy->passwords($settings);
+
+        // Match FusionPBX provisioning behavior: CIDR and HTTP authentication
+        // are cumulative when both are configured. HTTP authentication is
+        // skipped unless both a username and at least one password are set.
+        if (!$this->authPolicy->requiresHttpAuthentication($settings)) {
+            $this->attach($request, $device, $domainUuid, $realm, $cidrs === [] ? 'none' : 'cidr');
+            $this->dbg($debug, 'auth.not-configured', ['domain_uuid' => $domainUuid]);
+
+            return $next($request);
+        }
 
         if ($this->userAgentForcesBasic($request)) {
             $authTypeValue = 'basic';
             $authType = 'basic';
         } else {
 
-            $authTypeValue = get_domain_setting('http_auth_type',$domainUuid);
-            $authType = strtolower($authTypeValue);
+            $authTypeValue = $settings['http_auth_type'] ?? null;
+            $authType = strtolower(is_scalar($authTypeValue) ? (string) $authTypeValue : '');
 
             if (!in_array($authType, ['basic', 'digest', 'both'], true)) {
                 $authType = 'digest';
@@ -84,7 +113,7 @@ class DigestProvisionAuth
                 [$bu] = array_pad(explode(':', $decoded, 2), 2, '');
                 $this->dbg($debug, 'auth.basic.present', ['user' => $this->maskUser($bu)]);
 
-                if (hash_equals($username, $bu) && hash_equals($password, substr($decoded, strlen($bu) + 1))) {
+                if (hash_equals($username, $bu) && $this->passwordMatches($passwords, substr($decoded, strlen($bu) + 1))) {
                     $this->attach($request, $device, $domainUuid, $realm, 'basic');
                     $this->dbg($debug, 'auth.basic.ok');
                     return $next($request);
@@ -109,13 +138,17 @@ class DigestProvisionAuth
                 return $this->challengeDigest($realm, true, $debug);
             }
 
-            $HA1 = md5($username . ':' . $realm . ':' . $password);
             $HA2 = md5($request->getMethod() . ':' . $parts['uri']);
-            $expected = (isset($parts['qop']) && $parts['qop'] === 'auth')
-                ? md5($HA1 . ':' . $parts['nonce'] . ':' . ($parts['nc'] ?? '') . ':' . ($parts['cnonce'] ?? '') . ':auth:' . $HA2)
-                : md5($HA1 . ':' . $parts['nonce'] . ':' . $HA2);
+            $validPassword = collect($passwords)->contains(function (string $password) use ($username, $realm, $parts, $HA2) {
+                $HA1 = md5($username . ':' . $realm . ':' . $password);
+                $expected = (isset($parts['qop']) && $parts['qop'] === 'auth')
+                    ? md5($HA1 . ':' . $parts['nonce'] . ':' . ($parts['nc'] ?? '') . ':' . ($parts['cnonce'] ?? '') . ':auth:' . $HA2)
+                    : md5($HA1 . ':' . $parts['nonce'] . ':' . $HA2);
 
-            if (!hash_equals($expected, $parts['response'])) {
+                return hash_equals($expected, $parts['response']);
+            });
+
+            if (!$validPassword) {
                 $this->dbg($debug, 'auth.digest.bad-response');
                 return $this->challengeDigest($realm, false, $debug);
             }
@@ -153,6 +186,47 @@ class DigestProvisionAuth
         if (!$u) return '';
         return strlen($u) <= 2 ? '*'
             : substr($u, 0, 1) . str_repeat('*', max(1, strlen($u) - 2)) . substr($u, -1);
+    }
+
+    private function passwordMatches(array $passwords, string $candidate): bool
+    {
+        foreach ($passwords as $password) {
+            if (hash_equals($password, $candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolve a device by scanning each path segment for a MAC/serial token.
+     * Used when the basename is a fixed filename (e.g. phonebook.xml) rather
+     * than the device identifier.
+     */
+    private function deviceFromPathSegments(Request $request)
+    {
+        $path = (string) ($request->route('path') ?? $request->path());
+        $path = ltrim($path, '/');
+        if (str_starts_with($path, 'prov/')) {
+            $path = substr($path, 5);
+        }
+
+        $segments = array_values(array_filter(explode('/', $path)));
+
+        foreach (array_reverse($segments) as $segment) {
+            $token = VendorRouter::tokenFromId($segment);
+            if (!$token) {
+                continue;
+            }
+
+            $device = VendorRouter::findDeviceByToken($token);
+            if ($device) {
+                return $device;
+            }
+        }
+
+        return null;
     }
 
     private function extractIdAndExt(Request $request): array

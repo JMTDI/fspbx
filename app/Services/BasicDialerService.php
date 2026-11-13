@@ -436,7 +436,8 @@ class BasicDialerService
             return null;
         }
 
-        $recipientEndpoint = $routes[0];
+        $routeDestination = $routeResult['route_destination'] ?? $recipient->phone_number;
+        $recipientEndpoint = "loopback/{$routeDestination}/{$domainName}/XML";
         $application = $this->answeredApplication($campaign, $domainName);
         $vars = [
             'origination_uuid' => $attempt->call_uuid,
@@ -445,6 +446,8 @@ class BasicDialerService
             'basic_dialer_campaign_attempt_uuid' => $attempt->basic_dialer_campaign_attempt_uuid,
             'domain_uuid' => $campaign->domain_uuid,
             'domain_name' => $domainName,
+            'sip_h_X-accountcode' => $domainName,
+            'sip_h_X-customacc' => $domainName,
             'call_direction' => 'outbound',
             'originate_timeout' => (string) $campaign->originate_timeout,
             'outbound_caller_id_name' => $callerIdName,
@@ -454,6 +457,7 @@ class BasicDialerService
             'effective_caller_id_name' => $callerIdName,
             'effective_caller_id_number' => $callerIdNumber,
             'caller_destination' => $recipient->phone_number,
+            'loopback_bowout' => 'false',
             'ignore_early_media' => 'true',
             'hangup_after_bridge' => 'true',
             'continue_on_fail' => 'true',
@@ -464,15 +468,22 @@ class BasicDialerService
 
     private function answeredApplication(BasicDialerCampaign $campaign, string $domainName): string
     {
-        if ($campaign->destination_type === 'bridges') {
-            return sprintf('&bridge(%s)', $campaign->destination_target);
+        $destination = buildDestinationAction([
+            'type' => $campaign->destination_type,
+            'extension' => $campaign->destination_target,
+        ], $domainName);
+
+        if ($destination['destination_app'] === 'transfer') {
+            return $destination['destination_data'];
         }
 
-        if ($campaign->destination_type === 'hangup') {
-            return '&hangup()';
-        }
+        $application = sprintf(
+            '&%s(%s)',
+            $destination['destination_app'],
+            $destination['destination_data']
+        );
 
-        return sprintf('%s XML %s', $campaign->destination_target, $domainName);
+        return "'" . str_replace(["\\", "'"], ["\\\\", "\\'"], $application) . "'";
     }
 
     private function defaultDestinationTarget(?string $destinationType, ?string $target): ?string
@@ -492,9 +503,9 @@ class BasicDialerService
     private function defaultDestinationLabel(?string $destinationType): ?string
     {
         return match ($destinationType) {
-            'check_voicemail' => 'Check Voicemail',
-            'company_directory' => 'Company Directory',
-            'hangup' => 'Hang up',
+            'check_voicemail' => __('Check Voicemail'),
+            'company_directory' => __('Company Directory'),
+            'hangup' => __('Hang up'),
             default => null,
         };
     }

@@ -16,7 +16,8 @@ class MigrateSQLiteToRAM extends Command
      *
      * @var string
      */
-    protected $signature = 'fs:migrate-sqlite-to-ram';
+    protected $signature = 'fs:migrate-sqlite-to-ram
+                            {--no-restart-reminder : Suppress the reminder when the caller handles the restart}';
 
     /**
      * The console command description.
@@ -38,15 +39,25 @@ class MigrateSQLiteToRAM extends Command
         $this->insertSwitchVariables();
         $this->updateDefaultSettings();
         $this->updateFusionPBXConfig();
+
+        $this->info("Preparing FreeSWITCH configuration for restart...");
+
+        if ($this->call('freeswitch:prepare-restart', ['--no-interaction' => true]) !== Command::SUCCESS) {
+            $this->error("SQLite settings were updated, but FreeSWITCH restart preparation failed.");
+            $this->error("Do not restart FreeSWITCH until vars.xml is synchronized and the XML cache is flushed.");
+
+            return Command::FAILURE;
+        }
+
         $this->removeDatabaseFiles();
 
         $this->info("SQLite to RAM migration complete.");
 
-        $this->info("------------");
-        $this->info("TO DO:");
-        $this->info("1) Restart FreeSwitch");
-        $this->info("2) Flash Cache");
-        $this->info("3) Re-scan SIP Profiles");
+        if (! $this->option('no-restart-reminder')) {
+            $this->info("------------");
+            $this->info("TO DO:");
+            $this->info("1) Restart FreeSWITCH");
+        }
         
         return Command::SUCCESS;
 
@@ -246,13 +257,12 @@ class MigrateSQLiteToRAM extends Command
      */
     private function removeDatabaseFiles()
     {
-        $this->info("Removing old database files...");
-
         $directory = '/var/lib/freeswitch/db/';
         $pattern = '*.db*';
 
         if (!is_dir($directory)) {
-            $this->error("Directory not found: $directory");
+            // Fresh installs may configure RAM storage before the first switch start.
+            $this->info("No old database files to remove; skipping cleanup.");
             return;
         }
 
@@ -262,6 +272,8 @@ class MigrateSQLiteToRAM extends Command
             $this->info("No database files to remove in $directory.");
             return;
         }
+
+        $this->info("Removing old database files...");
 
         foreach ($files as $file) {
             if (is_file($file)) {

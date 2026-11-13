@@ -2,66 +2,51 @@
 
 namespace App\Services;
 
-use App\Models\{Bridge, BusinessHour, CallCenterQueues, CallFlows, Conferences, Dialplans, Domain, Extensions, Faxes, IvrMenus, Recordings, RingGroups, Voicemails};
+use App\Support\BridgeRuntimeDestination;
+use App\Models\{AiAgent, Bridge, BusinessHour, CallCenterQueues, CallFlows, Conferences, Dialplans, Domain, DynamicRoute, Extensions, Faxes, IvrMenus, Recordings, RingGroups, Voicemails};
 use App\Models\ConferenceCenter;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 
 class CallRoutingOptionsService
 {
     protected ?string $domainUuid;
     protected ?string $domainName;
 
-    public array $routingTypes = [
-        ['value' => 'extensions', 'name' => 'Extension'],
-        ['value' => 'voicemails', 'name' => 'Voicemail'],
-        ['value' => 'ring_groups', 'name' => 'Ring Group'],
-        ['value' => 'ivrs', 'name' => 'Virtual Receptionist'],
-        ['value' => 'business_hours', 'name' => 'Business Hours'],
-        ['value' => 'time_conditions', 'name' => 'Schedule'],
-        ['value' => 'contact_centers', 'name' => 'Contact Center'],
-        ['value' => 'bridges', 'name' => 'Bridge'],
-        ['value' => 'faxes', 'name' => 'Fax'],
-        ['value' => 'call_flows', 'name' => 'Call Flow'],
-        ['value' => 'recordings', 'name' => 'Play Greeting'],
-        ['value' => 'conferences', 'name' => 'Conferences'],
-        ['value' => 'conference_centers', 'name' => 'Conference Centers'],
-        ['value' => 'check_voicemail', 'name' => 'Check Voicemail'],
-        ['value' => 'company_directory', 'name' => 'Company Directory'],
-        ['value' => 'hangup', 'name' => 'Hang up'],
-        // ['value' => 'other', 'name' => 'Other']
-    ];
+    public array $routingTypes;
 
-    public array $forwardingTypes = [
-        ['value' => 'extensions', 'label' => 'Extension'],
-        ['value' => 'voicemails', 'label' => 'Voicemail'],
-        ['value' => 'ring_groups', 'label' => 'Ring Group'],
-        ['value' => 'ivrs', 'label' => 'Virtual Receptionist'],
-        ['value' => 'business_hours', 'label' => 'Business Hours'],
-        ['value' => 'time_conditions', 'label' => 'Schedule'],
-        ['value' => 'contact_centers', 'label' => 'Contact Center'],
-        ['value' => 'faxes', 'label' => 'Fax'],
-        ['value' => 'call_flows', 'label' => 'Call Flow'],
-        // ['value' => 'recordings', 'label' => 'Play Greeting'],
-        ['value' => 'external', 'label' => 'External Number'],
-    ];
+    public array $forwardingTypes;
 
     /**
-     * Map of slot-action keys to their Eloquent model classes.
+     * Shared by destination selectors, saved polymorphic targets, and dialplan generation.
+     * Target-free actions deliberately have no model or destination field.
+     * Model destinations use transfer unless a handler is specified. Add regression
+     * cases in tests/Unit/RoutingDestinations.php when introducing a destination.
      */
-    private const MODEL_MAP = [
-        'extensions'       => \App\Models\Extensions::class,
-        'ivrs'             => \App\Models\IvrMenus::class,
-        'voicemails'       => \App\Models\Voicemails::class,
-        'ring_groups'      => \App\Models\RingGroups::class,
-        'business_hours'   => \App\Models\BusinessHour::class,
-        'time_conditions'  => \App\Models\Dialplans::class,
-        'contact_centers'  => \App\Models\CallCenterQueues::class,
-        'bridges'          => \App\Models\Bridge::class,
-        'conferences'      => \App\Models\Conferences::class,
-        'conference_centers' => \App\Models\ConferenceCenter::class,
-        'faxes'            => \App\Models\Faxes::class,
-        'call_flows'       => \App\Models\CallFlows::class,
-        'recordings'       => \App\Models\Recordings::class,
-    ];
+    private static function destinations(bool $translate = false): array
+    {
+        return [
+            'extensions' => ['label' => $translate ? __('Extension') : 'Extension', 'model' => Extensions::class, 'field' => 'extension', 'name' => 'effective_caller_id_name'],
+            'voicemails' => ['label' => $translate ? __('Voicemail') : 'Voicemail', 'model' => Voicemails::class, 'field' => 'voicemail_id', 'name' => 'voicemail_description', 'handler' => 'voicemail'],
+            'ring_groups' => ['label' => $translate ? __('Ring Group') : 'Ring Group', 'model' => RingGroups::class, 'field' => 'ring_group_extension', 'name' => 'ring_group_name'],
+            'ivrs' => ['label' => $translate ? __('Virtual Receptionist') : 'Virtual Receptionist', 'model' => IvrMenus::class, 'field' => 'ivr_menu_extension', 'name' => 'ivr_menu_name'],
+            'business_hours' => ['label' => $translate ? __('Business Hours') : 'Business Hours', 'model' => BusinessHour::class, 'field' => 'extension', 'name' => 'name'],
+            'time_conditions' => ['label' => $translate ? __('Schedule') : 'Schedule', 'model' => Dialplans::class, 'field' => 'dialplan_number', 'name' => 'dialplan_name'],
+            'contact_centers' => ['label' => $translate ? __('Contact Center') : 'Contact Center', 'model' => CallCenterQueues::class, 'field' => 'queue_extension', 'name' => 'queue_name'],
+            'bridges' => ['label' => $translate ? __('Bridge') : 'Bridge', 'model' => Bridge::class, 'field' => 'bridge_uuid', 'name' => 'bridge_name', 'handler' => 'bridge'],
+            'faxes' => ['label' => $translate ? __('Fax') : 'Fax', 'model' => Faxes::class, 'field' => 'fax_extension', 'name' => 'fax_name'],
+            'call_flows' => ['label' => $translate ? __('Call Flow') : 'Call Flow', 'model' => CallFlows::class, 'field' => 'call_flow_extension', 'name' => 'call_flow_name'],
+            'dynamic_routes' => ['label' => $translate ? __('Dynamic Route') : 'Dynamic Route', 'model' => DynamicRoute::class, 'field' => 'extension', 'name' => 'name'],
+            'recordings' => ['label' => $translate ? __('Play Greeting') : 'Play Greeting', 'model' => Recordings::class, 'field' => 'recording_filename', 'name' => 'recording_name', 'handler' => 'recording'],
+            'conferences' => ['label' => $translate ? __('Conferences') : 'Conferences', 'model' => Conferences::class, 'field' => 'conference_extension', 'name' => 'conference_name'],
+            'conference_centers' => ['label' => $translate ? __('Conference Centers') : 'Conference Centers', 'model' => ConferenceCenter::class, 'field' => 'conference_center_extension', 'name' => 'conference_center_name'],
+            'ai_agents' => ['label' => $translate ? __('AI Agent') : 'AI Agent', 'model' => AiAgent::class, 'field' => 'extension', 'name' => 'name'],
+            'check_voicemail' => ['label' => $translate ? __('Check Voicemail') : 'Check Voicemail', 'handler' => 'check_voicemail'],
+            'company_directory' => ['label' => $translate ? __('Company Directory') : 'Company Directory', 'handler' => 'company_directory'],
+            'hangup' => ['label' => $translate ? __('Hang up') : 'Hang up', 'handler' => 'hangup'],
+        ];
+    }
 
     private const TRANSFER_FORMAT = '%s:%s XML %s';
 
@@ -69,47 +54,33 @@ class CallRoutingOptionsService
     {
         $this->domainUuid = $domainUuid ?? session('domain_uuid');
         $this->domainName = session('domain_name');
+        $this->routingTypes = [];
+        foreach (self::destinations() as $type => $definition) {
+            $this->routingTypes[] = ['value' => $type, 'name' => $definition['label']];
+        }
+
+        $this->forwardingTypes = [];
+        $translatedDestinations = self::destinations(translate: true);
+        foreach (array_diff(self::forwardingDestinationTypes(), ['external']) as $type) {
+            $this->forwardingTypes[] = ['value' => $type, 'label' => $translatedDestinations[$type]['label']];
+        }
+        $this->forwardingTypes[] = ['value' => 'external', 'label' => __('External Number')];
     }
 
 
     public function getOptions(): array
     {
-        switch (request('category')) {
-            case 'contact_centers':
-                return $this->buildOptions(CallCenterQueues::class, 'queue_extension', 'queue_name');
-            case 'bridges':
-                return $this->buildBridgeOptions();
-            case 'call_flows':
-                return $this->buildOptions(CallFlows::class, 'call_flow_extension', 'call_flow_name');
-                // case 'dial_plans':
-                //     return $this->buildOptions(Dialplans::class, 'dialplan_name', '', true);
-            case 'extensions':
-                return $this->buildOptions(Extensions::class, 'extension', 'effective_caller_id_name');
-            case 'faxes':
-                return $this->buildOptions(Faxes::class, 'fax_extension', 'fax_name');
-            case 'ivrs':
-                return $this->buildOptions(IvrMenus::class, 'ivr_menu_extension', 'ivr_menu_name');
-            case 'recordings':
-                return $this->buildOptions(Recordings::class, 'recording_filename', 'recording_name');
-            case 'ring_groups':
-                return $this->buildOptions(RingGroups::class, 'ring_group_extension', 'ring_group_name');
-            case 'business_hours':
-                return $this->buildOptions(BusinessHour::class, 'extension', 'name');
-            case 'time_conditions':
-                return $this->buildOptions(Dialplans::class, 'dialplan_number', 'dialplan_name');
-            case 'conferences':
-                return $this->buildOptions(Conferences::class, 'conference_extension', 'conference_name');
-            case 'conference_centers':
-                return $this->buildOptions(ConferenceCenter::class, 'conference_center_extension', 'conference_center_name');
-            case 'voicemails':
-                return $this->buildOptions(Voicemails::class, 'voicemail_id', 'voicemail_description');
-            case 'other':
-                return $this->otherOptions();
-            default:
-                return [];
+        $type = request('category');
+        if ($type === 'other') {
+            return $this->otherOptions();
         }
 
-        throw new \Exception('Failed to fetch routing options.');
+        $definition = self::destinations()[$type] ?? null;
+        if (! isset($definition['model'])) {
+            return [];
+        }
+
+        return $this->buildOptions($definition['model'], $definition['field'], $definition['name']);
     }
 
     protected function buildOptions($model, string $extensionField, string $nameField = ''): array
@@ -117,7 +88,18 @@ class CallRoutingOptionsService
         // Create an instance of the model
         $modelInstance = new $model;
 
-        $query = $model::query(); // Start with a base query
+        $query = $this->targetQuery($model);
+
+        if ($model === AiAgent::class) {
+            $query->where('enabled', true)->where('provisioning_status', 'synced');
+        }
+        if ($model === DynamicRoute::class) {
+            $query->where('enabled', true);
+        }
+        if ($model === Bridge::class) {
+            $query->where('bridge_enabled', 'true')
+                ->whereNotNull('bridge_destination')->where('bridge_destination', '<>', '');
+        }
 
         // Apply specific conditions only for Dialplans
         if ($model === Dialplans::class) {
@@ -126,65 +108,62 @@ class CallRoutingOptionsService
                 ->where('dialplan_xml', '~*', '(year|yday|mon|mday|week|mweek|wday|hour|minute|minute-of-day|time-of-day|date-time)=[^>]*');
         }
 
-        // Check if the model is Voicemails and eager load extensions
-        if ($model === Voicemails::class) {
-            $domainUuid = $this->domainUuid;
-            $query->with(['extension' => function ($query) use ($domainUuid) {
-                $query->select('extension_uuid', 'extension', 'effective_caller_id_name')
-                    ->where('domain_uuid', $domainUuid);
-            }]);
+        $fields = [$modelInstance->getKeyName(), $extensionField, $nameField];
+        if ($model === Bridge::class) {
+            $fields[] = 'bridge_destination';
         }
+        $query->select(array_unique($fields));
 
-        $query->select($modelInstance->getKeyName(), $extensionField, $nameField)->where('domain_uuid', $this->domainUuid);
-
-        $rows = $query->orderBy($extensionField)->get();
+        $rows = $query->orderBy($model === Bridge::class ? $nameField : $extensionField)->get();
 
         // logger($rows);
 
         $options = [];
         foreach ($rows as $row) {
 
-            $name = $row->$extensionField . ($nameField ? " - " . $row->$nameField : '');
-            if ($model === Voicemails::class) {
-                if ($row->extension) {
-                    // Use extension's name_formatted if extension exists
-                    $name = $row->extension->name_formatted;
-                } else {
-                    // Fallback to voicemail_id - "Team voicemail" if extension does not exist
-                    $name =  $row->voicemail_id . " - Team voicemail" . ($row->voicemail_description ? ' (' . $row->voicemail_description . ')' : '');
-                }
-            }
-
-            if ($model === Recordings::class) {
-                $name = $row->$nameField;
-            }
-
-            $options[] = [
+            $option = [
                 'value' => $row->{$modelInstance->getKeyName()},
                 'extension' => $row->$extensionField,
-                'name' => $name,
+                'name' => $this->optionName($row, $extensionField, $nameField),
             ];
+            if ($model === Bridge::class) {
+                $option['bridge_uuid'] = $row->bridge_uuid;
+            }
+            $options[] = $option;
         }
         // logger($options);
         return $options;
     }
 
-    protected function buildBridgeOptions(): array
+    private function targetQuery(string $model): Builder
     {
-        return Bridge::query()
-            ->where('domain_uuid', $this->domainUuid)
-            ->where('bridge_enabled', 'true')
-            ->whereNotNull('bridge_destination')
-            ->where('bridge_destination', '<>', '')
-            ->orderBy('bridge_name')
-            ->get(['bridge_uuid', 'bridge_name', 'bridge_destination'])
-            ->map(fn (Bridge $bridge) => [
-                'value' => $bridge->bridge_uuid,
-                'extension' => $bridge->bridge_destination,
-                'name' => $bridge->bridge_name ?: $bridge->bridge_destination,
-            ])
-            ->values()
-            ->all();
+        $query = $model::query()->where('domain_uuid', $this->domainUuid);
+
+        if ($model === Voicemails::class) {
+            $query->with(['extension' => function ($query) {
+                $query->select('extension_uuid', 'extension', 'effective_caller_id_name')
+                    ->where('domain_uuid', $this->domainUuid);
+            }]);
+        }
+
+        return $query;
+    }
+
+    private function optionName(Model $target, string $extensionField, string $nameField): ?string
+    {
+        if ($target instanceof Voicemails) {
+            return $this->voicemailOptionName($target);
+        }
+
+        if ($target instanceof Recordings) {
+            return $target->$nameField;
+        }
+
+        if ($target instanceof Bridge) {
+            return $target->bridge_name ?: $target->bridge_destination;
+        }
+
+        return $target->$extensionField . ($nameField ? ' - ' . $target->$nameField : '');
     }
 
     protected function otherOptions(): array
@@ -192,19 +171,19 @@ class CallRoutingOptionsService
         return [
             [
                 'value' => sprintf(self::TRANSFER_FORMAT, 'transfer', '*98', $this->domainName),
-                'name' => 'Check Voicemail'
+                'name' => __('Check Voicemail')
             ],
             [
                 'value' => sprintf(self::TRANSFER_FORMAT, 'transfer', '*411', $this->domainName),
-                'name' => 'Company Directory'
+                'name' => __('Company Directory')
             ],
             [
                 'value' => 'hangup:',
-                'name' => 'Hangup'
+                'name' => __('Hangup')
             ],
             [
                 'value' => sprintf(self::TRANSFER_FORMAT, 'transfer', '*732', $this->domainName),
-                'name' => 'Record'
+                'name' => __('Record')
             ]
         ];
     }
@@ -233,12 +212,19 @@ class CallRoutingOptionsService
                             break;
 
                         case 'lua':
-                            // Handle recordings
-                            $routing_options[] =  $this->extractRecordingUuidFromData($action['destination_data']);
+                            $bridgeUuid = BridgeRuntimeDestination::uuidFromScriptData(
+                                $action['destination_data'] ?? null
+                            );
+                            $routing_options[] = $bridgeUuid
+                                ? $this->reverseEngineerBridgeAction(null, $bridgeUuid)
+                                : $this->extractRecordingUuidFromData($action['destination_data']);
                             break;
 
                         case 'bridge':
-                            $routing_options[] = $this->reverseEngineerBridgeAction($action['destination_data'] ?? null);
+                            $routing_options[] = $this->reverseEngineerBridgeAction(
+                                $action['destination_data'] ?? null,
+                                $action['bridge_uuid'] ?? null
+                            );
                             break;
 
                         case 'hangup':
@@ -292,6 +278,14 @@ class CallRoutingOptionsService
         return $this->reverseEngineerApplicationAction($action, 'Call Flow');
     }
 
+    /**
+     * Reverse engineer a Flag override destination (ring groups and virtual receptionists).
+     */
+    public function reverseEngineerFlagAction($action)
+    {
+        return $this->reverseEngineerApplicationAction($action, 'Flag');
+    }
+
     protected function reverseEngineerApplicationAction($action, string $label)
     {
         try {
@@ -328,8 +322,12 @@ class CallRoutingOptionsService
                     return $this->reverseEngineerTransferAction("$destination $context $domain_name");
                     break;
                 case 'lua':
-                    return $this->extractRecordingUuidFromData("$destination $context $domain_name");
-                    break;
+                    $scriptData = implode(' ', array_slice($parts, 1));
+                    $bridgeUuid = BridgeRuntimeDestination::uuidFromScriptData($scriptData);
+
+                    return $bridgeUuid
+                        ? $this->reverseEngineerBridgeAction(null, $bridgeUuid)
+                        : $this->extractRecordingUuidFromData($scriptData);
 
                 case 'hangup':
                     return array(
@@ -369,10 +367,7 @@ class CallRoutingOptionsService
 
             $domainUuid = $this->domainUuid;
 
-            $dialplan = Dialplans::where(function ($query) use ($destination) {
-                $query->where('dialplan_number', $destination)
-                    ->orWhere('dialplan_number', '=', '1' . $destination);
-            })
+            $dialplan = Dialplans::where('dialplan_number', $destination)
                 ->where('dialplan_enabled', 'true')
                 ->where(function ($query) use ($domainUuid) {
                     $query->where('domain_uuid', $domainUuid)
@@ -389,13 +384,7 @@ class CallRoutingOptionsService
 
             // Check if destination is voicemail
             if ((substr($destination, 0, 3) == '*99') !== false) {
-                $voicemail = Voicemails::where('domain_uuid', $domainUuid)
-                    ->where('voicemail_id', substr($destination, 3))
-                    ->with(['extension' => function ($query) use ($domainUuid) {
-                        $query->select('extension_uuid', 'extension', 'effective_caller_id_name')
-                            ->where('domain_uuid', $domainUuid);
-                    }])
-                    ->first();
+                $voicemail = $this->findTarget('voicemails', substr($destination, 3), byDestination: true);
 
 
                 if ($voicemail) {
@@ -403,7 +392,7 @@ class CallRoutingOptionsService
                         'type' => 'voicemails',
                         'extension' => $voicemail->voicemail_id,
                         'option' => $voicemail->voicemail_uuid,
-                        'name' => $voicemail->extension ? $voicemail->extension->name_formatted : $voicemail->voicemail_id . ' - Team Voicemail',
+                        'name' => $this->voicemailOptionName($voicemail),
                     ];
                 }
             }
@@ -445,10 +434,7 @@ class CallRoutingOptionsService
         $domainUuid = $this->domainUuid;
 
         // Use regex and check in the Dialplan database to determine what this extension belongs to
-        $dialplan = Dialplans::where(function ($query) use ($extension) {
-            $query->where('dialplan_number', $extension)
-                ->orWhere('dialplan_number', '=', '1' . $extension);
-        })
+        $dialplan = Dialplans::where('dialplan_number', $extension)
             ->where('dialplan_enabled', 'true')
             ->where(function ($query) use ($domainUuid) {
                 $query->where('domain_uuid', $domainUuid)
@@ -464,20 +450,14 @@ class CallRoutingOptionsService
 
         // Check if destination is voicemail
         if ((substr($extension, 0, 3) == '*99') !== false) {
-            $voicemail = Voicemails::where('domain_uuid', $domainUuid)
-                ->where('voicemail_id', substr($extension, 3))
-                ->with(['extension' => function ($query) use ($domainUuid) {
-                    $query->select('extension_uuid', 'extension', 'effective_caller_id_name')
-                        ->where('domain_uuid', $domainUuid);
-                }])
-                ->first();
+            $voicemail = $this->findTarget('voicemails', substr($extension, 3), byDestination: true);
 
             if (!$voicemail) return null;
             return [
                 'type' => 'voicemails',
                 'extension' => $voicemail->voicemail_id,
                 'option' => $voicemail->voicemail_uuid,
-                'name' => $voicemail->extension->name_formatted ?? $voicemail->voicemail_id,
+                'name' => $this->voicemailOptionName($voicemail),
             ];
         }
 
@@ -502,6 +482,17 @@ class CallRoutingOptionsService
         }
     }
 
+    private function voicemailOptionName(Voicemails $voicemail): string
+    {
+        if ($voicemail->extension) {
+            return $voicemail->extension->name_formatted;
+        }
+
+        return $voicemail->voicemail_id
+            . ' - Team voicemail'
+            . ($voicemail->voicemail_description ? ' (' . $voicemail->voicemail_description . ')' : '');
+    }
+
     /**
      * Map Dialplan data back to a routing option.
      */
@@ -514,10 +505,12 @@ class CallRoutingOptionsService
             'contact_centers' => '/call_center_queue_uuid=([0-9a-fA-F-]+)/',
             'business_hours' => '/business_hours=([0-9a-fA-F-]+)/',
             'call_flows' => '/call_flow_uuid=([0-9a-fA-F-]+)/',
+            'dynamic_routes' => '/dynamic_route_uuid=([0-9a-fA-F-]+)/',
             'time_conditions' => '/\b(year|yday|mon|mday|week|mweek|wday|hour|minute|minute-of-day|time-of-day|date-time)=("[^"]+"|\'[^\']+\'|\S+)/',
             'faxes' => '/fax_uuid=([0-9a-fA-F-]+)/',
             'conferences' => '/conference_uuid=([0-9a-fA-F-]+)/',
             'conference_centers' => '/app.lua conference_center/',
+            'ai_agents' => '/ai_agent.lua\s+([0-9a-fA-F-]+)/',
             'check_voicemail' => '/app.lua voicemail/',
             'company_directory' => '/directory.lua/',
             'external' => '/disa.lua/',
@@ -575,6 +568,36 @@ class CallRoutingOptionsService
                         'option' => $conferenceCenter?->conference_center_uuid,
                         'name' => $conferenceCenter
                             ? $conferenceCenter->conference_center_extension . ' - ' . $conferenceCenter->conference_center_name
+                            : $dialplan->dialplan_name,
+                    ];
+                }
+
+                if ($type === 'ai_agents') {
+                    $agent = AiAgent::query()
+                        ->where('domain_uuid', $this->domainUuid)
+                        ->where('ai_agent_uuid', $matches[1])
+                        ->first();
+
+                    return [
+                        'type' => $type,
+                        'extension' => $extension,
+                        'option' => $agent?->ai_agent_uuid,
+                        'name' => $agent ? $agent->extension . ' - ' . $agent->name : $dialplan->dialplan_name,
+                    ];
+                }
+
+                if ($type === 'dynamic_routes') {
+                    $dynamicRoute = DynamicRoute::query()
+                        ->where('domain_uuid', $this->domainUuid)
+                        ->whereKey($matches[1])
+                        ->first(['dynamic_route_uuid', 'extension', 'name']);
+
+                    return [
+                        'type' => $type,
+                        'extension' => $dynamicRoute?->extension ?? $extension,
+                        'option' => $dynamicRoute?->dynamic_route_uuid ?? $matches[1],
+                        'name' => $dynamicRoute
+                            ? $dynamicRoute->extension . ' - ' . $dynamicRoute->name
                             : $dialplan->dialplan_name,
                     ];
                 }
@@ -643,11 +666,13 @@ class CallRoutingOptionsService
         }
     }
 
-    protected function reverseEngineerBridgeAction(?string $destinationData): array
+    protected function reverseEngineerBridgeAction(?string $destinationData, ?string $bridgeUuid = null): array
     {
         $destination = trim((string) $destinationData);
 
-        if ($destination === '') {
+        $bridgeUuid ??= BridgeRuntimeDestination::uuid($destination);
+
+        if ($destination === '' && blank($bridgeUuid)) {
             return [
                 'type' => 'bridges',
                 'extension' => null,
@@ -656,14 +681,23 @@ class CallRoutingOptionsService
             ];
         }
 
-        $bridge = Bridge::where('domain_uuid', $this->domainUuid)
+        $bridge = null;
+
+        if (filled($bridgeUuid)) {
+            $bridge = Bridge::where('domain_uuid', $this->domainUuid)
+                ->whereKey($bridgeUuid)
+                ->first(['bridge_uuid', 'bridge_name', 'bridge_destination']);
+        }
+
+        $bridge ??= Bridge::where('domain_uuid', $this->domainUuid)
             ->where('bridge_destination', $destination)
             ->first(['bridge_uuid', 'bridge_name', 'bridge_destination']);
 
         return [
             'type' => 'bridges',
-            'extension' => $destination,
+            'extension' => $bridge?->bridge_uuid ?? $destination,
             'option' => $bridge?->bridge_uuid,
+            'bridge_uuid' => $bridge?->bridge_uuid,
             'name' => $bridge?->bridge_name ?? $destination,
         ];
     }
@@ -671,26 +705,28 @@ class CallRoutingOptionsService
     public function getFriendlyTypeName(string $type): string
     {
         $typeMapping = [
-            'extensions' => 'Extension',
-            'voicemails' => 'Voicemail',
-            'ring_groups' => 'Ring Group',
-            'ivrs' => 'Virtual Receptionist',
-            'contact_centers' => 'Contact Center',
-            'faxes' => "Fax",
-            'business_hours' => 'Business Hours',
-            'time_conditions' => 'Schedules',
-            'bridges' => 'Bridge',
-            'call_flows' => 'Call Flow',
-            'conferences' => 'Conference',
-            'conference_centers' => 'Conference Center',
-            'recordings' => 'Play recording',
-            'company_directory' => 'Company Directory',
-            'check_voicemail' => 'Check Voicemail',
-            'hangup' => 'Hang up',
-            'external' => "External Number"
+            'extensions' => __('Extension'),
+            'voicemails' => __('Voicemail'),
+            'ring_groups' => __('Ring Group'),
+            'ivrs' => __('Virtual Receptionist'),
+            'contact_centers' => __('Contact Center'),
+            'faxes' => __("Fax"),
+            'business_hours' => __('Business Hours'),
+            'time_conditions' => __('Schedules'),
+            'bridges' => __('Bridge'),
+            'call_flows' => __('Call Flow'),
+            'dynamic_routes' => __('Dynamic Route'),
+            'conferences' => __('Conference'),
+            'conference_centers' => __('Conference Center'),
+            'ai_agents' => __('AI Agent'),
+            'recordings' => __('Play recording'),
+            'company_directory' => __('Company Directory'),
+            'check_voicemail' => __('Check Voicemail'),
+            'hangup' => __('Hang up'),
+            'external' => __("External Number")
         ];
 
-        return $typeMapping[$type] ?? 'Unknown';
+        return $typeMapping[$type] ?? __('Unknown');
     }
 
     /**
@@ -702,10 +738,144 @@ class CallRoutingOptionsService
      */
     public function mapActionToModel(string $action)
     {
-        if (! array_key_exists($action, self::MODEL_MAP)) {
+        return self::destinations()[$action]['model'] ?? null;
+    }
+
+    public static function destinationHandler(string $action): ?string
+    {
+        $definition = self::destinations()[$action] ?? null;
+
+        return $definition ? ($definition['handler'] ?? (isset($definition['model']) ? 'transfer' : null)) : null;
+    }
+
+    public static function requiresTarget(string $action): bool
+    {
+        return isset(self::destinations()[$action]['model']);
+    }
+
+    public static function destinationTypes(): array
+    {
+        return array_keys(self::destinations());
+    }
+
+    public static function forwardingDestinationTypes(): array
+    {
+        return [...array_values(array_filter(self::destinationTypes(), fn ($type) =>
+            self::requiresTarget($type) && in_array(self::destinationHandler($type), ['transfer', 'voicemail'], true)
+        )), 'external'];
+    }
+
+    public static function forwardingTarget(?string $action, ?string $target, ?string $external = null): ?string
+    {
+        if ($action === 'external') {
+            return $external ?? $target;
+        }
+        if (blank($target)) {
             return null;
         }
 
-        return self::MODEL_MAP[$action];
+        return match (self::destinationHandler($action ?? '')) {
+            'transfer' => self::requiresTarget($action) ? $target : null,
+            'voicemail' => '*99'.$target,
+            default => null,
+        };
+    }
+
+    public function findTarget(string $action, string $value, bool $byDestination = false): ?Model
+    {
+        $definition = self::destinations()[$action] ?? null;
+        if (! isset($definition['model']) || ! $this->domainUuid) {
+            return null;
+        }
+
+        $model = new $definition['model'];
+
+        return $this->targetQuery($definition['model'])
+            ->where($byDestination ? $definition['field'] : $model->getKeyName(), $value)->first();
+    }
+
+    /** Resolve a saved UUID through the same account-scoped lookup as destination selectors. */
+    public function summarizeTarget(string $action, ?string $targetId): array
+    {
+        $definition = self::destinations()[$action] ?? null;
+        if (! $definition || ! $this->domainUuid) {
+            return $this->summarizeOption(null);
+        }
+
+        if (! isset($definition['model'])) {
+            return $this->summarizeOption(['type' => $action]);
+        }
+
+        $target = $targetId ? $this->findTarget($action, $targetId) : null;
+        if (! $target) {
+            return $this->summarizeOption(null);
+        }
+
+        return $this->summarizeOption([
+            'type' => $action,
+            'extension' => $target->{$definition['field']},
+            'name' => $this->optionName($target, $definition['field'], $definition['name']),
+        ]);
+    }
+
+    /** Plain-language list summary for a stored Phone Numbers action. */
+    public function summarizeAction(array $action): array
+    {
+        $option = $this->reverseEngineerDestinationActions(json_encode([$action]))[0] ?? null;
+
+        return $this->summarizeOption($option);
+    }
+
+    private function summarizeOption(?array $option): array
+    {
+        $type = $option['type'] ?? null;
+        if (! $type) {
+            return ['name' => null, 'type' => null, 'invalid' => true];
+        }
+
+        $name = $option['name'] ?? null;
+        $extension = (string) ($option['extension'] ?? '');
+
+        if (filled($name) && preg_match('/^\*?\d+$/', $extension) && !str_starts_with($name, $extension)) {
+            $name = "{$extension} - {$name}";
+        }
+
+        if (!filled($name) && !in_array($type, ['hangup', 'check_voicemail', 'company_directory'], true)) {
+            $name = $extension !== '' ? $extension : null;
+        }
+
+        return [
+            'name' => $name ?: null,
+            'type' => $this->getFriendlyTypeName($type),
+            'invalid' => false,
+        ];
+    }
+
+    public function actionForTarget(string $action, ?Model $target, ?string $domainName = null): array
+    {
+        $definition = self::destinations()[$action] ?? null;
+        if (! $definition) {
+            throw ValidationException::withMessages(['target' => __('Unsupported routing action.')]);
+        }
+
+        $extension = null;
+        if (isset($definition['model'])) {
+            $model = $definition['model'];
+            if (! $target instanceof $model || ! $this->domainUuid || $target->domain_uuid !== $this->domainUuid) {
+                throw ValidationException::withMessages(['target' => __('Select a valid routing target in this account.')]);
+            }
+
+            $extension = $target->{$definition['field']};
+            if (blank($extension)) {
+                throw ValidationException::withMessages(['target' => __('The routing target has no destination.')]);
+            }
+        }
+
+        $destination = buildDestinationAction(['type' => $action, 'extension' => $extension], $domainName ?? $this->domainName);
+        if (! isset($destination['destination_app'], $destination['destination_data'])) {
+            throw ValidationException::withMessages(['target' => __('Unsupported routing action.')]);
+        }
+
+        return $destination;
     }
 }

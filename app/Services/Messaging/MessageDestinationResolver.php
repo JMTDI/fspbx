@@ -10,6 +10,12 @@ use libphonenumber\PhoneNumberFormat;
 
 class MessageDestinationResolver
 {
+    public function isLocal(string $destination): bool
+    {
+        return SmsDestinations::whereIn('destination', $this->buildPhoneLookupValues($destination))
+            ->where('enabled', 'true')->exists();
+    }
+
     public function resolve(string $destination): MessageRouteData
     {
         messaging_webhook_debug('MessageDestinationResolver resolve()', [
@@ -75,12 +81,14 @@ class MessageDestinationResolver
             'hasMobileApp' => $extension?->mobile_app !== null,
             'email' => $config->email ?: null,
             'orgId' => $orgId,
+            'inboundDelivery' => app(MessageWebhookSettings::class)->resolve($config),
+            'smsDestinationUuid' => $config->sms_destination_uuid,
         ]);
     }
 
     protected function buildPhoneLookupValues(string $number): array
     {
-        $countryCode = get_domain_setting('country', null) ?? 'US';
+        $countryCode = app(\App\Services\PhoneNumberService::class)->countryCodeForDomain();
 
         $e164 = formatPhoneNumber($number, $countryCode, PhoneNumberFormat::E164);
         $digitsOnly = preg_replace('/\D+/', '', $number ?? '');

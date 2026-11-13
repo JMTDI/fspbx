@@ -3,7 +3,6 @@
 namespace App\Services\Messaging;
 
 use App\Jobs\DeliverMessageToEmail;
-use App\Jobs\DeliverMessageToRingotel;
 use App\Jobs\SendOutboundSMSMessage;
 use App\Models\Extensions;
 use App\Models\Messages;
@@ -47,11 +46,21 @@ class RetryMessageService
             return;
         }
 
-        throw new \RuntimeException("Unsupported message direction: {$message->direction}");
+        throw new \RuntimeException(__('Unsupported message direction: :direction', ['direction' => $message->direction]));
     }
 
     protected function retryOutbound(Messages $message): void
     {
+        if ($message->isApiOutbound()) {
+            // Recover only the saved submission. Never clear terminal outcomes,
+            // resubmit the carrier request, or replace the callback snapshot.
+            \App\Jobs\PrepareApiMessage::dispatch($message->getKey())->onConnection('redis')->onQueue('messages')->afterCommit();
+            return;
+        }
+        if (RingotelSyncDispatcher::carrierAccepted($message)) {
+            app(RingotelSyncDispatcher::class)->dispatch($message);
+            return;
+        }
         $carrier = data_get($message->delivery_meta, 'outbound.provider.name');
 
         messaging_webhook_debug('Retry outbound started', [
@@ -63,7 +72,7 @@ class RetryMessageService
             $extension = Extensions::find($message->extension_uuid);
 
             if (!$extension) {
-                throw new \RuntimeException("Extension not found for outbound message {$message->message_uuid}");
+                throw new \RuntimeException(__('Extension not found for outbound message :id', ['id' => $message->message_uuid]));
             }
 
             $smsConfig = SmsDestinations::where('domain_uuid', $message->domain_uuid)
@@ -73,7 +82,7 @@ class RetryMessageService
 
             if (!$smsConfig) {
                 throw new \RuntimeException(
-                    "SMS configuration not found for source {$message->source} on extension {$extension->extension}"
+                    __('SMS configuration not found for source :source on extension :extension', ['source' => $message->source, 'extension' => $extension->extension])
                 );
             }
 
@@ -121,12 +130,8 @@ class RetryMessageService
             'email' => $route->email,
         ]);
 
-        if ($route->hasMobileApp && $route->orgId && $route->extension) {
-            DeliverMessageToRingotel::dispatch(
-                $message->message_uuid,
-                $route->orgId,
-                $route->extension
-            )->onQueue('messages');
+        $ringotelQueued = app(RingotelSyncDispatcher::class)->dispatch($message);
+        if ($ringotelQueued) {
 
             messaging_webhook_debug('Retry inbound Ringotel queued', [
                 'message_uuid' => $message->message_uuid,
@@ -146,9 +151,9 @@ class RetryMessageService
             ]);
         }
 
-        if (!$route->hasMobileApp && !$route->email) {
+        if (!$ringotelQueued && !$route->email) {
             throw new \RuntimeException(
-                "No retry destination found for inbound message {$message->message_uuid}"
+                __('No retry destination found for inbound message :id', ['id' => $message->message_uuid])
             );
         }
     }

@@ -21,9 +21,6 @@ class BusinessHoursController extends Controller
 {
 
     public $model;
-    public $filters = [];
-    public $sortField;
-    public $sortOrder;
     protected $viewName = 'BusinessHours';
     protected $searchable = ['name', 'extension', 'description'];
     protected $allowedSortFields = [
@@ -54,12 +51,17 @@ class BusinessHoursController extends Controller
         return Inertia::render(
             $this->viewName,
             [
-                'data' => function () {
-                    return $this->getData();
-                },
-
+                'pagination' => [
+                    'per_page' => fspbx_pagination_per_page($request),
+                    'per_page_options' => fspbx_pagination_options(),
+                ],
+                'permissions' => [
+                    'business_hours_create' => userCheckPermission('business_hours_create'),
+                    'business_hours_update' => userCheckPermission('business_hours_update'),
+                    'business_hours_destroy' => userCheckPermission('business_hours_delete'),
+                ],
                 'routes' => [
-                    'current_page' => route('business-hours.index'),
+                    'data_route' => route('business-hours.data'),
                     'item_options' => route('business-hours.item.options'),
                     'bulk_delete' => route('business-hours.bulk.delete'),
                     'select_all' => route('business-hours.select.all'),
@@ -73,44 +75,21 @@ class BusinessHoursController extends Controller
     /**
      *  Get data
      */
-    public function getData($paginate = 50)
+    public function getData(Request $request)
     {
+        abort_unless(userCheckPermission('business_hours_list_view'), 403);
 
-        // Check if search parameter is present and not empty
-        if (!empty(request('filterData.search'))) {
-            $this->filters['search'] = request('filterData.search');
-        }
-
-        // Add sorting criteria
-        $requestedSortField = request()->get('sortField', 'extension');
-        $requestedSortOrder = request()->get('sortOrder', 'asc');
-
-        $this->sortField = in_array($requestedSortField, $this->allowedSortFields, true)
-            ? $requestedSortField
-            : 'extension';
-        $this->sortOrder = in_array($requestedSortOrder, ['asc', 'desc'], true)
-            ? $requestedSortOrder
-            : 'asc';
-
-        $data = $this->builder($this->filters);
-
-        // Apply pagination if requested
-        if ($paginate) {
-            $data = $data->paginate($paginate);
-        } else {
-            $data = $data->get(); // This will return a collection
-        }
-
-        // logger($data);
-
-        return $data;
+        return $this->builder(
+            ['search' => $request->input('filter.search')],
+            (string) $request->input('sort', 'extension')
+        )->paginate(fspbx_pagination_per_page($request));
     }
 
     /**
      * @param  array  $filters
      * @return Builder
      */
-    public function builder(array $filters = [])
+    public function builder(array $filters = [], string $sort = 'extension')
     {
         $data =  $this->model::query();
         $domainUuid = session('domain_uuid');
@@ -129,6 +108,9 @@ class BusinessHoursController extends Controller
 
         if (is_array($filters)) {
             foreach ($filters as $field => $value) {
+                if ($value === null || $value === '') {
+                    continue;
+                }
                 if (method_exists($this, $method = "filter" . ucfirst($field))) {
                     $this->$method($data, $value);
                 }
@@ -136,7 +118,13 @@ class BusinessHoursController extends Controller
         }
 
         // Apply sorting
-        $data->orderBy($this->sortField, $this->sortOrder);
+        $sortField = ltrim($sort, '-');
+        $sortOrder = str_starts_with($sort, '-') ? 'desc' : 'asc';
+        if (! in_array($sortField, $this->allowedSortFields, true)) {
+            $sortField = 'extension';
+            $sortOrder = 'asc';
+        }
+        $data->orderBy($sortField, $sortOrder);
 
         return $data;
     }
@@ -189,7 +177,7 @@ class BusinessHoursController extends Controller
 
                 // If a model exists, use it; otherwise, create a new one
                 if (!$item) {
-                    throw new \Exception("Failed to fetch item details. Item not found");
+                    throw new \Exception(__("Failed to fetch item details. Item not found"));
                 }
 
                 $item->after_hours_target = [
@@ -294,7 +282,7 @@ class BusinessHoursController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to fetch item details']]
+                'errors' => ['server' => [__('Failed to fetch item details')]]
             ], 500);  // 500 Internal Server Error for any other errors
         }
     }
@@ -322,7 +310,7 @@ class BusinessHoursController extends Controller
     {
         if (!userCheckPermission('business_hours_create')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -386,11 +374,14 @@ class BusinessHoursController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Business hours created.']],
+                'messages' => ['success' => [__('Business hours created.')]],
                 'business_hours_uuid' =>  $businessHour->uuid,
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
+            if ($e instanceof \Illuminate\Validation\ValidationException) {
+                throw $e;
+            }
             logger(
                 'BusinessHours store error: '
                     . $e->getMessage()
@@ -398,7 +389,7 @@ class BusinessHoursController extends Controller
             );
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while saving business hours.']],
+                'messages' => ['error' => [__('Something went wrong while saving business hours.')]],
             ], 500);
         }
     }
@@ -410,25 +401,35 @@ class BusinessHoursController extends Controller
     public function generateDialPlanXML(BusinessHour $businessHour): void
     {
         // logger($businessHour);
+        // 1) if we don't yet have a dialplan_uuid, make one and persist it
+        if (! $businessHour->dialplan_uuid) {
+            $businessHour->dialplan_uuid = (string) Str::uuid();
+            $businessHour->saveQuietly(); // avoid touching update_date again
+        }
+
         // Data to pass to the Blade template
         $data = [
             'businessHour' => $businessHour,
         ];
 
         // Render the Blade template and get the XML content as a string
-        $xml = view('layouts.xml.business-hours-dial-plan-template', $data)->render();
+        try {
+            $xml = view('layouts.xml.business-hours-dial-plan-template', $data)->render();
+        } catch (\Illuminate\View\ViewException $e) {
+            // Blade wraps validation errors; preserve them for the form response.
+            for ($cause = $e; $cause; $cause = $cause->getPrevious()) {
+                if ($cause instanceof \Illuminate\Validation\ValidationException) {
+                    throw $cause;
+                }
+            }
+            throw $e;
+        }
 
         $dom = new \DOMDocument();
         $dom->preserveWhiteSpace = false;  // Removes extra spaces
         $dom->loadXML($xml);
         $dom->formatOutput = true;         // Formats XML properly
         $xml = $dom->saveXML($dom->documentElement);
-
-        // 1) if we don’t yet have a dialplan_uuid, make one and persist it
-        if (! $businessHour->dialplan_uuid) {
-            $businessHour->dialplan_uuid = (string) Str::uuid();
-            $businessHour->saveQuietly(); // avoid touching update_date again
-        }
 
         // logger($businessHour);
 
@@ -487,7 +488,7 @@ class BusinessHoursController extends Controller
     {
         if (!userCheckPermission('business_hours_update')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -557,14 +558,17 @@ class BusinessHoursController extends Controller
             // FusionCache::clear("dialplan:" . $ringGroup->ring_group_context);
 
             return response()->json([
-                'messages' => ['success' => ['Business hours updated']]
+                'messages' => ['success' => [__('Business hours updated')]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
+            if ($e instanceof \Illuminate\Validation\ValidationException) {
+                throw $e;
+            }
             logger('Business Hours update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Something went wrong while updating.']]
+                'messages' => ['error' => [__('Something went wrong while updating.')]]
             ], 500);
         }
     }
@@ -581,7 +585,7 @@ class BusinessHoursController extends Controller
         // 1) Permission check
         if (! userCheckPermission('business_hours_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -624,7 +628,7 @@ class BusinessHoursController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Selected business hour(s) deleted successfully.']]
+                'messages' => ['success' => [__('Selected business hour(s) deleted successfully.')]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -635,7 +639,7 @@ class BusinessHoursController extends Controller
             );
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting business hours.']]
+                'messages' => ['error' => [__('An error occurred while deleting business hours.')]]
             ], 500);
         }
     }
@@ -647,54 +651,24 @@ class BusinessHoursController extends Controller
      */
     protected function buildExitDestinationAction($inputs)
     {
-        switch ($inputs['failback_action']) {
-            case 'extensions':
-            case 'ring_groups':
-            case 'ivrs':
-            case 'business_hours':
-            case 'time_conditions':
-            case 'contact_centers':
-            case 'faxes':
-            case 'call_flows':
-                return  ['action' => 'transfer', 'data' => $inputs['failback_target'] . ' XML ' . session('domain_name')];
-            case 'bridges':
-                return ['action' => 'bridge', 'data' => $inputs['failback_target']];
-            case 'voicemails':
-                return ['action' => 'transfer', 'data' => '*99' . $inputs['failback_target'] . ' XML ' . session('domain_name')];
+        $destination = buildDestinationAction([
+            'type' => $inputs['failback_action'],
+            'extension' => $inputs['failback_target'] ?? null,
+        ]);
 
-            case 'recordings':
-                // Handle recordings with 'lua' destination app
-                return ['action' => 'lua', 'data' => 'streamfile.lua ' . $inputs['failback_target']];
-
-            case 'check_voicemail':
-                return ['action' => 'transfer', 'data' => '*98 XML ' . session('domain_name')];
-
-            case 'company_directory':
-                return ['action' => 'transfer', 'data' => '*411 XML ' . session('domain_name')];
-
-            case 'hangup':
-                return ['action' => 'hangup', 'data' => ''];
-
-                // Add other cases as necessary for different types
-            default:
-                return [];
-        }
+        return ['action' => $destination['destination_app'], 'data' => $destination['destination_data']];
     }
 
-
-    public function selectAll()
+    public function selectAll(Request $request)
     {
+        abort_unless(userCheckPermission('business_hours_list_view'), 403);
+
         try {
-            if (request()->get('showGlobal')) {
-                $uuids = $this->model::get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            } else {
-                $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
-                    ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            }
+            $uuids = $this->builder(['search' => $request->input('filter.search')])->pluck('uuid');
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
@@ -702,7 +676,7 @@ class BusinessHoursController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -723,7 +697,7 @@ class BusinessHoursController extends Controller
         // 2. Permission Check
         if (!userCheckPermission('business_hours_create')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -760,9 +734,9 @@ class BusinessHoursController extends Controller
             // 7. Replicate Holidays (if any exist)
             foreach ($original->holidays as $holiday) {
                 $newHoliday = $holiday->replicate();
-                $newHoliday->uuid = Str::uuid(); 
+                $newHoliday->uuid = Str::uuid();
                 $newHoliday->business_hour_uuid = $newBusinessHour->uuid;
-                $newHoliday->save();
+                $newHoliday->saveQuietly();
             }
 
             // 8. Generate Dialplan XML
@@ -771,7 +745,10 @@ class BusinessHoursController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Business Hours duplicated successfully', 'New Extension: ' . $newBusinessHour->extension]],
+                'messages' => ['success' => [
+                    __('Business Hours duplicated successfully'),
+                    __('New Extension: :extension', ['extension' => $newBusinessHour->extension]),
+                ]],
                 'business_hour_uuid' => $newBusinessHour->uuid
             ], 201);
         } catch (\Throwable $e) {
@@ -780,7 +757,7 @@ class BusinessHoursController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to duplicate business hours.']]
+                'errors' => ['server' => [__('Failed to duplicate business hours.')]]
             ], 500);
         }
     }

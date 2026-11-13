@@ -4,6 +4,7 @@ namespace App\Models;
 
 use libphonenumber\PhoneNumberFormat;
 use Illuminate\Database\Eloquent\Model;
+use App\Services\PhoneNumberService;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Destinations extends Model
@@ -82,12 +83,20 @@ class Destinations extends Model
 
     public function getDestinationNumberFormattedAttribute()
     {
-        return formatPhoneNumber($this->destination_number, 'US', PhoneNumberFormat::NATIONAL);
+        return app(PhoneNumberService::class)->formatForDomain(
+            $this->destination_number,
+            $this->domain_uuid,
+            PhoneNumberFormat::NATIONAL
+        );
     }
 
     public function getDestinationNumberE164Attribute()
     {
-        return formatPhoneNumber($this->destination_number, 'US', PhoneNumberFormat::E164);
+        return app(PhoneNumberService::class)->formatForDomain(
+            $this->destination_number,
+            $this->domain_uuid,
+            PhoneNumberFormat::E164
+        );
     }
 
     public function getRoutingOptionsAttribute()
@@ -97,6 +106,28 @@ class Destinations extends Model
         }
         $service = new \App\Services\CallRoutingOptionsService($this->domain_uuid);
         return $service->reverseEngineerDestinationActions($this->destination_actions);
+    }
+
+    /**
+     * Plain-language description of each routing action, for list displays.
+     * Each entry is ['name' => ?string, 'type' => ?string, 'invalid' => bool]. An action is
+     * invalid when it does not resolve to a destination the phone number editor can select.
+     */
+    public function routingSummary(): array
+    {
+        $actions = json_decode((string) $this->destination_actions, true);
+
+        if (!is_array($actions) || $actions === []) {
+            return [];
+        }
+
+        $service = new \App\Services\CallRoutingOptionsService($this->domain_uuid);
+
+        return collect($actions)
+            ->filter(fn ($action) => is_array($action) && filled($action['destination_app'] ?? null))
+            ->map(fn (array $action) => $service->summarizeAction($action))
+            ->values()
+            ->all();
     }
 
     public function getLabelAttribute()

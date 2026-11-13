@@ -3,8 +3,14 @@
 return [
     'webhook_debug' => env('MESSAGING_WEBHOOK_DEBUG', false),
 
+    'api' => [
+        'media_max_bytes' => 50 * 1024 * 1024,
+        'media_download_seconds' => 60,
+    ],
+
     'outbound_providers' => [
         'sinch' => \App\Services\Messaging\Outbound\Providers\SinchOutboundProvider::class,
+        'voxutel' => \App\Services\Messaging\Outbound\Providers\VoxutelOutboundProvider::class,
         'bandwidth' => \App\Services\Messaging\Outbound\Providers\BandwidthOutboundProvider::class,
         'telnyx' => \App\Services\Messaging\Outbound\Providers\TelnyxOutboundProvider::class,
         'clicksend' => \App\Services\Messaging\Outbound\Providers\ClickSendOutboundProvider::class,
@@ -12,5 +18,7 @@ return [
         'bulkvs' => \App\Services\Messaging\Outbound\Providers\BulkVSOutboundProvider::class,
         'thinq' => \App\Services\Messaging\Outbound\Providers\CommioOutboundProvider::class,
         'voipms' => \App\Services\Messaging\Outbound\Providers\VoipMsOutboundProvider::class,
+        'fibernetics' => \App\Services\Messaging\Outbound\Providers\FiberneticsOutboundProvider::class,
+        'twilio' => \App\Services\Messaging\Outbound\Providers\TwilioOutboundProvider::class,
     ],
 ];

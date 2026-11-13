@@ -1,238 +1,255 @@
 <template>
     <MainLayout />
 
-    <div class="m-3">
-        <DataTable @search-action="fetchData(1)" @reset-filters="resetFilters">
-            <template #title>Modules</template>
+    <div class="m-3 space-y-4">
+        <header class="flex flex-wrap items-end justify-between gap-3">
+            <div>
+                <p class="text-xs font-medium uppercase tracking-wider text-indigo-600">{{ $t('Switch configuration') }}</p>
+                <h1 class="mt-1 text-2xl font-semibold text-gray-900">{{ $t('FreeSWITCH Modules') }}</h1>
+                <p class="mt-1 text-sm text-gray-500">{{ $t('Manage module autoload settings and live FreeSWITCH status.') }}</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="loading"
+                    @click="refreshData"
+                >
+                    <ArrowPathIcon class="h-4 w-4" :class="{ 'animate-spin': loading }" />
+                    {{ $t('Refresh') }}
+                </button>
+                <button
+                    v-if="permissions.create"
+                    type="button"
+                    @click="openEditor()"
+                    class="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500"
+                >
+                    <PlusIcon class="h-4 w-4" />
+                    {{ $t('New module') }}
+                </button>
+            </div>
+        </header>
 
-            <template #subtitle>
-                Manage FreeSWITCH modules and their autoload state.
-            </template>
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatTile :label="$t('Total modules')" :value="stats.total" tone="gray" />
+            <StatTile :label="$t('Autoload enabled')" :value="stats.enabled" tone="indigo" />
+            <StatTile :label="$t('Running')" :value="stats.running" tone="green" />
+            <StatTile :label="$t('Stopped')" :value="stats.stopped" tone="rose" />
+        </div>
 
-            <template #filters>
-                <div class="relative mb-2 min-w-64 focus-within:z-10 sm:mr-4">
-                    <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                        <MagnifyingGlassIcon class="h-5 w-5 text-gray-400" aria-hidden="true" />
-                    </div>
-                    <input
-                        v-model="filterData.search"
-                        type="text"
-                        class="block w-full rounded-md border-0 py-1.5 pl-10 text-sm leading-6 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600"
-                        placeholder="Search"
-                        @keydown.enter="fetchData(1)"
-                    />
-                </div>
-
-                <div class="relative mb-2 min-w-44 sm:mr-4">
-                    <select
-                        v-model="filterData.module_enabled"
-                        class="block w-full rounded-md border-0 py-1.5 pl-3 pr-8 text-sm leading-6 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-blue-600"
-                        @change="fetchData(1)"
-                    >
-                        <option value="">All autoload states</option>
-                        <option :value="'true'">Enabled</option>
-                        <option :value="'false'">Disabled</option>
-                    </select>
-                </div>
-            </template>
-
-            <template #action>
-                <div class="flex flex-wrap items-center justify-end gap-2">
-                    <button
-                        type="button"
-                        class="inline-flex items-center gap-1 rounded-md bg-white px-2.5 py-1.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                        title="Refresh"
-                        :disabled="loading"
-                        @click="refreshData"
-                    >
-                        <ArrowPathIcon class="h-4 w-4 text-gray-500" :class="{ 'animate-spin': loading }" />
-                        Refresh
-                    </button>
-
-                    <a
-                        v-if="permissions.create"
-                        :href="routes.legacy_add"
-                        class="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500"
-                    >
-                        <PlusIcon class="h-4 w-4" />
-                        Add
-                    </a>
-                </div>
-            </template>
-
-            <template #navigation>
-                <Paginator
-                    :previous="data.prev_page_url"
-                    :next="data.next_page_url"
-                    :from="data.from"
-                    :to="data.to"
-                    :total="data.total"
-                    :currentPage="data.current_page"
-                    :lastPage="data.last_page"
-                    :links="data.links"
-                    :bulk-actions="bulkActions"
-                    :has-selected-items="selectedItems.length > 0"
-                    @pagination-change-page="fetchData"
-                    @bulk-action="handleBulkAction"
-                />
-            </template>
-
-            <template #table-header>
-                <TableColumnHeader class="px-4 py-3.5 text-left text-sm font-semibold text-gray-900">
-                    <div class="flex items-center">
+        <div class="flex flex-col gap-4 lg:flex-row">
+            <aside class="lg:w-72 lg:shrink-0">
+                <div class="rounded-lg bg-white p-3 shadow-sm ring-1 ring-gray-200">
+                    <div class="relative mb-3">
+                        <MagnifyingGlassIcon class="pointer-events-none absolute inset-y-0 left-3 my-auto h-4 w-4 text-gray-400" />
                         <input
-                            v-if="hasSelectableActions"
-                            v-model="selectPageItems"
-                            type="checkbox"
-                            :disabled="pageItems.length === 0"
-                            class="h-4 w-4 rounded border-gray-300 text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            v-model="filterData.search"
+                            type="text"
+                            :placeholder="$t('Search modules...')"
+                            class="block w-full rounded-md border-0 py-1.5 pl-9 text-sm text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600"
                         />
-                        <button class="flex items-center" :class="{ 'ml-4': hasSelectableActions }" @click="setSort('module_label')">
-                            <span class="mr-2">Module</span>
-                            <ChevronUpIcon v-if="sortData.name === 'module_label' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
-                            <ChevronDownIcon v-else-if="sortData.name === 'module_label' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
-                        </button>
                     </div>
-                </TableColumnHeader>
-                <TableColumnHeader class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900">
-                    <button class="flex items-center" @click="setSort('module_category')">
-                        <span class="mr-2">Category</span>
-                        <ChevronUpIcon v-if="sortData.name === 'module_category' && sortData.order === 'asc'" class="h-4 w-4 text-gray-500" />
-                        <ChevronDownIcon v-else-if="sortData.name === 'module_category' && sortData.order === 'desc'" class="h-4 w-4 text-gray-500" />
-                    </button>
-                </TableColumnHeader>
-                <TableColumnHeader header="Runtime" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Autoload" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Description" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader v-if="hasRowActions" header="" class="px-2 py-3.5 text-right text-sm font-semibold text-gray-900" />
-            </template>
 
-            <template v-if="selectPageItems" #current-selection>
-                <td :colspan="columnCount">
-                    <div class="m-2 text-center text-sm">
-                        <span class="font-semibold">{{ selectedItems.length }}</span> modules are selected.
-                        <button
-                            v-if="!selectAll && selectedItems.length !== data.total"
-                            class="rounded px-2 py-2 text-blue-500 transition duration-500 ease-in-out hover:bg-blue-200 hover:text-blue-500 focus:bg-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-300"
-                            @click="selectAllMatching"
-                        >
-                            Select all {{ data.total }} modules
-                        </button>
-                        <button
-                            v-if="selectAll"
-                            class="rounded px-2 py-2 text-blue-500 transition duration-500 ease-in-out hover:bg-blue-200 hover:text-blue-500 focus:bg-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-300"
-                            @click="clearSelection"
-                        >
-                            Clear selection
-                        </button>
+                    <div class="mb-3 space-y-2">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500">{{ $t('Runtime') }}</label>
+                            <select
+                                v-model="filterData.runtime"
+                                class="mt-1 block w-full rounded-md border-0 py-1.5 pl-2 pr-8 text-sm text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-indigo-600"
+                            >
+                                <option value="all">{{ $t('Any status') }}</option>
+                                <option value="running">{{ $t('Running') }}</option>
+                                <option value="stopped">{{ $t('Stopped') }}</option>
+                                <option value="unknown">{{ $t('Unknown') }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500">{{ $t('Autoload') }}</label>
+                            <select
+                                v-model="filterData.autoload"
+                                class="mt-1 block w-full rounded-md border-0 py-1.5 pl-2 pr-8 text-sm text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-indigo-600"
+                            >
+                                <option value="all">{{ $t('Any status') }}</option>
+                                <option value="true">{{ $t('Enabled') }}</option>
+                                <option value="false">{{ $t('Disabled') }}</option>
+                            </select>
+                        </div>
                     </div>
-                </td>
-            </template>
 
-            <template #table-body>
-                <tr v-for="row in data.data" :key="row.module_uuid">
-                    <TableField class="px-4 py-2 text-sm text-gray-500">
-                        <div class="flex items-center">
-                            <input
-                                v-if="hasSelectableActions"
-                                v-model="selectedItems"
-                                type="checkbox"
-                                :value="row.module_uuid"
-                                class="h-4 w-4 rounded border-gray-300 text-indigo-600"
-                            />
-                            <div class="min-w-0" :class="{ 'ml-4': hasSelectableActions }">
-                                <a
-                                    v-if="permissions.update"
-                                    :href="row.edit_url"
-                                    class="font-medium text-gray-900 hover:text-indigo-600"
-                                >
-                                    {{ row.module_label }}
-                                </a>
-                                <div v-else class="font-medium text-gray-900">{{ row.module_label }}</div>
-                                <div class="mt-1 truncate text-xs text-gray-400">{{ row.module_name }}</div>
+                    <p class="px-1 pb-1 text-xs font-medium uppercase tracking-wider text-gray-400">{{ $t('Categories') }}</p>
+                    <nav class="max-h-[60vh] space-y-0.5 overflow-y-auto" :aria-label="$t('Module categories')">
+                        <button type="button" :class="categoryButtonClass('')" @click="selectedCategory = ''">
+                            <span class="min-w-0 flex-1 truncate">{{ $t('All') }}</span>
+                            <span :class="categoryBadgeClass('')">{{ filteredRows.length }}</span>
+                        </button>
+                        <button
+                            v-for="category in categoriesWithCounts"
+                            :key="category.value"
+                            type="button"
+                            :class="categoryButtonClass(category.value)"
+                            @click="selectedCategory = category.value"
+                        >
+                            <span class="min-w-0 flex-1 truncate">{{ category.label }}</span>
+                            <span :class="categoryBadgeClass(category.value)">{{ category.count }}</span>
+                        </button>
+                        <p v-if="!categoriesWithCounts.length" class="px-3 py-2 text-xs text-gray-400">{{ $t('No matching categories') }}</p>
+                    </nav>
+                </div>
+            </aside>
+
+            <section class="min-w-0 flex-1">
+                <div class="rounded-lg bg-white shadow-sm ring-1 ring-gray-200">
+                    <header class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+                        <div>
+                            <h2 class="text-base font-semibold text-gray-900">{{ selectedCategoryLabel }}</h2>
+                            <p class="text-xs text-gray-500">{{ $tChoice(':count module shown|:count modules shown', displayedRows.length) }}</p>
+                        </div>
+                        <div v-if="hasSelectableActions" class="flex flex-wrap items-center gap-2">
+                            <button
+                                v-if="displayedRows.length"
+                                type="button"
+                                class="text-xs text-gray-500 hover:text-gray-900"
+                                @click="toggleSelectAllVisible"
+                            >
+                                {{ allVisibleSelected ? $t('Clear selection') : $t('Select visible') }}
+                            </button>
+                            <div v-if="selectedItems.length" class="flex flex-wrap items-center gap-1 rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">
+                                <span>{{ $t(':count selected', { count: selectedItems.length }) }}</span>
+                                <button v-if="permissions.update" type="button" class="rounded px-1.5 py-0.5 hover:bg-indigo-100" @click="handleBulkActionRequest('start')">{{ $t('Start') }}</button>
+                                <button v-if="permissions.update" type="button" class="rounded px-1.5 py-0.5 hover:bg-indigo-100" @click="handleBulkActionRequest('stop')">{{ $t('Stop') }}</button>
+                                <button v-if="permissions.update" type="button" class="rounded px-1.5 py-0.5 hover:bg-indigo-100" @click="handleBulkActionRequest('toggle')">{{ $t('Toggle autoload') }}</button>
+                                <button v-if="permissions.destroy" type="button" class="rounded px-1.5 py-0.5 text-rose-700 hover:bg-rose-100" @click="handleBulkActionRequest('delete')">{{ $t('Delete') }}</button>
                             </div>
                         </div>
-                    </TableField>
+                    </header>
 
-                    <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500">
-                        <Badge :text="row.module_category" v-bind="categoryBadge" />
-                    </TableField>
+                    <div v-if="loading" class="px-4 py-12">
+                        <Loading :show="true" :absolute="false" />
+                    </div>
 
-                    <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500">
-                        <Badge :text="runtimeLabel(row.status)" v-bind="runtimeBadge(row.status)" />
-                    </TableField>
+                    <ul v-else-if="displayedRows.length" class="divide-y divide-gray-100">
+                        <li
+                            v-for="row in displayedRows"
+                            :key="row.module_uuid"
+                            class="flex flex-col gap-3 px-4 py-3 transition hover:bg-gray-50 sm:flex-row sm:items-start"
+                        >
+                            <div class="flex min-w-0 flex-1 items-start gap-3">
+                                <input
+                                    v-if="hasSelectableActions"
+                                    v-model="selectedItems"
+                                    type="checkbox"
+                                    :value="row.module_uuid"
+                                    :aria-label="$t('Select :name', { name: row.module_label })"
+                                    class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-600"
+                                />
 
-                    <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500">
-                        <button v-if="permissions.update" type="button" @click="confirmAction('toggle', [row.module_uuid])">
-                            <Badge :text="row.module_enabled === 'true' ? 'Enabled' : 'Disabled'" v-bind="enabledBadge(row.module_enabled)" />
-                        </button>
-                        <Badge v-else :text="row.module_enabled === 'true' ? 'Enabled' : 'Disabled'" v-bind="enabledBadge(row.module_enabled)" />
-                    </TableField>
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                        <h3 class="text-sm font-semibold text-gray-900">{{ row.module_label }}</h3>
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center rounded-md bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-700 ring-1 ring-inset ring-indigo-600/20 hover:bg-indigo-100"
+                                            :title="$t('Filter by :category', { category: row.module_category })"
+                                            @click="selectedCategory = row.module_category"
+                                        >
+                                            {{ moduleCategoryLabel(row.module_category) }}
+                                        </button>
+                                        <code class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-600">{{ row.module_name }}</code>
+                                    </div>
+                                    <p class="mt-1 text-xs text-gray-500">{{ row.module_description || $t('No description') }}</p>
+                                    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+                                        <span>{{ $t('Order') }} {{ row.module_order ?? 0 }}</span>
+                                    </div>
+                                </div>
+                            </div>
 
-                    <TableField class="max-w-xl px-2 py-2 text-sm text-gray-500">
-                        <span class="line-clamp-2">{{ row.module_description || "No description" }}</span>
-                    </TableField>
-
-                    <TableField v-if="hasRowActions" class="whitespace-nowrap px-2 py-1 text-sm text-gray-500">
-                        <template #action-buttons>
-                            <div class="flex items-center justify-end gap-1">
+                            <div class="flex shrink-0 flex-wrap items-center gap-2 sm:max-w-[26rem] sm:justify-end">
+                                <span :class="runtimeStatusClass(row.status)">
+                                    <span :class="['mr-1 inline-block h-1.5 w-1.5 rounded-full', runtimeDotClass(row.status)]" />
+                                    {{ runtimeLabel(row.status) }}
+                                </span>
                                 <button
                                     v-if="permissions.update && row.status === 'stopped'"
                                     type="button"
-                                    class="rounded-full p-2 text-gray-400 transition hover:bg-gray-100 hover:text-green-600 disabled:cursor-not-allowed disabled:opacity-40"
-                                    title="Start"
+                                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
                                     :disabled="!row.can_control_runtime"
+                                    :title="$t('Start module')"
                                     @click="confirmAction('start', [row.module_uuid])"
                                 >
-                                    <PlayIcon class="h-5 w-5" />
+                                    <PlayIcon class="h-3.5 w-3.5" />
+                                    {{ $t('Start') }}
                                 </button>
                                 <button
                                     v-if="permissions.update && row.status === 'running'"
                                     type="button"
-                                    class="rounded-full p-2 text-gray-400 transition hover:bg-gray-100 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-40"
-                                    title="Stop"
+                                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"
                                     :disabled="!row.can_control_runtime"
+                                    :title="$t('Stop module')"
                                     @click="confirmAction('stop', [row.module_uuid])"
                                 >
-                                    <StopIcon class="h-5 w-5" />
+                                    <StopIcon class="h-3.5 w-3.5" />
+                                    {{ $t('Stop') }}
                                 </button>
-                                <a
+                                <button
                                     v-if="permissions.update"
-                                    :href="row.edit_url"
-                                    class="rounded-full p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
-                                    title="Edit"
+                                    type="button"
+                                    :class="autoloadStatusClass(row.module_enabled)"
+                                    :title="row.module_enabled === 'true' ? $t('Disable module autoload') : $t('Enable module autoload')"
+                                    @click="confirmAction('toggle', [row.module_uuid])"
                                 >
-                                    <PencilSquareIcon class="h-5 w-5" />
-                                </a>
+                                    <span :class="['mr-1 inline-block h-1.5 w-1.5 rounded-full', row.module_enabled === 'true' ? 'bg-indigo-500' : 'bg-gray-400']" />
+                                    {{ row.module_enabled === 'true' ? $t('Autoload enabled') : $t('Autoload disabled') }}
+                                </button>
+                                <span v-else :class="autoloadStatusClass(row.module_enabled)">
+                                    <span :class="['mr-1 inline-block h-1.5 w-1.5 rounded-full', row.module_enabled === 'true' ? 'bg-indigo-500' : 'bg-gray-400']" />
+                                    {{ row.module_enabled === 'true' ? $t('Autoload enabled') : $t('Autoload disabled') }}
+                                </span>
+                                <button
+                                    v-if="permissions.update"
+                                    type="button"
+                                    @click="openEditor(row)"
+                                    class="rounded-md px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
+                                >
+                                    {{ $t('Edit') }}
+                                </button>
                                 <button
                                     v-if="permissions.destroy"
                                     type="button"
-                                    class="rounded-full p-2 text-gray-400 transition hover:bg-gray-100 hover:text-red-600"
-                                    title="Delete"
+                                    class="rounded-md px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
                                     @click="confirmAction('delete', [row.module_uuid])"
                                 >
-                                    <TrashIcon class="h-5 w-5" />
+                                    {{ $t('Delete') }}
                                 </button>
                             </div>
-                        </template>
-                    </TableField>
-                </tr>
-            </template>
+                        </li>
+                    </ul>
 
-            <template #empty>
-                <div v-if="!loading && data.data.length === 0" class="px-6 py-8 text-center text-sm text-gray-500">
-                    No modules found.
+                    <div v-else class="px-4 py-12 text-center">
+                        <p class="text-sm font-medium text-gray-900">{{ $t('No modules match your filters') }}</p>
+                        <p class="mt-1 text-xs text-gray-500">{{ $t('Try clearing search, runtime, or autoload filters.') }}</p>
+                        <button
+                            type="button"
+                            class="mt-3 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+                            @click="resetFilters"
+                        >
+                            {{ $t('Reset filters') }}
+                        </button>
+                    </div>
                 </div>
-            </template>
-        </DataTable>
+            </section>
+        </div>
     </div>
+
+    <SwitchModuleEditModal :show="showEditor" :loading="editorLoading" :item="editorItem"
+        :categories="editorCategories" :route="editorRoute" @close="closeEditor"
+        @saved="handleModuleSaved" @error="handleError" />
 
     <ConfirmationModal
         :show="confirmation.show"
         :header="confirmation.header"
         :text="confirmation.text"
         :confirm-button-label="confirmation.button"
-        cancel-button-label="Cancel"
+        :cancel-button-label="$t('Cancel')"
         :loading="confirmation.loading"
         :color="confirmation.color"
         @close="closeConfirmation"
@@ -243,55 +260,60 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { trans, transChoice } from '@i18n';
+import { computed, h, onMounted, ref, watch } from "vue";
+import axios from "axios";
 import MainLayout from "../Layouts/MainLayout.vue";
-import DataTable from "./components/general/DataTable.vue";
-import Paginator from "./components/general/Paginator.vue";
-import TableColumnHeader from "./components/general/TableColumnHeader.vue";
-import TableField from "./components/general/TableField.vue";
-import Badge from "./components/general/Badge.vue";
+import Loading from "./components/general/Loading.vue";
 import ConfirmationModal from "./components/modal/ConfirmationModal.vue";
+import SwitchModuleEditModal from "./components/modal/SwitchModuleEditModal.vue";
 import Notification from "./components/notifications/Notification.vue";
-import {
-    ArrowPathIcon,
-    ChevronDownIcon,
-    ChevronUpIcon,
-    MagnifyingGlassIcon,
-    PencilSquareIcon,
-    PlusIcon,
-    TrashIcon,
-} from "@heroicons/vue/24/outline";
+import { ArrowPathIcon, MagnifyingGlassIcon, PlusIcon } from "@heroicons/vue/24/outline";
 import { PlayIcon, StopIcon } from "@heroicons/vue/20/solid";
+
+const StatTile = (props) => {
+    const toneMap = {
+        gray: "text-gray-900",
+        indigo: "text-indigo-600",
+        green: "text-green-600",
+        rose: "text-rose-600",
+    };
+
+    return h("div", { class: "rounded-lg bg-white p-3 shadow-sm ring-1 ring-gray-200" }, [
+        h("p", { class: "text-xs text-gray-500" }, props.label),
+        h("p", { class: ["mt-0.5 text-xl font-semibold", toneMap[props.tone] || toneMap.gray] }, String(props.value ?? 0)),
+    ]);
+};
+StatTile.props = ["label", "value", "tone"];
 
 const props = defineProps({
     routes: Object,
     permissions: Object,
 });
 
-const data = ref({
-    data: [],
-    current_page: 1,
-    last_page: 1,
-    links: [],
-    from: 0,
-    to: 0,
-    total: 0,
-});
-const filterData = ref({ search: "", module_enabled: "" });
-const sortData = ref({ name: "module_category", order: "asc" });
-const selectedItems = ref([]);
-const selectAll = ref(false);
+const allRows = ref([]);
 const loading = ref(false);
+const selectedItems = ref([]);
+const selectedCategory = ref("");
+const filterData = ref({ search: "", runtime: "all", autoload: "all" });
 const notificationShow = ref(false);
 const notificationType = ref("success");
 const notificationMessages = ref(null);
+const showEditor = ref(false);
+const editorLoading = ref(false);
+const editorItem = ref({});
+const editorCategories = ref([]);
+let editorRequest = 0;
+const editorRoute = computed(() => editorItem.value.module_uuid
+    ? routes.value.update.replace('__MODULE__', editorItem.value.module_uuid)
+    : routes.value.store);
 const confirmation = ref({
     show: false,
     action: null,
     items: [],
     header: "",
     text: "",
-    button: "Continue",
+    button: trans('Continue'),
     color: "indigo",
     loading: false,
 });
@@ -299,177 +321,225 @@ const confirmation = ref({
 const routes = computed(() => props.routes || {});
 const permissions = computed(() => props.permissions || {});
 const hasSelectableActions = computed(() => permissions.value.update || permissions.value.destroy);
-const hasRowActions = computed(() => permissions.value.update || permissions.value.destroy);
-const pageItems = computed(() => data.value.data.map((row) => row.module_uuid));
-const columnCount = computed(() => 5 + (hasRowActions.value ? 1 : 0));
-const selectPageItems = computed({
-    get() {
-        return pageItems.value.length > 0 && pageItems.value.every((uuid) => selectedItems.value.includes(uuid));
-    },
-    set(checked) {
-        selectAll.value = false;
-        if (checked) {
-            selectedItems.value = Array.from(new Set([...selectedItems.value, ...pageItems.value]));
-            return;
+
+const stats = computed(() => ({
+    total: allRows.value.length,
+    enabled: allRows.value.filter((row) => row.module_enabled === "true").length,
+    running: allRows.value.filter((row) => row.status === "running").length,
+    stopped: allRows.value.filter((row) => row.status === "stopped").length,
+}));
+
+const filteredRows = computed(() => {
+    const search = filterData.value.search.trim().toLowerCase();
+
+    return allRows.value.filter((row) => {
+        if (filterData.value.runtime !== "all" && row.status !== filterData.value.runtime) {
+            return false;
         }
-        selectedItems.value = selectedItems.value.filter((uuid) => !pageItems.value.includes(uuid));
-    },
+
+        if (filterData.value.autoload !== "all" && row.module_enabled !== filterData.value.autoload) {
+            return false;
+        }
+
+        if (search) {
+            const haystack = [row.module_label, row.module_name, row.module_category, row.module_description]
+                .filter((value) => value !== null && value !== undefined)
+                .join(" ")
+                .toLowerCase();
+
+            if (!haystack.includes(search)) {
+                return false;
+            }
+        }
+
+        return true;
+    });
 });
 
-const categoryBadge = {
-    backgroundColor: "bg-slate-50",
-    textColor: "text-slate-700",
-    ringColor: "ring-slate-600/20",
-};
+const categoriesWithCounts = computed(() => {
+    const counts = new Map();
 
-const bulkActions = computed(() => {
-    const actions = [];
-
-    if (permissions.value.update) {
-        actions.push({ id: "start", label: "Start", icon: "PlayIcon" });
-        actions.push({ id: "stop", label: "Stop", icon: "StopIcon" });
-        actions.push({ id: "toggle", label: "Toggle", icon: "SyncIcon" });
+    for (const row of filteredRows.value) {
+        const category = row.module_category || 'Uncategorized';
+        counts.set(category, (counts.get(category) || 0) + 1);
     }
 
-    if (permissions.value.destroy) {
-        actions.push({ id: "delete", label: "Delete", icon: "TrashIcon" });
+    return Array.from(counts.entries())
+        .map(([value, count]) => ({ value, label: moduleCategoryLabel(value), count }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+});
+
+const displayedRows = computed(() => {
+    const rows = selectedCategory.value
+        ? filteredRows.value.filter((row) => (row.module_category || 'Uncategorized') === selectedCategory.value)
+        : filteredRows.value;
+
+    return [...rows].sort((a, b) => {
+        const categoryComparison = String(a.module_category || "").localeCompare(String(b.module_category || ""));
+        if (categoryComparison !== 0) {
+            return categoryComparison;
+        }
+
+        const orderComparison = Number(a.module_order ?? 0) - Number(b.module_order ?? 0);
+        if (orderComparison !== 0) {
+            return orderComparison;
+        }
+
+        return String(a.module_label || "").localeCompare(String(b.module_label || ""));
+    });
+});
+
+const selectedCategoryLabel = computed(() => selectedCategory.value ? moduleCategoryLabel(selectedCategory.value) : trans('All modules'));
+
+function moduleCategoryLabel(category) {
+    return {
+        Uncategorized: trans('Uncategorized'),
+        Applications: trans('Applications'),
+        Auto: trans('Auto'),
+        Codecs: trans('Codecs'),
+        'Dialplan Interfaces': trans('Dialplan Interfaces'),
+        Endpoints: trans('Endpoints'),
+        'Event Handlers': trans('Event Handlers'),
+        'File Format Interfaces': trans('File Format Interfaces'),
+        Languages: trans('Languages'),
+        Loggers: trans('Loggers'),
+        Say: trans('Say'),
+        'Speech Recognition / Text to Speech': trans('Speech Recognition / Text to Speech'),
+        'Streams / Files': trans('Streams / Files'),
+        'XML Interfaces': trans('XML Interfaces'),
+    }[category] ?? category;
+}
+
+const allVisibleSelected = computed(() => {
+    if (!displayedRows.value.length) {
+        return false;
     }
 
-    return actions;
+    return displayedRows.value.every((row) => selectedItems.value.includes(row.module_uuid));
 });
 
 watch(
-    () => data.value.current_page,
+    [selectedCategory, () => filterData.value.search, () => filterData.value.runtime, () => filterData.value.autoload],
     () => {
-        selectAll.value = false;
+        selectedItems.value = [];
     }
 );
 
+watch(categoriesWithCounts, (categories) => {
+    if (selectedCategory.value && !categories.some((category) => category.value === selectedCategory.value)) {
+        selectedCategory.value = "";
+    }
+});
+
 onMounted(() => fetchData());
 
-function resolvePage(page = 1) {
-    if (typeof page === "number") {
-        return page;
-    }
+function fetchData({ force = false, silent = false } = {}) {
+    if (!silent) loading.value = true;
 
-    if (!page) {
-        return 1;
-    }
-
-    try {
-        return Number(new URL(page, window.location.origin).searchParams.get("page") || 1);
-    } catch {
-        return 1;
-    }
-}
-
-function queryParams(page = 1, force = false) {
-    const params = { page };
-
-    if (filterData.value.search) {
-        params["filter[search]"] = filterData.value.search;
-    }
-
-    if (filterData.value.module_enabled) {
-        params["filter[module_enabled]"] = filterData.value.module_enabled;
-    }
-
-    if (sortData.value.name) {
-        params.sort = `${sortData.value.order === "desc" ? "-" : ""}${sortData.value.name}`;
-    }
-
+    const params = { page: 1, per_page: 5000 };
     if (force) {
         params._ = Date.now();
     }
 
-    return params;
-}
-
-function fetchData(page = 1, force = false) {
-    loading.value = true;
-    const requestedPage = resolvePage(page);
-
     axios
-        .get(routes.value.data_route, { params: queryParams(requestedPage, force) })
+        .get(routes.value.data_route, { params })
         .then((response) => {
-            data.value = response.data;
+            allRows.value = response.data?.data || [];
+            const remainingIds = new Set(allRows.value.map((row) => row.module_uuid));
+            selectedItems.value = silent
+                ? selectedItems.value.filter((uuid) => remainingIds.has(uuid))
+                : [];
         })
         .catch(handleError)
         .finally(() => {
-            loading.value = false;
+            if (!silent) loading.value = false;
         });
 }
 
 function refreshData() {
-    fetchData(data.value.current_page || 1, true);
+    fetchData({ force: true });
 }
 
-function setSort(column) {
-    if (sortData.value.name === column) {
-        sortData.value.order = sortData.value.order === "asc" ? "desc" : "asc";
-    } else {
-        sortData.value.name = column;
-        sortData.value.order = "asc";
-    }
+async function openEditor(row = null) {
+    const request = ++editorRequest;
+    editorItem.value = {};
+    editorLoading.value = true;
+    showEditor.value = true;
 
-    fetchData(1);
+    try {
+        const response = await axios.post(routes.value.item_options, row ? { itemUuid: row.module_uuid } : {});
+        if (request !== editorRequest) return;
+        editorItem.value = response.data.item;
+        editorCategories.value = response.data.categories;
+    } catch (error) {
+        if (request !== editorRequest) return;
+        closeEditor();
+        handleError(error);
+    } finally {
+        if (request === editorRequest) editorLoading.value = false;
+    }
+}
+
+function closeEditor() {
+    showEditor.value = false;
+    editorRequest++;
+}
+
+function handleModuleSaved(result) {
+    showNotification(result.success ? 'success' : 'error', result.messages);
+    fetchData({ force: true, silent: true });
 }
 
 function resetFilters() {
-    filterData.value = { search: "", module_enabled: "" };
-    fetchData(1);
+    filterData.value = { search: "", runtime: "all", autoload: "all" };
+    selectedCategory.value = "";
 }
 
-function selectAllMatching() {
-    axios
-        .post(routes.value.select_all, { filter: filterData.value })
-        .then((response) => {
-            selectedItems.value = response.data.items;
-            selectAll.value = true;
-            showNotification("success", response.data.messages);
-        })
-        .catch(handleError);
+function toggleSelectAllVisible() {
+    const visibleItems = displayedRows.value.map((row) => row.module_uuid);
+
+    if (allVisibleSelected.value) {
+        selectedItems.value = selectedItems.value.filter((uuid) => !visibleItems.includes(uuid));
+        return;
+    }
+
+    selectedItems.value = Array.from(new Set([...selectedItems.value, ...visibleItems]));
 }
 
-function clearSelection() {
-    selectedItems.value = [];
-    selectAll.value = false;
-}
-
-function handleBulkAction(action) {
+function handleBulkActionRequest(action) {
     confirmAction(action, selectedItems.value);
 }
 
 function confirmAction(action, items) {
     if (!items.length) {
-        showNotification("error", { request: ["No modules selected."] });
+        showNotification("error", { request: [trans('No modules selected.')] });
         return;
     }
 
     const count = items.length;
     const copy = {
         start: {
-            header: "Start modules?",
-            text: `Start ${count} selected module${count === 1 ? "" : "s"} in FreeSWITCH.`,
-            button: "Start",
+            header: trans('Start modules?'),
+            text: transChoice('Start :count selected module in FreeSWITCH.|Start :count selected modules in FreeSWITCH.', count),
+            button: trans('Start'),
             color: "green",
         },
         stop: {
-            header: "Stop modules?",
-            text: `Stop ${count} selected module${count === 1 ? "" : "s"} in FreeSWITCH.`,
-            button: "Stop",
+            header: trans('Stop modules?'),
+            text: transChoice('Stop :count selected module in FreeSWITCH.|Stop :count selected modules in FreeSWITCH.', count),
+            button: trans('Stop'),
             color: "red",
         },
         toggle: {
-            header: "Toggle autoload?",
-            text: `Toggle autoload for ${count} selected module${count === 1 ? "" : "s"}.`,
-            button: "Toggle",
+            header: trans('Toggle autoload?'),
+            text: transChoice('Toggle autoload for :count selected module.|Toggle autoload for :count selected modules.', count),
+            button: trans('Toggle'),
             color: "indigo",
         },
         delete: {
-            header: "Delete modules?",
-            text: `Delete ${count} selected module${count === 1 ? "" : "s"}.`,
-            button: "Delete",
+            header: trans('Delete modules?'),
+            text: transChoice('Delete :count selected module.|Delete :count selected modules.', count),
+            button: trans('Delete'),
             color: "red",
         },
     }[action];
@@ -498,13 +568,12 @@ function executeConfirmedAction() {
         .then((response) => {
             showNotification("success", response.data.messages);
             closeConfirmation();
-            clearSelection();
-            refreshData();
+            fetchData({ force: true, silent: true });
         })
         .catch((error) => {
             handleError(error);
             closeConfirmation();
-            refreshData();
+            fetchData({ force: true, silent: true });
         })
         .finally(() => {
             confirmation.value.loading = false;
@@ -515,26 +584,54 @@ function closeConfirmation() {
     confirmation.value.show = false;
 }
 
+function categoryButtonClass(category) {
+    const active = selectedCategory.value === category;
+
+    return [
+        "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition",
+        active ? "bg-indigo-50 font-medium text-indigo-700" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900",
+    ];
+}
+
+function categoryBadgeClass(category) {
+    return [
+        "ml-auto rounded-full px-2 py-0.5 text-[11px] font-medium",
+        selectedCategory.value === category ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-500",
+    ];
+}
+
 function runtimeLabel(status) {
     return {
-        running: "Running",
-        stopped: "Stopped",
-        unknown: "Unknown",
-    }[status] || "Unknown";
+        running: trans('Running'),
+        stopped: trans('Stopped'),
+        unknown: trans('Unknown'),
+    }[status] || trans('Unknown');
 }
 
-function runtimeBadge(status) {
+function runtimeStatusClass(status) {
+    const tone = {
+        running: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+        stopped: "bg-rose-50 text-rose-700 ring-rose-600/20",
+        unknown: "bg-gray-50 text-gray-600 ring-gray-500/20",
+    }[status] || "bg-gray-50 text-gray-600 ring-gray-500/20";
+
+    return ["inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset", tone];
+}
+
+function runtimeDotClass(status) {
     return {
-        running: { backgroundColor: "bg-emerald-50", textColor: "text-emerald-700", ringColor: "ring-emerald-600/20" },
-        stopped: { backgroundColor: "bg-rose-50", textColor: "text-rose-700", ringColor: "ring-rose-600/20" },
-        unknown: { backgroundColor: "bg-gray-50", textColor: "text-gray-600", ringColor: "ring-gray-500/20" },
-    }[status] || { backgroundColor: "bg-gray-50", textColor: "text-gray-600", ringColor: "ring-gray-500/20" };
+        running: "bg-emerald-500",
+        stopped: "bg-rose-500",
+        unknown: "bg-gray-400",
+    }[status] || "bg-gray-400";
 }
 
-function enabledBadge(enabled) {
-    return enabled === "true"
-        ? { backgroundColor: "bg-blue-50", textColor: "text-blue-700", ringColor: "ring-blue-600/20" }
-        : { backgroundColor: "bg-gray-50", textColor: "text-gray-600", ringColor: "ring-gray-500/20" };
+function autoloadStatusClass(enabled) {
+    const tone = enabled === "true"
+        ? "bg-indigo-50 text-indigo-700 ring-indigo-600/20 hover:bg-indigo-100"
+        : "bg-gray-50 text-gray-600 ring-gray-500/20 hover:bg-gray-100";
+
+    return ["inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset", tone];
 }
 
 function showNotification(type, messages = null) {
@@ -545,7 +642,7 @@ function showNotification(type, messages = null) {
 
 function handleError(error) {
     if (error?.response?.status === 419) {
-        showNotification("error", { request: ["Session expired. Reload the page."] });
+        showNotification("error", { request: [trans('Session expired. Reload the page.')] });
         return;
     }
 
@@ -554,6 +651,6 @@ function handleError(error) {
         return;
     }
 
-    showNotification("error", { request: [error?.message || "Request failed."] });
+    showNotification("error", { request: [error?.message || trans('Request failed.')] });
 }
 </script>

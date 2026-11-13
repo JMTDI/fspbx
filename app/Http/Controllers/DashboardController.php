@@ -16,8 +16,10 @@ use App\Models\Extensions;
 use App\Models\RingGroups;
 use App\Models\Voicemails;
 use App\Models\Destinations;
+use App\Models\DynamicRoute;
 use Illuminate\Support\Carbon;
 use App\Models\CallCenterQueues;
+use App\Models\CallCenterAgents;
 use App\Models\WakeupCall;
 use App\Models\WhitelistedNumbers;
 use App\Services\CdrDataService;
@@ -27,7 +29,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Horizon\Contracts\MasterSupervisorRepository;
 use App\Services\FreeswitchEslService;
+use App\Services\SipRegistrationSummaryService;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Route;
 
 class DashboardController extends Controller
 {
@@ -57,8 +61,11 @@ class DashboardController extends Controller
                     'data_route' => route('dashboard.data'),
                     'counts_route' => route('dashboard.counts'),
                     'my_extension_status_route' => route('dashboard.my-extension-status'),
+                    'call_stats_route' => route('dashboard.call-stats'),
+                    'cdrs_page' => route('cdrs.index'),
                     'customer_notes_route' => route('dashboard.customer-notes'),
                     'extension_item_options' => route('extensions.item.options'),
+                    'agent_status_update' => $this->agentStatusUpdateRoute(),
                 ]
             ]
         );
@@ -69,11 +76,12 @@ class DashboardController extends Controller
         $permissions = [];
         $permissions['extension_view'] = userCheckPermission('extension_view');
         $permissions['account_settings_index'] = userCheckPermission('account_settings_list_view');
+        $permissions['cdr_view'] = userCheckPermission('xml_cdr_view');
 
         return array_merge($permissions, CustomerNotesController::permissionFlags());
     }
 
-    public function getCounts()
+    public function getCounts(SipRegistrationSummaryService $registrationSummaryService)
     {
         $domain_uuid = session('domain_uuid');
 
@@ -187,6 +195,12 @@ class DashboardController extends Controller
                 ->count();
         }
 
+        if (userCheckPermission('dynamic_route_view')) {
+            $counts['dynamic_routes'] = DynamicRoute::where('domain_uuid', $domain_uuid)
+                ->where('enabled', true)
+                ->count();
+        }
+
         if (userCheckPermission("business_hours_list_view")) {
             //Business Hours Count
             $counts['business_hours'] = BusinessHour::where('domain_uuid', $domain_uuid)
@@ -220,33 +234,59 @@ class DashboardController extends Controller
             $counts['queues'] = CallCenterQueues::where('domain_uuid', $domain_uuid)->count();
         }
 
-        if (
-            Module::has('Billing')
-            && Module::collections()->has('Billing')
-            && userCheckPermission('billing_view')
-        ) {
-            $counts['billing'] = DB::table('billing_quotes')
-                ->where('domain_uuid', $domain_uuid)
-                ->whereIn('status', ['draft', 'sent', 'viewed', 'accepted'])
-                ->count();
-        }
+        $onlineCounts = $registrationSummaryService->onlineExtensionCountsByRealm();
+        $currentRealm = strtolower(trim((string) session('domain_name')));
 
-        $eslService = new FreeswitchEslService();
-
-        //Get all registrations
-        $regs = $eslService->getAllSipRegistrations();
-
-        // Get unique extensions online
-        $uniqueRegs = $regs->unique('user')->values();
-        $counts['global_reg_count'] = $uniqueRegs->count();
-
-        //Filter by domain
-        $filteredRegs = $uniqueRegs->where('sip_auth_realm', session('domain_name'))->values();
-
-        $counts['local_reg_count'] = $filteredRegs->count();
+        $counts['global_reg_count'] = array_sum($onlineCounts);
+        $counts['local_reg_count'] = (int) ($onlineCounts[$currentRealm] ?? 0);
 
 
         return $counts;
+    }
+
+    /**
+     * Today's inbound, outbound, and local calls by hour for the dashboard Calls card,
+     * counted like the Call History tile and bucketed in the account time zone.
+     */
+    public function getCallStats(CdrDataService $cdrDataService)
+    {
+        if (!userCheckPermission('xml_cdr_view')) {
+            abort(403);
+        }
+
+        $domainUuid = session('domain_uuid');
+        $timezone = get_local_time_zone($domainUuid);
+        $startOfDay = Carbon::now($timezone)->startOfDay();
+
+        $cdrs = $cdrDataService->getData([
+            'paginate' => false,
+            'domain_uuid' => $domainUuid,
+            'filter' => [
+                'startPeriod' => $startOfDay->copy()->utc()->getTimestamp(),
+                'endPeriod' => $startOfDay->copy()->endOfDay()->utc()->getTimestamp(),
+            ],
+        ]);
+
+        $hours = array_fill(0, 24, ['inbound' => 0, 'outbound' => 0, 'local' => 0]);
+        foreach ($cdrs as $cdr) {
+            if (in_array($cdr->direction, ['inbound', 'outbound', 'local'], true)) {
+                $hour = (int) Carbon::createFromTimestamp($cdr->start_epoch, $timezone)->format('G');
+                $hours[$hour][$cdr->direction]++;
+            }
+        }
+
+        return response()->json([
+            'inbound' => array_sum(array_column($hours, 'inbound')),
+            'outbound' => array_sum(array_column($hours, 'outbound')),
+            'local' => array_sum(array_column($hours, 'local')),
+            'hours' => collect($hours)->map(fn (array $counts, int $hour) => [
+                'hour' => $hour,
+                'label' => Carbon::createFromTime($hour)->format('g A'),
+                'inbound' => $counts['inbound'],
+                'outbound' => $counts['outbound'],
+                'local' => $counts['local'],
+            ])->values(),
+        ]);
     }
 
     public function getData()
@@ -370,6 +410,12 @@ class DashboardController extends Controller
 
         $data['time_zone'] = get_domain_setting('time_zone');
         $data['billing_suspension'] = filter_var(get_domain_setting('billing_suspension'), FILTER_VALIDATE_BOOLEAN);
+        // Suspended accounts with a billing page get a "Pay now" link in the banner.
+        $data['billing'] = $this->billingAccountSummary();
+        $data['billing_pay_url'] = $data['billing_suspension']
+            && $this->billingAccountService()?->customerForDomain(session('domain_uuid'))
+            ? '/billing/account'
+            : null;
 
         return $data;
     }
@@ -412,13 +458,64 @@ class DashboardController extends Controller
             'name' => $extension->name_formatted,
             'do_not_disturb' => $extension->do_not_disturb === 'true',
             'call_sequence_enabled' => $extension->follow_me_enabled === 'true',
+            'agent' => $this->getMyAgentStatus($extension),
             'forwarding' => [
-                $this->formatForwardingStatus($extension, 'forward_all', 'All Calls'),
-                $this->formatForwardingStatus($extension, 'forward_busy', 'Busy'),
-                $this->formatForwardingStatus($extension, 'forward_no_answer', 'No Answer'),
-                $this->formatForwardingStatus($extension, 'forward_user_not_registered', 'Offline'),
+                $this->formatForwardingStatus($extension, 'forward_all', __('All Calls')),
+                $this->formatForwardingStatus($extension, 'forward_busy', __('Busy')),
+                $this->formatForwardingStatus($extension, 'forward_no_answer', __('No Answer')),
+                $this->formatForwardingStatus($extension, 'forward_user_not_registered', __('Offline')),
             ],
         ];
+    }
+
+    private function getMyAgentStatus(Extensions $extension): ?array
+    {
+        if (!$this->agentStatusUpdateRoute()) {
+            return null;
+        }
+
+        $agent = CallCenterAgents::query()
+            ->where('domain_uuid', $extension->domain_uuid)
+            ->where('agent_id', $extension->extension)
+            ->first([
+                'call_center_agent_uuid',
+                'agent_status',
+            ]);
+
+        if (!$agent) {
+            return null;
+        }
+
+        $status = $agent->agent_status ?: 'Logged Out';
+        $runtimeStatus = (new FreeswitchEslService())->executeCommand(
+            'callcenter_config agent get status ' . $agent->call_center_agent_uuid
+        );
+
+        if (
+            is_string($runtimeStatus)
+            && $runtimeStatus !== ''
+            && !str_starts_with($runtimeStatus, '-ERR')
+        ) {
+            $status = $runtimeStatus;
+        }
+
+        return [
+            'call_center_agent_uuid' => $agent->call_center_agent_uuid,
+            'status' => $status,
+        ];
+    }
+
+    private function agentStatusUpdateRoute(): ?string
+    {
+        if (
+            !Module::has('ContactCenter')
+            || !Module::collections()->has('ContactCenter')
+            || !Route::has('agent.status.update')
+        ) {
+            return null;
+        }
+
+        return route('agent.status.update');
     }
 
     private function formatForwardingStatus(Extensions $extension, string $prefix, string $label): array
@@ -454,71 +551,74 @@ class DashboardController extends Controller
         }
 
         if (userCheckPermission("extension_view")) {
-            $apps[] = ['name' => 'Extensions', 'href' => route('extensions.index'), 'icon' => 'ContactPhoneIcon', 'slug' => 'extensions'];
+            $apps[] = ['name' => __('Extensions'), 'href' => route('extensions.index'), 'icon' => 'ContactPhoneIcon', 'slug' => 'extensions'];
         }
         if (!userCheckPermission("extension_view") && $extension) {
             $apps[] = [
-                'name' => 'My Extension',
+                'name' => __('My Extension'),
                 'href' => '#',
                 'icon' => 'ContactPhoneIcon',
                 'slug' => 'my_extension',
                 'action' => 'open_extension_modal',
                 'extension_uuid' => $extension->extension_uuid,
-                'count_label' => 'Ext ' . $extension->extension,
+                'count_label' => __('Ext :number', ['number' => $extension->extension]),
             ];
         }
         if (userCheckPermission("voicemail_view")) {
-            $apps[] = ['name' => 'Voicemails', 'href' => route('voicemails.index'), 'icon' => 'VoicemailIcon', 'slug' => 'voicemails'];
+            $apps[] = ['name' => __('Voicemails'), 'href' => route('voicemails.index'), 'icon' => 'VoicemailIcon', 'slug' => 'voicemails'];
         }
 
         if (!userCheckPermission("voicemail_view") && $voicemail) {
-            $apps[] = ['name' => 'My VMs', 'href' => $voicemail->messages_route, 'icon' => 'VoicemailIcon', 'slug' => 'my_voicemails'];
+            $apps[] = ['name' => __('My VMs'), 'href' => $voicemail->messages_route, 'icon' => 'VoicemailIcon', 'slug' => 'my_voicemails'];
         }
         if (userCheckPermission("device_view")) {
-            $apps[] = ['name' => 'Devices', 'href' => route('devices.index'), 'icon' => 'DevicesIcon', 'slug' => 'devices'];
+            $apps[] = ['name' => __('Devices'), 'href' => route('devices.index'), 'icon' => 'DevicesIcon', 'slug' => 'devices'];
         }
         if (userCheckPermission("user_view")) {
-            $apps[] = ['name' => 'Users', 'href' => route('users.index'), 'icon' => 'UsersIcon', 'slug' => 'users'];
+            $apps[] = ['name' => __('Users'), 'href' => route('users.index'), 'icon' => 'UsersIcon', 'slug' => 'users'];
         }
         if (userCheckPermission("ring_group_view")) {
-            $apps[] = ['name' => 'Ring Groups', 'href' => route('ring-groups.index'), 'icon' => 'UserGroupIcon', 'slug' => 'ring_groups'];
+            $apps[] = ['name' => __('Ring Groups'), 'href' => route('ring-groups.index'), 'icon' => 'UserGroupIcon', 'slug' => 'ring_groups'];
         }
         if (userCheckPermission("destination_view")) {
-            $apps[] = ['name' => 'Phone Numbers', 'href' => route('phone-numbers.index'), 'icon' => 'DialpadIcon', 'slug' => 'phone_numbers'];
+            $apps[] = ['name' => __('Phone Numbers'), 'href' => route('phone-numbers.index'), 'icon' => 'DialpadIcon', 'slug' => 'phone_numbers'];
         }
         if (userCheckPermission("ivr_menu_view")) {
-            $apps[] = ['name' => 'Virtual Receptionists (IVRs)', 'href' => route('virtual-receptionists.index'), 'icon' => 'IvrIcon', 'slug' => 'ivrs'];
+            $apps[] = ['name' => __('Virtual Receptionists (IVRs)'), 'href' => route('virtual-receptionists.index'), 'icon' => 'IvrIcon', 'slug' => 'ivrs'];
         }
         if (userCheckPermission("business_hours_list_view")) {
-            $apps[] = ['name' => 'Business Hours', 'href' => '/business-hours', 'icon' => 'CalendarDaysIcon', 'slug' => 'business_hours'];
+            $apps[] = ['name' => __('Business Hours'), 'href' => '/business-hours', 'icon' => 'CalendarDaysIcon', 'slug' => 'business_hours'];
         }
         if (userCheckPermission("time_condition_view")) {
-            $apps[] = ['name' => 'Schedules', 'href' => '/app/time_conditions/time_conditions.php', 'icon' => 'CalendarDaysIcon', 'slug' => 'schedules'];
+            $apps[] = ['name' => __('Schedules'), 'href' => '/app/time_conditions/time_conditions.php', 'icon' => 'CalendarDaysIcon', 'slug' => 'schedules'];
         }
         if (userCheckPermission("xml_cdr_view")) {
-            $apps[] = ['name' => 'Call History (CDRs)', 'href' => route('cdrs.index'), 'icon' => 'CallHistoryIcon', 'slug' => 'cdrs'];
+            $apps[] = ['name' => __('Call History (CDRs)'), 'href' => route('cdrs.index'), 'icon' => 'CallHistoryIcon', 'slug' => 'cdrs'];
         }
         if (userCheckPermission("call_flow_view")) {
-            $apps[] = ['name' => 'Call Flows', 'href' => route('call-flows.index'), 'icon' => 'AlternativeRouteIcon', 'slug' => 'call_flows'];
+            $apps[] = ['name' => __('Call Flows'), 'href' => route('call-flows.index'), 'icon' => 'AlternativeRouteIcon', 'slug' => 'call_flows'];
+        }
+        if (userCheckPermission('dynamic_route_view')) {
+            $apps[] = ['name' => __('Dynamic Routes'), 'href' => route('dynamic-routes.index'), 'icon' => 'AlternativeRouteIcon', 'slug' => 'dynamic_routes'];
         }
         if (userCheckPermission("fax_view")) {
-            $apps[] = ['name' => 'Faxes', 'href' => '/faxes', 'icon' => 'FaxIcon', 'slug' => 'faxes'];
+            $apps[] = ['name' => __('Faxes'), 'href' => '/faxes', 'icon' => 'FaxIcon', 'slug' => 'faxes'];
         }
         if (userCheckPermission("messages_view")) {
-            $apps[] = ['name' => 'Messages', 'href' => '/messages', 'icon' => 'UsersIcon', 'slug' => 'messages'];
+            $apps[] = ['name' => __('Messages'), 'href' => '/messages', 'icon' => 'UsersIcon', 'slug' => 'messages'];
         }
         if (userCheckPermission("whitelisted_numbers_list_view")) {
-            $apps[] = ['name' => 'Whitelisted Numbers', 'href' => route('whitelisted-numbers.index'), 'icon' => 'HeartIcon', 'slug' => 'whitelisted_numbers'];
+            $apps[] = ['name' => __('Whitelisted Numbers'), 'href' => route('whitelisted-numbers.index'), 'icon' => 'HeartIcon', 'slug' => 'whitelisted_numbers'];
         }
         if (userCheckPermission("wakeup_calls_list_view") && (userCheckPermission('wakeup_calls_view_all_records') || userCheckPermission('wakeup_calls_all') || userCheckPermission('wakeup_calls_view_self_records'))) {
-            $apps[] = ['name' => 'Wakeup Calls', 'href' => route('wakeup-calls.index'), 'icon' => 'ClockIcon', 'slug' => 'wakeup_calls'];
+            $apps[] = ['name' => __('Wakeup Calls'), 'href' => route('wakeup-calls.index'), 'icon' => 'ClockIcon', 'slug' => 'wakeup_calls'];
         }
 
         if (Module::has('ContactCenter') && Module::collections()->has('ContactCenter') && (userCheckPermission("contact_center_settings_edit") || userCheckPermission("contact_center_dashboard_view"))) {
 
             $queue_count = CallCenterQueues::where('domain_uuid', Session::get('domain_uuid'))->count();
 
-            $contact_center_app = ['name' => 'Contact Center', 'icon' => 'SupportAgent', 'slug' => 'queues'];
+            $contact_center_app = ['name' => __('Contact Center'), 'icon' => 'SupportAgent', 'slug' => 'queues'];
 
             if ($queue_count > 0) {
                 if (userCheckPermission("contact_center_dashboard_view")) {
@@ -528,28 +628,44 @@ class DashboardController extends Controller
 
             if (userCheckPermission("contact_center_settings_edit")) {
                 $contact_center_app['alt_href'] = '/contact-center/settings';
-                $contact_center_app['alt_link_label'] = 'Settings';
+                $contact_center_app['alt_link_label'] = __('Settings');
             }
 
             $apps[] = $contact_center_app;
         }
 
+        return $apps;
+    }
+
+    /**
+     * The open account's billing for the Account widget (Billing module), or
+     * null when the account isn't billed to a customer. Staff see any billed
+     * account and link to its customer view; tenant admins see their own.
+     */
+    private function billingAccountSummary(): ?array
+    {
+        $staff = userCheckPermission('billing_customers_view');
+        $billing = $this->billingAccountService($staff ? 'billing_customers_view' : 'billing_portal_view');
+        $customer = $billing?->customerForDomain(session('domain_uuid'));
+
+        return $customer ? $billing->accountSummary($customer, $staff) : null;
+    }
+
+    /**
+     * The Billing module's BillingAccountService, or null when the module is
+     * unavailable or the user lacks $permission.
+     */
+    private function billingAccountService(string $permission = 'billing_portal_view'): ?object
+    {
         if (
-            Module::has('Billing')
-            && Module::collections()->has('Billing')
-            && userCheckPermission('billing_view')
+            !Module::has('Billing')
+            || !Module::collections()->has('Billing')
+            || !userCheckPermission($permission)
+            || !class_exists(\Modules\Billing\Services\BillingAccountService::class)
         ) {
-            $apps[] = [
-                'name' => 'Billing',
-                'href' => '/billing',
-                'icon' => 'SettingsApplications',
-                'slug' => 'billing',
-                'alt_href' => userCheckPermission('billing_settings_edit') ? '/billing/settings' : null,
-                'alt_link_label' => userCheckPermission('billing_settings_edit') ? 'Settings' : null,
-            ];
+            return null;
         }
 
-
-        return $apps;
+        return app(\Modules\Billing\Services\BillingAccountService::class);
     }
 }

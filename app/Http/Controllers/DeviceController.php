@@ -21,6 +21,7 @@ use App\Http\Requests\DuplicateDeviceRequest;
 use App\Http\Requests\StoreDeviceRequest;
 use App\Http\Requests\UpdateDeviceRequest;
 use App\Http\Requests\BulkUpdateDeviceRequest;
+use App\Http\Requests\SendDeviceActionRequest;
 use Spatie\QueryBuilder\AllowedSort;
 
 /**
@@ -33,11 +34,7 @@ class DeviceController extends Controller
     use ChecksLimits;
 
     public $model;
-    public $filters = [];
-    public $sortField;
-    public $sortOrder;
     protected $viewName = 'Devices';
-    protected $searchable = ['device_address', 'device_label', 'device_template'];
 
     public function __construct()
     {
@@ -70,7 +67,9 @@ class DeviceController extends Controller
                     'bulk_update' => route('devices.bulk.update'),
                     'item_options' => route('devices.item.options'),
                     'restart' => route('devices.restart'),
+                    'sync' => route('devices.sync'),
                     'key_templates' => route('device-key-templates.index'),
+                    'profiles' => route('device-profiles.index'),
                     'cloud_provisioning_item_options' => route('cloud-provisioning.item.options'),
                     'cloud_provisioning_get_token' => route('cloud-provisioning.token.get'),
                     'cloud_provisioning_update_api_token' => route('cloud-provisioning.token.update'),
@@ -82,9 +81,15 @@ class DeviceController extends Controller
 
                 ],
                 'permissions' => [
+                    'device_create' => userCheckPermission('device_add'),
+                    'device_view_global' => userCheckPermission('device_all'),
+                    'device_destroy' => userCheckPermission('device_delete'),
+                    'device_update' => userCheckPermission('device_edit'),
                     'device_key_template_view' => userCheckPermission('device_key_template_view'),
                     'device_provisioning_preview' => userCheckPermission('device_provisioning_preview'),
                     'device_import' => userCheckPermission('device_import'),
+                    'device_profile_index' => userCheckPermission('device_profile_view'),
+                    'manage_cloud_provision_providers' => userCheckPermission('manage_cloud_provision_providers'),
                 ],
             ]
         );
@@ -103,7 +108,7 @@ class DeviceController extends Controller
         // 1. Permission Check
         if (!userCheckPermission('device_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -156,7 +161,7 @@ class DeviceController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Device duplicated successfully.']],
+                'messages' => ['success' => [__('Device duplicated successfully.')]],
                 'device_uuid' => $newDevice->device_uuid
             ], 201);
         } catch (\Throwable $e) {
@@ -190,6 +195,7 @@ class DeviceController extends Controller
                 'device_uuid',
                 'device_template',
                 'device_template_uuid',
+                'device_vendor',
                 'device_label',
                 'device_profile_uuid',
                 'device_key_template_uuid',
@@ -204,39 +210,7 @@ class DeviceController extends Controller
             // allow ?filter[username]=foo or ?filter[user_email]=bar
             ->allowedFilters([
                 AllowedFilter::callback('search', function ($query, $value) {
-                    $needle = trim((string) $value);
-
-                    // Normalize MAC like "00:04:F2-3A:5B:C7" -> "0004f23a5bc7"
-                    // This strips ':' and '-' (and any non-hex) and lowercases.
-                    $norm = strtolower(preg_replace('/[^0-9a-f]/i', '', $needle));
-
-                    $query->where(function ($q) use ($needle, $norm) {
-                        // 1) device_address (DB stores normalized 12-hex)
-                        $q->where(function ($q2) use ($needle, $norm) {
-                            // partial match on normalized MAC
-                            if ($norm !== '') {
-                                $q2->orWhereRaw('lower(device_address) LIKE ?', ["%{$norm}%"]);
-
-                                // exact match when a full 12-hex MAC was provided
-                                if (strlen($norm) === 12) {
-                                    $q2->orWhereRaw('lower(device_address) = ?', [$norm]);
-                                }
-                            }
-                        })
-
-                            // 2) free-text on other columns (keep raw needle to preserve text searches)
-                            ->orWhere('device_template', 'ilike', "%{$needle}%")
-                            ->orWhereHas('profile', function ($q2) use ($needle) {
-                                $q2->where('device_profile_name', 'ilike', "%{$needle}%");
-                            })
-                            ->orWhereHas('keyTemplate', function ($q2) use ($needle) {
-                                $q2->where('name', 'ilike', "%{$needle}%");
-                            })
-                            ->orWhereHas('lines.extension', function ($q3) use ($needle) {
-                                $q3->where('extension', 'ilike', "%{$needle}%")
-                                    ->orWhere('effective_caller_id_name', 'ilike', "%{$needle}%");
-                            });
-                    });
+                    $this->applySearchFilter($query, $value);
                 }),
                 AllowedFilter::callback('showGlobal', function ($query, $value) use ($currentDomain) {
                     // If showGlobal is falsey (0, '0', false, null), restrict to the current domain
@@ -264,7 +238,7 @@ class DeviceController extends Controller
                 $query->select('device_key_template_uuid', 'name', 'description');
             }])
             ->with(['cloudProvisioning' => function ($query) {
-                $query->select('uuid', 'device_uuid', 'last_action', 'status');
+                $query->select('uuid', 'device_uuid', 'provider', 'last_action', 'status');
             }])
             ->with(['domain' => function ($query) {
                 $query->select('domain_uuid', 'domain_name', 'domain_description');
@@ -296,7 +270,7 @@ class DeviceController extends Controller
 
         if ($this->keyTemplateAssignmentDenied($validated)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -311,13 +285,13 @@ class DeviceController extends Controller
             app(DeviceService::class)->create($validated);
 
             return response()->json([
-                'messages' => ['success' => ['Device created successfully.']]
+                'messages' => ['success' => [__('Device created successfully.')]]
             ], 201);
         } catch (\Exception $e) {
             logger('DeviceController@store error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to create device']]
+                'errors' => ['server' => [__('Failed to create device')]]
             ], 500);
         }
     }
@@ -338,14 +312,14 @@ class DeviceController extends Controller
 
         if ($this->keyTemplateAssignmentDenied($inputs)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         if (!$device) {
             return response()->json([
                 'success' => false,
-                'errors' => ['model' => ['Device not found']]
+                'errors' => ['model' => [__('Device not found')]]
             ], 404);
         }
 
@@ -353,13 +327,13 @@ class DeviceController extends Controller
             app(DeviceService::class)->update($device, $inputs);
 
             return response()->json([
-                'messages' => ['success' => ['Device updated succesfully.']]
+                'messages' => ['success' => [__('Device updated succesfully.')]]
             ], 200);
         } catch (\Exception $e) {
             logger('DeviceController@update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update this device']]
+                'errors' => ['server' => [__('Failed to update this device')]]
             ], 500);
         }
     }
@@ -372,7 +346,7 @@ class DeviceController extends Controller
 
         if ($this->keyTemplateAssignmentDenied($data)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -382,7 +356,7 @@ class DeviceController extends Controller
         if (!$device) {
             return response()->json([
                 'success' => false,
-                'errors' => ['model' => ['Device not found']]
+                'errors' => ['model' => [__('Device not found')]]
             ], 404);
         }
 
@@ -409,10 +383,10 @@ class DeviceController extends Controller
                             'outbound_proxy_secondary' => $line['outbound_proxy_secondary'] ?? get_domain_setting('outbound_proxy_secondary'),
                             'server_address_primary' => $line['server_address_primary'] ?? get_domain_setting('server_address_primary'),
                             'server_address_secondary' => $line['server_address_secondary'] ?? get_domain_setting('server_address_secondary'),
-                            'display_name' => $line['display_name'],
+                            'display_name' => $line['display_name'] ?? null,
                             'user_id' => $extension->extension,
                             'auth_id' => $extension->extension,
-                            'label' => $extension->extension,
+                            'label' => $line['display_name'] ?? null,
                             'password' => $extension->password,
                             'sip_port' => $line['sip_port'] ?? get_domain_setting('line_sip_port'),
                             'sip_transport' => $line['sip_transport'] ?? get_domain_setting('line_sip_transport'),
@@ -423,6 +397,11 @@ class DeviceController extends Controller
                         ];
 
                         if ($deviceLine) {
+                            // Reassigning the same extension keeps a name typed on the line.
+                            if ((string) $deviceLine->auth_id === (string) $extension->extension && blank($line['display_name'] ?? null)) {
+                                unset($deviceLineData['display_name'], $deviceLineData['label']);
+                            }
+
                             // Update existing line
                             $deviceLine->fill($deviceLineData)->save();
                         } else {
@@ -436,14 +415,14 @@ class DeviceController extends Controller
             }
 
             return response()->json([
-                'messages' => ['success' => ['Device assigned/updated.']]
+                'messages' => ['success' => [__('Device assigned/updated.')]]
             ], 200);
         } catch (\Exception $e) {
             logger('DeviceController@assign error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to assign device']]
+                'errors' => ['server' => [__('Failed to assign device')]]
             ], 500);
         }
     }
@@ -458,7 +437,7 @@ class DeviceController extends Controller
     {
         if (! userCheckPermission('user_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -470,7 +449,7 @@ class DeviceController extends Controller
 
             if (empty($uuids) || !$extension_uuid) {
                 return response()->json([
-                    'messages' => ['error' => ['No devices or extension provided.']]
+                    'messages' => ['error' => [__('No devices or extension provided.')]]
                 ], 400);
             }
 
@@ -478,7 +457,7 @@ class DeviceController extends Controller
             $extension = Extensions::where('extension_uuid', $extension_uuid)->first();
             if (! $extension) {
                 return response()->json([
-                    'messages' => ['error' => ['Extension not found.']]
+                    'messages' => ['error' => [__('Extension not found.')]]
                 ], 404);
             }
 
@@ -490,7 +469,7 @@ class DeviceController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ["Unassigned extension from {$affected} device line(s)."]]
+                'messages' => ['success' => [__('Unassigned extension from :count device line(s).', ['count' => $affected])]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -499,7 +478,7 @@ class DeviceController extends Controller
                 . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while unassigning the selected devices.']]
+                'messages' => ['error' => [__('An error occurred while unassigning the selected devices.')]]
             ], 500);
         }
     }
@@ -524,11 +503,11 @@ class DeviceController extends Controller
             // Delete Device
             $device->delete();
 
-            return redirect()->back()->with('message', ['server' => ['Item deleted']]);
+            return redirect()->back()->with('message', ['server' => [__('Item deleted')]]);
         } catch (\Exception $e) {
             // Log the error message
             logger($e->getMessage());
-            return redirect()->back()->with('error', ['server' => ['Server returned an error while deleting this item']]);
+            return redirect()->back()->with('error', ['server' => [__('Server returned an error while deleting this item')]]);
         }
     }
 
@@ -538,11 +517,11 @@ class DeviceController extends Controller
         $mode = $request->input('mode') ?: ($itemUuid ? 'update' : 'create');
 
         if (!in_array($mode, ['create', 'update', 'bulk_update'], true)) {
-            abort(422, 'Invalid item options mode.');
+            abort(422, __('Invalid item options mode.'));
         }
 
         if ($mode === 'update' && !$itemUuid) {
-            abort(422, 'Item UUID is required for update mode.');
+            abort(422, __('Item UUID is required for update mode.'));
         }
 
         if (in_array($mode, ['update', 'bulk_update'], true) && !userCheckPermission('device_edit')) {
@@ -623,7 +602,12 @@ class DeviceController extends Controller
 
             // $device = $this->model::find(request('itemUuid'));
 
-            $domain_uuid = request('domain_uuid') ?? session('domain_uuid');
+            // An existing device is edited in the context of ITS account, not whichever
+            // account the operator happens to be viewing - otherwise the extension list
+            // and the line defaults come from the wrong domain.
+            $domain_uuid = request('domain_uuid')
+                ?? ($deviceDto->domain_uuid ?? null)
+                ?? session('domain_uuid');
 
             // Define the options for the 'extensions' field
             $extensions = Extensions::where('domain_uuid', $domain_uuid)
@@ -632,6 +616,8 @@ class DeviceController extends Controller
                     'extension_uuid',
                     'extension',
                     'effective_caller_id_name',
+                    'directory_first_name',
+                    'directory_last_name',
                 ]);
 
             $extensionOptions = [];
@@ -640,8 +626,21 @@ class DeviceController extends Controller
                 $extensionOptions[] = [
                     'value' => $extension->extension,
                     'name' => $extension->name_formatted,
+                    // Used for automatic line display name and key label placeholders.
+                    'caller_id_name' => $extension->effective_caller_id_name,
+                    'first_name' => $extension->directory_first_name,
+                    'last_name' => $extension->directory_last_name,
                 ];
             }
+
+            // Label formats for placeholders. Same precedence as provisioning:
+            // device setting, then account, then default.
+            $labelFormat = fn (string $subcategory) => ($itemUuid
+                ? \App\Models\DeviceSettings::where('device_uuid', $itemUuid)
+                    ->where('device_setting_subcategory', $subcategory)
+                    ->where('device_setting_enabled', 'true')
+                    ->value('device_setting_value')
+                : null) ?? get_domain_setting($subcategory, $domain_uuid);
 
             $domainOptions = [];
             // Loop through each domain and create an option
@@ -701,13 +700,15 @@ class DeviceController extends Controller
                             $line->password = null;
                         }
                         return $line;
-                    });
+                    })
+                    ->sortBy(fn ($line) => (int) $line->line_number)
+                    ->values();
             }
 
             $lineKeyTypes = [
-                ['value' => 'line', 'name' => 'Line'],
-                ['value' => 'sharedline', 'name' => 'Shared Line'],
-                ['value' => 'externalline', 'name' => 'External Line'],
+                ['value' => 'line', 'name' => __('Line')],
+                ['value' => 'sharedline', 'name' => __('Shared Line')],
+                ['value' => 'externalline', 'name' => __('External Line')],
             ];
 
             $sipTransportTypes = [
@@ -725,14 +726,15 @@ class DeviceController extends Controller
                 ],
             ];
             $defaultLineOptions = [
-                'server_address' => session('domain_name'),
-                'server_address_primary' => get_domain_setting('server_address_primary'),
-                'server_address_secondary' => get_domain_setting('server_address_secondary'),
-                'outbound_proxy_primary' => get_domain_setting('outbound_proxy_primary'),
-                'outbound_proxy_secondary' => get_domain_setting('outbound_proxy_secondary'),
-                'sip_port' => get_domain_setting('line_sip_port'),
-                'sip_transport' => get_domain_setting('line_sip_transport'),
-                'register_expires' => get_domain_setting('line_register_expires'),
+                'server_address' => \App\Models\Domain::where('domain_uuid', $domain_uuid)
+                    ->value('domain_name') ?? session('domain_name'),
+                'server_address_primary' => get_domain_setting('server_address_primary', $domain_uuid),
+                'server_address_secondary' => get_domain_setting('server_address_secondary', $domain_uuid),
+                'outbound_proxy_primary' => get_domain_setting('outbound_proxy_primary', $domain_uuid),
+                'outbound_proxy_secondary' => get_domain_setting('outbound_proxy_secondary', $domain_uuid),
+                'sip_port' => get_domain_setting('line_sip_port', $domain_uuid),
+                'sip_transport' => get_domain_setting('line_sip_transport', $domain_uuid),
+                'register_expires' => get_domain_setting('line_register_expires', $domain_uuid),
                 'domain_uuid' => $domain_uuid,
             ];
 
@@ -746,17 +748,23 @@ class DeviceController extends Controller
                 'templates' => $this->getDeviceTemplateDropdownOptions(),
                 'profiles' => getProfileCollection($domain_uuid),
                 'key_templates' => $this->getDeviceKeyTemplateDropdownOptions($domain_uuid),
+                'park_key_count' => fspbx_park_key_count($domain_uuid),
                 'extensions' => $extensionOptions,
                 'domains' => $domainOptions,
                 'lines' => $lines,
                 'line_key_types' => $lineKeyTypes,
                 'sip_transport_types' => $sipTransportTypes,
                 'default_line_options' => $defaultLineOptions,
+                'line_display_name_format' => $labelFormat('line_display_name_format'),
+                'blf_label_format' => $labelFormat('blf_label_format'),
                 'cloud_providers' => $cloudProviders,
                 'routes' => $routes,
                 'permissions' => $this->getUserPermissions(),
                 // Boolean field indicating if a cloud provider exists for this vendor:
                 'cloud_provider_available' => $deviceDto && $cloudProviderSelector->getCloudProvider($deviceDto->device_vendor) !== null,
+                // Phonebook directory options + this device's current assignment
+                'phonebook_options' => $this->getPhonebookOptions($domain_uuid),
+                'device_phonebooks' => $itemUuid ? $this->getDevicePhonebookAssignments($itemUuid) : [],
                 // Define options for other fields as needed
             ];
 
@@ -766,19 +774,59 @@ class DeviceController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to get item details']]
+                'errors' => ['server' => [__('Failed to get item details')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
 
     /**
-     * Bulk update requested items
+     * Enabled phonebooks available in the domain, for the device Phonebook tab.
+     */
+    private function getPhonebookOptions(?string $domainUuid): array
+    {
+        if (empty($domainUuid)) {
+            return [];
+        }
+
+        return \App\Models\Phonebook::query()
+            ->where('domain_uuid', $domainUuid)
+            ->where('enabled', true)
+            ->orderBy('name')
+            ->get(['phonebook_uuid', 'name'])
+            ->map(fn ($pb) => [
+                'value' => (string) $pb->phonebook_uuid,
+                'label' => (string) $pb->name,
+            ])
+            ->all();
+    }
+
+    /**
+     * The device's current phonebook assignments, ordered by slot.
+     */
+    private function getDevicePhonebookAssignments(string $deviceUuid): array
+    {
+        return \Illuminate\Support\Facades\DB::table('device_phonebook')
+            ->where('device_uuid', $deviceUuid)
+            ->orderBy('slot')
+            ->pluck('phonebook_uuid')
+            ->map(fn ($uuid) => (string) $uuid)
+            ->all();
+    }
+
+    /**
+     * Bulk update requested items.
      *
-     * @param  \Illuminate\Http\BulkUpdateDeviceRequest  $request
+     * Device columns are filled onto each device; line settings are written to the
+     * matching v_device_lines rows and can optionally trigger a re-provision.
+     *
      * @return JsonResponse
      */
-    public function bulkUpdate(BulkUpdateDeviceRequest $request)
-    {
+    public function bulkUpdate(
+        BulkUpdateDeviceRequest $request,
+        DeviceService $deviceService,
+        FreeswitchEslService $eslService,
+        DeviceActionService $deviceActionService
+    ) {
         $data = $request->validated();
 
         $ids = $data['items'] ?? [];
@@ -786,92 +834,198 @@ class DeviceController extends Controller
         // Remove "items" from the update data, only use the rest as updates
         unset($data['items']);
 
+        // Line settings travel in the same payload but are written to v_device_lines,
+        // so pull them out before the remainder is filled onto the device models.
+        $lineAttributes = $request->lineAttributes();
+        $lineScope = $request->lineScope();
+        $resyncRequested = $request->boolean('resync_devices');
+
+        foreach (array_merge(
+            array_keys(BulkUpdateDeviceRequest::LINE_ATTRIBUTE_MAP),
+            BulkUpdateDeviceRequest::LINE_CONTROL_FIELDS
+        ) as $lineField) {
+            unset($data[$lineField]);
+        }
+
         if ($this->keyTemplateAssignmentDenied($data)) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
-        if (array_key_exists('device_key_template_uuid', $data) && $data['device_key_template_uuid'] === 'NULL') {
+        if (!empty($lineAttributes) && !userCheckPermission('device_line_edit')) {
+            return response()->json([
+                'messages' => ['error' => [__('Access denied.')]],
+            ], 403);
+        }
+
+        foreach (['device_profile_uuid', 'device_key_template_uuid'] as $assignment) {
+            if (($data[$assignment] ?? null) === 'NULL') {
+                $data[$assignment] = null;
+            }
+        }
+
+        // Bulk forms omit the disabled opposite field, so clear its stored assignment here.
+        if (!empty($data['device_key_template_uuid'])) {
+            $data['device_profile_uuid'] = null;
+        } elseif (!empty($data['device_profile_uuid'])) {
             $data['device_key_template_uuid'] = null;
         }
 
         // Only continue if there are actually fields to update
-        if (empty($ids) || empty($data)) {
+        if (empty($ids) || (empty($data) && empty($lineAttributes))) {
             return response()->json([
                 'success' => false,
-                'errors' => ['input' => ['No devices or fields provided for update.']]
+                'errors' => ['input' => [__('No devices or fields provided for update.')]]
             ], 422);
         }
 
         try {
             DB::beginTransaction();
 
-            Devices::whereIn('device_uuid', $ids)
-                ->chunk(10, function ($devices) use ($data) {
-                    foreach ($devices as $device) {
-                        $device->fill($data);
-                        if ($device->isDirty()) {
-                            $device->save();
+            $domainsCascaded = 0;
+
+            if (!empty($data)) {
+                Devices::whereIn('device_uuid', $ids)
+                    ->chunk(10, function ($devices) use ($data, $deviceService, &$domainsCascaded) {
+                        foreach ($devices as $device) {
+                            $device->fill($data);
+
+                            // Must be read before save() clears the dirty state
+                            $domainChanged = $device->isDirty('domain_uuid');
+
+                            if ($device->isDirty()) {
+                                $device->save();
+                            }
+
+                            // A device's lines carry the SIP domain and its connectivity
+                            // settings, so reassigning the account has to re-resolve them.
+                            if ($domainChanged) {
+                                $deviceService->cascadeDomainToLines($device);
+                                $domainsCascaded++;
+                            }
                         }
-                    }
-                });
+                    });
+            }
+
+            // Applied after the cascade so an explicit port/transport choice wins over
+            // the values inherited from the new domain.
+            $lineResult = null;
+            if (!empty($lineAttributes)) {
+                $lineResult = $deviceService->bulkUpdateLineSettings($ids, $lineAttributes, $lineScope);
+            }
 
             DB::commit();
-
-            return response()->json([
-                'messages' => ['success' => ['Selected items updated']],
-            ], 200);
         } catch (\Exception $e) {
             DB::rollBack();
             logger($e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update selected items']]
+                'errors' => ['server' => [__('Failed to update selected items')]]
             ], 500);
         }
+
+        $messages = [];
+
+        if (!empty($data)) {
+            $messages[] = __('Selected items updated');
+        }
+
+        if ($domainsCascaded > 0) {
+            $messages[] = __('Lines on :count reassigned device(s) were re-pointed at the new account.', ['count' => $domainsCascaded]);
+        }
+
+        if ($lineResult !== null) {
+            if ($lineResult['lines_updated'] > 0) {
+                $messages[] = __('Updated :lines line(s) on :devices device(s).', [
+                    'lines' => $lineResult['lines_updated'],
+                    'devices' => $lineResult['devices_affected'],
+                ]);
+
+                if ($lineResult['devices_skipped'] > 0) {
+                    $messages[] = __(':count device(s) had no matching lines and were skipped.', ['count' => $lineResult['devices_skipped']]);
+                }
+            } else {
+                $messages[] = __('No matching lines were found to update.');
+            }
+        }
+
+        // Line settings only reach a handset on its next provisioning fetch, so offer to
+        // push the phones that were actually changed. Best effort: the data is committed.
+        if ($resyncRequested) {
+            $resyncTargets = $lineResult !== null ? $lineResult['device_uuids'] : $ids;
+
+            try {
+                $sent = $this->dispatchRegisteredDeviceAction(
+                    $eslService,
+                    $deviceActionService,
+                    $resyncTargets,
+                    'provision'
+                );
+
+                $messages[] = __(':count registered device(s) scheduled for synchronization.', ['count' => $sent]);
+            } catch (\Exception $e) {
+                logger('DeviceController@bulkUpdate resync failed: ' . $e->getMessage()
+                    . " at " . $e->getFile() . ":" . $e->getLine());
+
+                $messages[] = __('Settings saved, but the device sync could not be sent. Reboot the phones manually.');
+            }
+        }
+
+        return response()->json([
+            'messages' => ['success' => $messages],
+        ], 200);
     }
 
 
-    public function restart(FreeswitchEslService $eslService, DeviceActionService $deviceActionService)
+    public function restart(
+        SendDeviceActionRequest $request,
+        FreeswitchEslService $eslService,
+        DeviceActionService $deviceActionService
+    )
     {
+        return $this->sendRegisteredDeviceAction(
+            $eslService,
+            $deviceActionService,
+            $request->validated()['devices'],
+            'reboot',
+            __('Selected device(s) scheduled for reboot')
+        );
+    }
+
+    public function sync(
+        SendDeviceActionRequest $request,
+        FreeswitchEslService $eslService,
+        DeviceActionService $deviceActionService
+    )
+    {
+        return $this->sendRegisteredDeviceAction(
+            $eslService,
+            $deviceActionService,
+            $request->validated()['devices'],
+            'provision',
+            __('Selected device(s) scheduled for synchronization')
+        );
+    }
+
+    private function sendRegisteredDeviceAction(
+        FreeswitchEslService $eslService,
+        DeviceActionService $deviceActionService,
+        array $deviceUuids,
+        string $action,
+        string $successMessage
+    ): JsonResponse {
         try {
-
-            // Get a collection of SIP registrations
-            $regs = $eslService->getAllSipRegistrations();
-
-            //Get device info as a collection
-            $devices = $this->model::whereIn('device_uuid', request('devices'))
-                ->with(['lines' => function ($query) {
-                    $query->select('device_uuid', 'auth_id', 'server_address');
-                }])
-                ->get(['device_uuid']);
-
-            // we are going to push all lines from devices to this collection
-            $linesCollection = collect();
-
-            foreach ($devices as $device) {
-                $line = $device->lines->first();
-                if ($line) {
-                    $linesCollection->push($line);
-                }
-            }
-
-            // logger($devices);
-
-            // Filter and process $regs based on $linesCollection
-            $filteredRegs = collect($regs)->filter(function ($reg) use ($linesCollection) {
-                [$authId, $domain] = explode('@', $reg['user'], 2);
-                return $linesCollection->contains(function ($line) use ($authId, $domain) {
-                    return $line['auth_id'] === $authId && $line['server_address'] === $domain;
-                });
-            })->each(function ($reg) use ($deviceActionService) {
-                $deviceActionService->handleDeviceAction($reg, 'reboot');
-            });
+            $this->dispatchRegisteredDeviceAction(
+                $eslService,
+                $deviceActionService,
+                $deviceUuids,
+                $action
+            );
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['Selected device(s) scheduled for reboot']]
+                'messages' => ['success' => [$successMessage]]
             ], 201);
         } catch (\Exception $e) {
             logger($e->getMessage() . PHP_EOL);
@@ -883,6 +1037,53 @@ class DeviceController extends Controller
     }
 
     /**
+     * Send an action to every currently registered device in the given set.
+     *
+     * @param  string[]  $deviceUuids
+     * @return int  number of registrations the action was sent to
+     */
+    private function dispatchRegisteredDeviceAction(
+        FreeswitchEslService $eslService,
+        DeviceActionService $deviceActionService,
+        array $deviceUuids,
+        string $action
+    ): int {
+        if (empty($deviceUuids)) {
+            return 0;
+        }
+
+        // Get a collection of SIP registrations
+        $regs = $eslService->getAllSipRegistrations();
+
+        //Get device info as a collection
+        $devices = $this->model::whereIn('device_uuid', $deviceUuids)
+            ->with(['lines' => function ($query) {
+                $query->select('device_uuid', 'auth_id', 'server_address');
+            }])
+            ->get(['device_uuid']);
+
+        // we are going to push all lines from devices to this collection
+        $linesCollection = collect();
+
+        foreach ($devices as $device) {
+            $line = $device->lines->first();
+            if ($line) {
+                $linesCollection->push($line);
+            }
+        }
+
+        // Filter and process $regs based on $linesCollection
+        $registrations = collect($regs)->filter(function ($reg) use ($linesCollection) {
+            [$authId, $domain] = explode('@', $reg['user'], 2);
+            return $linesCollection->contains(function ($line) use ($authId, $domain) {
+                return $line['auth_id'] === $authId && $line['server_address'] === $domain;
+            });
+        })->values();
+
+        return $deviceActionService->scheduleDeviceActions($registrations, $action);
+    }
+
+    /**
      * Get all items
      *
      * @return JsonResponse
@@ -890,16 +1091,21 @@ class DeviceController extends Controller
     public function selectAll()
     {
         try {
-            if (request()->get('showGlobal')) {
-                $uuids = $this->model::get($this->model->getKeyName())->pluck($this->model->getKeyName());
-            } else {
-                $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
-                    ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
+            $query = $this->model::query();
+
+            if (!request()->boolean('showGlobal')) {
+                $query->where('domain_uuid', session('domain_uuid'));
             }
+
+            if (request()->filled('search')) {
+                $this->applySearchFilter($query, request()->input('search'));
+            }
+
+            $uuids = $query->pluck($this->model->getKeyName());
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
@@ -907,9 +1113,64 @@ class DeviceController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
+    }
+
+    private function applySearchFilter($query, $value): void
+    {
+        $needle = trim((string) $value);
+        $templateParts = array_map('trim', explode('/', $needle, 2));
+
+        // Only treat hex characters and common separators as a full or partial MAC.
+        $looksLikeMac = preg_match('/^[0-9a-f:.\-\s]+$/i', $needle) === 1;
+        $norm = $looksLikeMac
+            ? strtolower(preg_replace('/[^0-9a-f]/i', '', $needle))
+            : '';
+
+        $query->where(function ($q) use ($needle, $norm, $templateParts) {
+            // 1) device_address (DB stores normalized 12-hex)
+            $q->where(function ($q2) use ($norm) {
+                // partial match on normalized MAC
+                if ($norm !== '') {
+                    $q2->orWhereRaw('lower(device_address) LIKE ?', ["%{$norm}%"]);
+
+                    // exact match when a full 12-hex MAC was provided
+                    if (strlen($norm) === 12) {
+                        $q2->orWhereRaw('lower(device_address) = ?', [$norm]);
+                    }
+                }
+            })
+
+                // 2) free-text on other columns (keep raw needle to preserve text searches)
+                ->orWhere('device_template', 'ilike', "%{$needle}%")
+                ->orWhereHas('template', function ($q2) use ($needle, $templateParts) {
+                    if (count($templateParts) === 2
+                        && $templateParts[0] !== ''
+                        && $templateParts[1] !== '') {
+                        $q2->where('vendor', 'ilike', "%{$templateParts[0]}%")
+                            ->where('name', 'ilike', "%{$templateParts[1]}%");
+
+                        return;
+                    }
+
+                    $q2->where(function ($q3) use ($needle) {
+                        $q3->where('vendor', 'ilike', "%{$needle}%")
+                            ->orWhere('name', 'ilike', "%{$needle}%");
+                    });
+                })
+                ->orWhereHas('profile', function ($q2) use ($needle) {
+                    $q2->where('device_profile_name', 'ilike', "%{$needle}%");
+                })
+                ->orWhereHas('keyTemplate', function ($q2) use ($needle) {
+                    $q2->where('name', 'ilike', "%{$needle}%");
+                })
+                ->orWhereHas('lines.extension', function ($q3) use ($needle) {
+                    $q3->where('extension', 'ilike', "%{$needle}%")
+                        ->orWhere('effective_caller_id_name', 'ilike', "%{$needle}%");
+                });
+        });
     }
 
 
@@ -948,7 +1209,7 @@ class DeviceController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['All selected items have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected items have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             // Rollback Transaction if any error occurs
@@ -958,7 +1219,7 @@ class DeviceController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while deleting the selected items.']]
+                'errors' => ['server' => [__('Server returned an error while deleting the selected items.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -977,6 +1238,7 @@ class DeviceController extends Controller
         $permissions['device_template_update'] = userCheckPermission('device_template');
         $permissions['device_template_view_all'] = userCheckPermission('device_template_view_all');
         $permissions['device_template_view_custom_only'] = userCheckPermission('device_template_view_custom_only');
+        $permissions['device_template_view_legacy'] = userCheckPermission('device_template_view_legacy');
         $permissions['device_provisioning_preview'] = userCheckPermission('device_provisioning_preview');
         $permissions['device_domain_update'] = userCheckPermission('device_domain');
         $permissions['manage_device_cloud_provisioning_settings'] = userCheckPermission('manage_device_cloud_provisioning_settings');
@@ -1023,7 +1285,7 @@ class DeviceController extends Controller
             ->all();
 
         return array_merge([
-            ['value' => 'NULL', 'name' => 'None'],
+            ['value' => 'NULL', 'name' => __('None')],
         ], $templates);
     }
 
@@ -1033,8 +1295,11 @@ class DeviceController extends Controller
             return getVendorTemplateCollection();
         }
 
-        if (userCheckPermission('device_template_view_custom_only')) {
-            return getVendorTemplateCollection(false, true);
+        $includeCustomTemplates = userCheckPermission('device_template_view_custom_only');
+        $includeLegacyTemplates = userCheckPermission('device_template_view_legacy');
+
+        if ($includeCustomTemplates || $includeLegacyTemplates) {
+            return getVendorTemplateCollection(false, $includeCustomTemplates, $includeLegacyTemplates);
         }
 
         return [];

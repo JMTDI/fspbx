@@ -35,11 +35,12 @@ class DialplanService
         'spawn_stream',
     ];
 
-    public function save(array $validated, ?Dialplans $dialplan = null): Dialplans
+    public function save(array $validated, ?Dialplans $dialplan = null, bool $preserveName = false): Dialplans
     {
-        return DB::transaction(function () use ($validated, $dialplan) {
+        return DB::transaction(function () use ($validated, $dialplan, $preserveName) {
             $dialplan ??= new Dialplans();
             $isNew = !$dialplan->exists;
+            $originalContext = $isNew ? null : $dialplan->getRawOriginal('dialplan_context');
             $dialplanUuid = $dialplan->dialplan_uuid ?: (string) Str::uuid();
             $xmlMode = ($validated['editor_mode'] ?? 'builder') === 'xml';
             $details = $xmlMode ? [] : $this->normalizedDetails($validated['dialplan_details'] ?? []);
@@ -48,7 +49,9 @@ class DialplanService
                 'dialplan_uuid' => $dialplanUuid,
                 'domain_uuid' => blank($validated['domain_uuid'] ?? null) ? null : $validated['domain_uuid'],
                 'hostname' => $this->blankToNull($validated['hostname'] ?? null),
-                'dialplan_name' => $this->sanitizeName($validated['dialplan_name']),
+                'dialplan_name' => $preserveName
+                    ? trim($validated['dialplan_name'])
+                    : $this->sanitizeName($validated['dialplan_name']),
                 'dialplan_number' => $this->blankToNull($validated['dialplan_number'] ?? null),
                 'dialplan_destination' => $validated['dialplan_destination'] ?? 'false',
                 'dialplan_context' => $validated['dialplan_context'],
@@ -59,7 +62,7 @@ class DialplanService
             ];
 
             if ($isNew) {
-                $data['app_uuid'] = (string) Str::uuid();
+                $data['app_uuid'] = $dialplan->app_uuid ?: (string) Str::uuid();
                 $data['insert_date'] = now();
                 $data['insert_user'] = session('user_uuid');
             } else {
@@ -78,7 +81,11 @@ class DialplanService
                 $this->createDetails($dialplan, $details);
             }
 
-            $this->clearDialplanCache($dialplan->dialplan_context);
+            $contexts = collect([$originalContext, $dialplan->dialplan_context])
+                ->filter()
+                ->unique()
+                ->values();
+            DB::afterCommit(fn () => $contexts->each(fn ($context) => $this->clearDialplanCache($context)));
 
             return $dialplan;
         });
@@ -109,7 +116,8 @@ class DialplanService
             $copy->dialplan_xml = $this->buildXml($copy, $details);
             $copy->save();
             $this->createDetails($copy, $details);
-            $this->clearDialplanCache($copy->dialplan_context);
+            $context = $copy->dialplan_context;
+            DB::afterCommit(fn () => $this->clearDialplanCache($context));
 
             return $copy;
         });
@@ -123,20 +131,24 @@ class DialplanService
                 $dialplan->update_date = now();
                 $dialplan->update_user = session('user_uuid');
                 $dialplan->save();
-                $this->clearDialplanCache($dialplan->dialplan_context);
             });
+
+            $contexts = $dialplans->pluck('dialplan_context')->filter()->unique()->values();
+            DB::afterCommit(fn () => $contexts->each(fn ($context) => $this->clearDialplanCache($context)));
         });
     }
 
     public function delete(Collection $dialplans): void
     {
         DB::transaction(function () use ($dialplans) {
+            $contexts = $dialplans->pluck('dialplan_context')->filter()->unique()->values();
+
             $dialplans->each(function (Dialplans $dialplan) {
-                $context = $dialplan->dialplan_context;
                 $dialplan->dialplan_details()->delete();
                 $dialplan->delete();
-                $this->clearDialplanCache($context);
             });
+
+            DB::afterCommit(fn () => $contexts->each(fn ($context) => $this->clearDialplanCache($context)));
         });
     }
 
@@ -271,11 +283,11 @@ class DialplanService
         $errors = [];
 
         if ($xml === '') {
-            return ['XML is required.'];
+            return [__('XML is required.')];
         }
 
         if ($this->containsDangerousXml($xml)) {
-            $errors[] = 'This XML contains a FreeSWITCH application that is not allowed.';
+            $errors[] = __('This XML contains a FreeSWITCH application that is not allowed.');
         }
 
         $previous = libxml_use_internal_errors(true);
@@ -285,8 +297,8 @@ class DialplanService
         if (!$loaded) {
             $firstError = libxml_get_errors()[0] ?? null;
             $errors[] = $firstError
-                ? trim("XML is invalid: line {$firstError->line}, {$firstError->message}")
-                : 'XML is invalid.';
+                ? __('XML is invalid: line :line, :message', ['line' => $firstError->line, 'message' => trim($firstError->message)])
+                : __('XML is invalid.');
             libxml_clear_errors();
             libxml_use_internal_errors($previous);
 
@@ -297,13 +309,13 @@ class DialplanService
         libxml_use_internal_errors($previous);
 
         if ($document->documentElement?->tagName !== 'extension') {
-            $errors[] = 'Dialplan XML must use an extension element as the root node.';
+            $errors[] = __('Dialplan XML must use an extension element as the root node.');
         }
 
         foreach (['action', 'anti-action'] as $tagName) {
             foreach ($document->getElementsByTagName($tagName) as $node) {
                 if ($this->containsDangerousApplication($node->getAttribute('application'))) {
-                    $errors[] = 'This XML contains a FreeSWITCH application that is not allowed.';
+                    $errors[] = __('This XML contains a FreeSWITCH application that is not allowed.');
                     break 2;
                 }
             }
@@ -314,8 +326,17 @@ class DialplanService
 
     public function clearDialplanCache(?string $context): void
     {
-        $context = in_array($context, ['${domain_name}', 'global'], true) ? '*' : $context;
-        FusionCache::clear('dialplan:' . ($context ?: '*'));
+        if (!$context || in_array($context, ['${domain_name}', 'global'], true)) {
+            FusionCache::clearPattern('dialplan:*');
+            return;
+        }
+
+        $key = 'dialplan:' . $context;
+
+        // Multiple mode caches the context itself. Single mode caches the
+        // assembled context under one child key per destination.
+        FusionCache::clear($key);
+        FusionCache::clearPattern($key . ':*');
     }
 
     private function createDetails(Dialplans $dialplan, array $details): void
@@ -445,10 +466,10 @@ class DialplanService
             return;
         }
 
-        $lines[] = "\t\t<action application=\"export\" data=\"call_direction=inbound\" inline=\"true\"/>";
+        $defaults = [['export', 'call_direction=inbound']];
 
         if (filled($dialplan->domain_uuid)) {
-            $lines[] = "\t\t<action application=\"set\" data=\"domain_uuid={$this->xml($dialplan->domain_uuid)}\" inline=\"true\"/>";
+            $defaults[] = ['set', 'domain_uuid=' . $dialplan->domain_uuid];
         }
 
         $domainName = filled($dialplan->domain_uuid)
@@ -456,7 +477,28 @@ class DialplanService
             : null;
 
         if (filled($domainName)) {
-            $lines[] = "\t\t<action application=\"set\" data=\"domain_name={$this->xml($domainName)}\" inline=\"true\"/>";
+            $defaults[] = ['set', 'domain_name=' . $domainName];
+        }
+
+        // Phone-number rules already start with these actions. Preserve that
+        // preamble on an editor save instead of adding it a second time.
+        $hasDefaults = true;
+        foreach ($defaults as $index => [$application, $data]) {
+            $detail = $actions->get($index);
+            if (($detail['dialplan_detail_tag'] ?? null) !== 'action'
+                || ($detail['dialplan_detail_type'] ?? null) !== $application
+                || ($detail['dialplan_detail_data'] ?? null) !== $data
+                || !$this->booleanValue($detail['dialplan_detail_inline'] ?? null, false)) {
+                $hasDefaults = false;
+                break;
+            }
+        }
+        if ($hasDefaults) {
+            return;
+        }
+
+        foreach ($defaults as [$application, $data]) {
+            $lines[] = "\t\t<action application=\"{$application}\" data=\"{$this->xml($data)}\" inline=\"true\"/>";
         }
     }
 

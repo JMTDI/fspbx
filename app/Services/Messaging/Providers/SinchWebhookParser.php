@@ -6,6 +6,7 @@ use App\Services\Messaging\Data\DeliveryStatusEventData;
 use App\Services\Messaging\Data\DownloadedMediaData;
 use App\Services\Messaging\Data\InboundMessageEventData;
 use App\Services\Messaging\Providers\Concerns\ExtractsMediaFilename;
+use App\Services\Messaging\Providers\Concerns\ExtractsMmsText;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Spatie\WebhookClient\Models\WebhookCall;
@@ -13,6 +14,7 @@ use Spatie\WebhookClient\Models\WebhookCall;
 class SinchWebhookParser implements MessagingWebhookParser
 {
     use ExtractsMediaFilename;
+    use ExtractsMmsText;
 
     /**
      * @return iterable<object>
@@ -31,13 +33,18 @@ class SinchWebhookParser implements MessagingWebhookParser
 
         // Inbound MO message
         if ($this->isInboundMessagePayload($payload)) {
+            $text = (string) $this->extractText($payload);
+            $mediaUrls = $this->extractMediaUrls($payload);
+            $isMms = $mediaUrls !== [] || count($this->extractTo($payload)) > 1;
+            [$text, $attachments] = $this->extractMmsText($text, $mediaUrls);
             $data = InboundMessageEventData::from([
                 'provider' => 'sinch',
                 'providerReferenceId' => $this->extractReferenceId($payload),
                 'from' => (string) $this->extractFrom($payload),
                 'to' => $this->extractTo($payload),
-                'text' => (string) $this->extractText($payload),
-                'mediaUrls' => $this->extractMediaUrls($payload),
+                'text' => $text,
+                'mediaUrls' => $attachments,
+                'isMms' => $isMms,
                 'providerEvent' => $type ?: 'inbound_message',
             ]);
 
@@ -55,12 +62,21 @@ class SinchWebhookParser implements MessagingWebhookParser
 
         // Delivery receipt / status update
         if ($this->isDeliveryReceiptPayload($payload)) {
+            $recipients = $this->extractTo($payload);
+            $recipient = data_get($payload, 'recipient') ?? (count($recipients) === 1 ? $recipients[0] : null);
+            // This adapter submits international digits without the leading +.
+            $recipient = is_string($recipient) && preg_match('/^\+?[1-9][0-9]{6,14}$/D', $recipient)
+                ? '+'.ltrim($recipient, '+') : null;
             $data = DeliveryStatusEventData::from([
                 'provider' => 'sinch',
                 'referenceId' => (string) $this->extractReferenceId($payload),
                 'status' => $this->mapStatus($payload),
                 'description' => $this->extractStatusDescription($payload),
                 'providerEvent' => $type ?: 'delivery_receipt',
+                'recipient' => $recipient,
+                'occurredAt' => data_get($payload, 'time') ?? data_get($payload, 'timestamp'),
+                'rawStatus' => strtolower((string) (data_get($payload, 'status')
+                    ?? data_get($payload, 'message.status') ?? data_get($payload, 'event.status') ?? $this->mapStatus($payload))),
             ]);
 
             messaging_webhook_debug('Sinch parser yielding status event', [
@@ -82,7 +98,7 @@ class SinchWebhookParser implements MessagingWebhookParser
             'url' => $url,
         ]);
 
-        $response = Http::get($url);
+        $response = Http::timeout(30)->get($url);
         $response->throw();
 
         $body = $response->body();

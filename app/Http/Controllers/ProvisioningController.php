@@ -4,13 +4,20 @@ namespace App\Http\Controllers;
 
 use App\Models\Devices;
 use App\Models\Extensions;
+use App\Models\Phonebook;
 use Illuminate\Http\Request;
 use App\Models\DeviceSettings;
 use App\Models\DomainSettings;
 use Illuminate\Support\Carbon;
 use App\Models\DefaultSettings;
 use App\Models\ProvisioningTemplate;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Blade;
+use App\Services\Provisioning\Phonebook\PhonebookBuilder;
+use App\Services\Provisioning\Phonebook\Formatters\YealinkFormatter;
+use App\Services\Provisioning\Phonebook\Formatters\GrandstreamFormatter;
+use App\Services\Provisioning\ProvisioningAuthPolicy;
+use App\Services\Provisioning\ProvisioningSettingsResolver;
 
 class ProvisioningController extends Controller
 {
@@ -168,20 +175,20 @@ class ProvisioningController extends Controller
     {
         if (!userCheckPermission('device_provisioning_preview')) {
             return response()->json([
-                'errors' => ['authorization' => ['Access denied.']],
+                'errors' => ['authorization' => [__('Access denied.')]],
             ], 403);
         }
 
         if (!$this->canAccessDeviceForPreview($device)) {
             return response()->json([
-                'errors' => ['device' => ['Device not found.']],
+                'errors' => ['device' => [__('Device not found.')]],
             ], 404);
         }
 
         $tpl = $this->resolveTemplateForDevice($device);
         if (!$tpl) {
             return response()->json([
-                'errors' => ['template' => ['No provisioning template is assigned to this device.']],
+                'errors' => ['template' => [__('No provisioning template is assigned to this device.')]],
             ], 404);
         }
 
@@ -211,6 +218,11 @@ class ProvisioningController extends Controller
             ];
         }
 
+        // Append the generated directory/phonebook XML the phone would download.
+        foreach ($this->buildPhonebookPreviewFiles($device, $vars['phonebooks'] ?? []) as $phonebookFile) {
+            $files[] = $phonebookFile;
+        }
+
         return response()->json([
             'device' => [
                 'device_uuid' => (string) $device->device_uuid,
@@ -232,6 +244,83 @@ class ProvisioningController extends Controller
     }
 
     /* ------------------------- helpers ------------------------- */
+
+    /**
+     * Build preview "files" for each directory/phonebook assigned to the device,
+     * rendered with the same builder + vendor formatter the phone would download.
+     *
+     * @param  array<int, array{uuid:string,name:string,slot:int}>  $phonebooks
+     * @return array<int, array{flavor:string,filename:string,mime:string,bytes:int,content:string}>
+     */
+    private function buildPhonebookPreviewFiles(Devices $device, array $phonebooks): array
+    {
+        if (empty($phonebooks)) {
+            return [];
+        }
+
+        $formatter = match (strtolower((string) $device->device_vendor)) {
+            'grandstream' => new GrandstreamFormatter(),
+            'yealink'     => new YealinkFormatter(),
+            default       => null,
+        };
+
+        if (!$formatter) {
+            return [];
+        }
+
+        $builder = new PhonebookBuilder();
+
+        $books = Phonebook::query()
+            ->whereIn('phonebook_uuid', array_column($phonebooks, 'uuid'))
+            ->where('domain_uuid', $device->domain_uuid)
+            ->get()
+            ->keyBy('phonebook_uuid');
+
+        // Grandstream downloads a single merged phonebook.xml, so preview one
+        // combined file that matches the /prov/directory/all/... endpoint.
+        if (strtolower((string) $device->device_vendor) === 'grandstream') {
+            $ordered = collect($phonebooks)
+                ->map(fn ($pb) => $books->get($pb['uuid'] ?? null))
+                ->filter()
+                ->values();
+
+            if ($ordered->isEmpty()) {
+                return [];
+            }
+
+            $content = $formatter->format($builder->buildMany($ordered, (string) $device->domain_uuid));
+
+            return [[
+                'flavor'   => 'phonebook:all',
+                'filename' => 'phonebook.xml',
+                'mime'     => $formatter->mime(),
+                'bytes'    => strlen($content),
+                'content'  => $content,
+            ]];
+        }
+
+        // Yealink fetches each phonebook separately — preview one file per book.
+        $files = [];
+        foreach ($phonebooks as $pb) {
+            $book = $books->get($pb['uuid'] ?? null);
+            if (!$book) {
+                continue;
+            }
+
+            $content = $formatter->format($builder->build($book, (string) $device->domain_uuid));
+            $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '-', (string) ($pb['name'] ?? 'phonebook'));
+
+            $files[] = [
+                'flavor'   => 'phonebook:' . ($pb['uuid'] ?? $safeName),
+                'filename' => trim($safeName, '-') . '.xml',
+                'mime'     => $formatter->mime(),
+                'bytes'    => strlen($content),
+                'content'  => $content,
+            ];
+        }
+
+        return $files;
+    }
 
     private function contentTypeFromExt(?string $ext): string
     {
@@ -255,6 +344,7 @@ class ProvisioningController extends Controller
                 'line_count' => $vars['line_count'] ?? 0,
                 'settings_count' => count($vars['settings'] ?? []),
                 'main_key_count' => count($vars['main_keys'] ?? []),
+                'side_key_count' => count($vars['side_keys'] ?? []),
                 'multi_purpose_key_count' => count($vars['multi_purpose_keys'] ?? []),
                 'expansion_key_count' => count($vars['expansion_keys'] ?? []),
             ]);
@@ -286,6 +376,10 @@ class ProvisioningController extends Controller
         $vars += [
             'flavor' => $flv['flavor'],
             'requested_ext' => strtolower((string) ($ext ?: $this->extensionFromFlavor($flv['flavor']))),
+            'device_model' => (string) $device->device_model,
+            'device_firmware_version' => (string) $device->device_firmware_version,
+            'device_provisioned_agent' => (string) $device->device_provisioned_agent,
+            'user_agent' => (string) $request->userAgent(),
         ];
 
         try {
@@ -402,6 +496,8 @@ class ProvisioningController extends Controller
             'model-mac.cfg' => $this->previewModelName($device, $tpl) . "-{$mac}.cfg",
             'serial.xml' => ((string) ($device->serial_number ?: $mac)) . '.xml',
             'mac.cfg' => in_array($vendor, ['poly', 'polycom'], true) ? '000000000000.cfg' : "{$mac}.cfg",
+            'mac-contacts.xml' => "{$mac}-contacts.xml",
+            'mac-smartblf.xml' => "{$mac}-smartblf.xml",
             default => str_contains($flavor, '.') ? $flavor : "{$mac}.cfg",
         };
     }
@@ -415,6 +511,10 @@ class ProvisioningController extends Controller
         }
 
         $template = strtoupper((string) ($device->device_template ?: $tpl?->name ?: ''));
+        if (str_contains($template, 'TRIO') && str_contains($template, '8800')) {
+            return 'Trio8800';
+        }
+
         if (str_contains($template, 'EDGE')) {
             $edgeModel = preg_replace('/[^A-Za-z0-9]/', '', (string) ($tpl?->name ?: $device->device_template));
             return $edgeModel !== '' ? $edgeModel : 'EdgeE350';
@@ -458,9 +558,12 @@ class ProvisioningController extends Controller
         }
 
         if (!empty($device->device_template) && str_contains($device->device_template, '/')) {
-            [$vendor, $name] = explode('/', strtolower($device->device_template), 2);
+            [$vendor, $name] = explode('/', (string) $device->device_template, 2);
+            $vendor = strtolower(trim($vendor));
+            $name = trim($name);
+
             $row = ProvisioningTemplate::where('vendor', $vendor)
-                ->where('name', $name)
+                ->whereRaw('LOWER(name) = ?', [strtolower($name)])
                 ->where('type', 'default')
                 ->orderByDesc('created_at')
                 ->first();
@@ -520,6 +623,7 @@ class ProvisioningController extends Controller
                     'sip_transport',
                     'register_expires',
                     'shared_line',
+                    'external_line',
                     'domain_uuid',
                 ]);
             },
@@ -605,6 +709,13 @@ class ProvisioningController extends Controller
             'has_profile' => (bool) $device->profile,
         ]);
 
+        $settings = $this->getProvisionSettings(
+            (string) $device->domain_uuid,
+            (string) $device->device_uuid
+        );
+
+        $this->applyAutomaticLineDisplayNames($device, $settings['line_display_name_format'] ?? null);
+
         $lines = [];
         foreach ($device->lines as $line) {
             $isSharedLine = $this->isSharedLineValue($line->shared_line ?? null);
@@ -634,10 +745,25 @@ class ProvisioningController extends Controller
             'shared_line_count' => collect($lines)->where('shared_line', true)->count(),
         ]);
 
-        $settings = $this->getProvisionSettings(
-            (string) $device->domain_uuid,
-            (string) $device->device_uuid
-        );
+        $phonebooks = $this->resolvePhonebooksForDevice($device, $settings);
+
+        // Grandstream templates (both the P-value GXP17xx style and the
+        // <item name="phonebook.download.*"> style) consume the phonebook via
+        // these settings keys. Injecting them here means every Grandstream model
+        // picks up an assigned directory without per-template edits. Grandstream
+        // downloads a single phonebook.xml, so we point it at the device-merged
+        // "all" directory (every assigned phonebook combined). When no phonebook
+        // is assigned we leave any manually-configured settings intact.
+        if (!empty($phonebooks) && strtolower((string) $device->device_vendor) === 'grandstream') {
+            $primary = $phonebooks[0];
+            $mac  = $this->normalizeMac((string) $device->device_address);
+            $host = preg_replace('#^https?://#', '', rtrim((string) config('app.url'), '/'));
+
+            $settings['grandstream_phonebook_server']   = $primary['scheme'] . '://' . $host . '/prov/directory/all/' . $mac;
+            $settings['grandstream_phonebook_username'] = $primary['username'];
+            $settings['grandstream_phonebook_password'] = $primary['password'];
+            $settings['grandstream_phonebook_download_interval'] = $settings['grandstream_phonebook_download_interval'] ?? '360';
+        }
 
         $keyAreas = $this->getEffectiveDeviceKeysByArea($device, $settings);
         $polycomMainKeys = $keyAreas['main'] ?? [];
@@ -645,6 +771,7 @@ class ProvisioningController extends Controller
         provisioning_debug('ProvisioningController: built effective provisioning keys', [
             'device_uuid' => (string) $device->device_uuid,
             'main_key_count' => count($keyAreas['main'] ?? []),
+            'side_key_count' => count($keyAreas['side'] ?? []),
             'multi_purpose_key_count' => count($keyAreas['multi_purpose'] ?? []),
             'expansion_key_count' => count($keyAreas['expansion'] ?? []),
         ]);
@@ -662,6 +789,7 @@ class ProvisioningController extends Controller
             // all keys flattened for legacy templates that expect a single list:
             'keys' => array_merge(
                 $keyAreas['main'] ?? [],
+                $keyAreas['side'] ?? [],
                 $keyAreas['multi_purpose'] ?? [],
                 $keyAreas['expansion'] ?? []
             ),
@@ -669,6 +797,7 @@ class ProvisioningController extends Controller
             // keys separated by area for newer templates that want to organize by area:
             'keys_by_area' => $keyAreas,
             'main_keys' => $keyAreas['main'] ?? [],
+            'side_keys' => $keyAreas['side'] ?? [],
             'multi_purpose_keys' => $keyAreas['multi_purpose'] ?? [],
             'expansion_keys' => $keyAreas['expansion'] ?? [],
             'polycom_line_key_counts' => $this->buildPolycomLineKeyCounts($polycomMainKeys),
@@ -678,7 +807,151 @@ class ProvisioningController extends Controller
             'lines'       => $lines,
             'line_count'  => count($lines),
             'settings'    => $settings,
+            'sangoma_key_file_urls' => strtolower((string) $device->device_vendor) === 'sangoma'
+                ? $this->buildSangomaKeyFileUrls($device) : [],
+
+            'phonebooks'  => $phonebooks,
         ];
+    }
+
+    /**
+     * Resolve the directory/phonebook(s) a device should download.
+     *
+     * Uses per-device assignments from device_phonebook when present, otherwise
+     * falls back to the domain default set (every enabled phonebook flagged
+     * is_default). Each entry carries a ready-to-use, credentialed URL.
+     *
+     * @return array<int, array{uuid:string,name:string,slot:int,url:string,server_path:string}>
+     */
+    /**
+     * Blank line display names follow the account's line_display_name_format.
+     * Values are set on the loaded line models in memory only, so the template
+     * variables and line-key labels below see the same name. Lines are never
+     * saved here.
+     */
+    private function applyAutomaticLineDisplayNames(Devices $device, mixed $format): void
+    {
+        $automaticLines = $device->lines->filter(
+            fn ($line) => fspbx_line_display_name_is_automatic(
+                $line->only(['display_name', 'auth_id', 'external_line'])
+            )
+        );
+
+        if ($automaticLines->isEmpty() || empty($device->domain_uuid)) {
+            return;
+        }
+
+        $extensions = Extensions::without('advSettings')
+            ->where('domain_uuid', $device->domain_uuid)
+            ->whereIn('extension', $automaticLines->map(fn ($line) => trim((string) $line->auth_id))->unique()->values())
+            ->get(['extension', 'effective_caller_id_name', 'directory_first_name', 'directory_last_name'])
+            ->keyBy(fn ($extension) => (string) $extension->extension);
+
+        foreach ($automaticLines as $line) {
+            $extension = $extensions->get(trim((string) $line->auth_id));
+
+            if ($extension) {
+                $line->display_name = fspbx_format_extension_label(
+                    is_string($format) ? $format : null,
+                    $extension->only(['extension', 'effective_caller_id_name', 'directory_first_name', 'directory_last_name'])
+                );
+            }
+        }
+
+        provisioning_debug('ProvisioningController: applied automatic line display names', [
+            'device_uuid' => (string) $device->device_uuid,
+            'line_numbers' => $automaticLines->pluck('line_number')->values()->all(),
+        ]);
+    }
+
+    private function resolvePhonebooksForDevice(Devices $device, array $settings): array
+    {
+        $vendor = strtolower((string) $device->device_vendor);
+        if (!in_array($vendor, ['grandstream', 'yealink'], true)) {
+            return [];
+        }
+
+        $domainUuid = (string) $device->domain_uuid;
+
+        // Per-device assignments first.
+        $slotByUuid = [];
+        foreach (
+            DB::table('device_phonebook')
+                ->where('device_uuid', $device->device_uuid)
+                ->orderBy('slot')
+                ->get(['phonebook_uuid', 'slot']) as $row
+        ) {
+            $slotByUuid[(string) $row->phonebook_uuid] = (int) $row->slot;
+        }
+
+        // Fall back to the domain default set: every enabled phonebook flagged
+        // as a domain default.
+        if (empty($slotByUuid)) {
+            $slot = 1;
+            foreach (
+                Phonebook::query()
+                    ->where('domain_uuid', $domainUuid)
+                    ->where('enabled', true)
+                    ->where('is_default', true)
+                    ->orderBy('name')
+                    ->pluck('phonebook_uuid') as $uuid
+            ) {
+                $slotByUuid[(string) $uuid] = $slot++;
+            }
+        }
+
+        if (empty($slotByUuid)) {
+            return [];
+        }
+
+        $books = Phonebook::query()
+            ->whereIn('phonebook_uuid', array_keys($slotByUuid))
+            ->where('domain_uuid', $domainUuid)
+            ->where('enabled', true)
+            ->get(['phonebook_uuid', 'name'])
+            ->keyBy('phonebook_uuid');
+
+        $mac  = $this->normalizeMac((string) $device->device_address);
+        $user = get_domain_setting('http_auth_username', $domainUuid);
+        $pass = get_domain_setting('http_auth_password', $domainUuid);
+
+        $appUrl = rtrim((string) config('app.url'), '/');
+        $scheme = parse_url($appUrl, PHP_URL_SCHEME) ?: 'https';
+        $host   = preg_replace('#^https?://#', '', $appUrl); // host[:port]
+        $creds  = ($user && $pass) ? rawurlencode($user) . ':' . rawurlencode($pass) . '@' : '';
+
+        $out = [];
+        foreach ($slotByUuid as $uuid => $slot) {
+            $book = $books->get($uuid);
+            if (!$book) {
+                continue;
+            }
+
+            // Yealink fetches the exact URL, so it points at the .xml file.
+            $filePath = "/prov/directory/{$uuid}/{$mac}.xml";
+            // Grandstream treats the server path as a directory and appends
+            // "/phonebook.xml", so its path must NOT include a filename.
+            $dirPath  = "/prov/directory/{$uuid}/{$mac}";
+
+            $out[] = [
+                'uuid'        => (string) $uuid,
+                'name'        => (string) $book->name,
+                'slot'        => (int) $slot,
+                // Full credentialed URL — Yealink remote_phonebook.data.X.url
+                'url'         => $scheme . '://' . $creds . $host . $filePath,
+                // Directory host/path without credentials — Grandstream
+                // phonebook.download.server (creds go in dedicated fields).
+                'scheme'      => $scheme,
+                'server_path' => $host . $dirPath,
+                'username'    => (string) ($user ?? ''),
+                'password'    => (string) ($pass ?? ''),
+            ];
+        }
+
+        // Order by slot for stable Yealink data.X / Grandstream priority.
+        usort($out, fn ($a, $b) => $a['slot'] <=> $b['slot']);
+
+        return $out;
     }
 
     /**
@@ -729,6 +1002,20 @@ class ProvisioningController extends Controller
         $idLower = strtolower($id);
         $extLower = strtolower($ext);
 
+        if ($vendor === 'sangoma' && $extLower === 'xml'
+            && preg_match('/^[0-9a-f]{12}-(contacts|smartblf)$/', $idLower, $matches)) {
+            return [
+                'flavor' => 'mac-' . $matches[1] . '.xml',
+                'mime' => 'application/xml',
+            ];
+        }
+
+        // S-series phones fetch cfgMAC.xml; P-series use MAC.cfg plus key files.
+        if ($vendor === 'sangoma' && $extLower === 'xml'
+            && preg_match('/^(?:cfg)?[0-9a-f]{12}$/', $idLower)) {
+            return ['flavor' => 'cfgmac.xml', 'mime' => 'application/xml'];
+        }
+
         provisioning_debug('ProvisioningController: evaluating provisioning flavor', [
             'device_uuid' => (string) $device->device_uuid,
             'vendor' => $vendor,
@@ -774,11 +1061,11 @@ class ProvisioningController extends Controller
             ];
         }
 
-        // Polycom model-MAC (3–4 digit models, e.g., VVX600-, SPIP321-, SSIP7000-; also SSDuo)
+        // Polycom model-MAC (desk phones and the Trio 8800 conference phone).
         if (
             $vendor === 'polycom' &&
             $extLower === 'cfg' &&
-            preg_match('#(^|/)(?:(?:SPIP|VVX|SSIP|EdgeE)\d{3,4}|SSDuo)-[0-9a-f]{12}\.cfg$#i', $raw)
+            preg_match('#(^|/)(?:(?:SPIP|VVX|SSIP|EdgeE)\d{3,4}|Trio8800|SSDuo)-[0-9a-f]{12}\.cfg$#i', $raw)
         ) {
             provisioning_debug('ProvisioningController: matched Polycom model MAC flavor', [
                 'device_uuid' => (string) $device->device_uuid,
@@ -878,6 +1165,24 @@ class ProvisioningController extends Controller
         return [
             'flavor' => 'mac.cfg',
             'mime'   => $mime,
+        ];
+    }
+
+    private function buildSangomaKeyFileUrls(Devices $device): array
+    {
+        // Match the account credentials accepted by DigestProvisionAuth, including password arrays.
+        $settings = app(ProvisioningSettingsResolver::class)->resolve((string) $device->domain_uuid);
+        $policy = app(ProvisioningAuthPolicy::class);
+        $credentials = $policy->requiresHttpAuthentication($settings)
+            ? rawurlencode($policy->username($settings)) . ':' . rawurlencode($policy->passwords($settings)[0]) . '@'
+            : '';
+        $baseUrl = rtrim((string) config('app.url'), '/') . '/prov/';
+        $baseUrl = str_replace('://', '://' . $credentials, $baseUrl);
+        $mac = $this->normalizeMac((string) $device->device_address);
+
+        return [
+            'contacts' => $baseUrl . $mac . '-contacts.xml',
+            'smartblf' => $baseUrl . $mac . '-smartblf.xml',
         ];
     }
 
@@ -1040,6 +1345,7 @@ class ProvisioningController extends Controller
 
         $maps = [
             'main' => [],
+            'side' => [],
             'multi_purpose' => [],
             'expansion' => [],
         ];
@@ -1070,6 +1376,10 @@ class ProvisioningController extends Controller
                     // Legacy/profile line indexes appear to be zero-based:
                     // 0 => first line, 1 => second line, etc.
                     $lookupLineNumber = $line !== null ? $line + 1 : 1;
+
+                    if ($vendor === 'sangoma') {
+                        $line = $lookupLineNumber;
+                    }
 
                     $lineObj = collect($device->lines ?? [])->firstWhere('line_number', $lookupLineNumber);
 
@@ -1425,12 +1735,16 @@ class ProvisioningController extends Controller
             }));
         }
 
-        foreach ($keys as $i => &$k) {
-            $k['id'] = $i + 1;
+        // Sangoma key indices are physical slots; gaps must not move later buttons.
+        if (strtolower((string) $device->device_vendor) !== 'sangoma') {
+            foreach ($keys as $i => &$k) {
+                $k['id'] = $i + 1;
+            }
+            unset($k);
         }
-        unset($k);
 
-        // Fill labels from Extensions.effective_caller_id_name (domain-scoped)
+        // Fill blank labels from the target extension (domain-scoped), formatted
+        // with blf_label_format. A label typed on the key always wins.
         $blfTargets = collect($keys)
             ->filter(fn($k) => (empty($k['label']) || $k['label'] === null) && !empty($k['value']))
             ->map(fn($k) => (string) ($k['value'] ?? ''))
@@ -1439,12 +1753,18 @@ class ProvisioningController extends Controller
             ->values();
 
         if ($blfTargets->isNotEmpty()) {
-            $extLabels = Extensions::query()
+            $labelFormat = $settings['blf_label_format'] ?? null;
+            $extLabels = Extensions::without('advSettings')
                 ->where('domain_uuid', $device->domain_uuid)
                 ->whereIn('extension', $blfTargets->all())
-                ->get(['extension', 'effective_caller_id_name'])
-                ->keyBy('extension')
-                ->map(fn($r) => $r->effective_caller_id_name)
+                ->get(['extension', 'effective_caller_id_name', 'directory_first_name', 'directory_last_name'])
+                ->mapWithKeys(fn ($r) => [
+                    (string) $r->extension => fspbx_format_extension_label(
+                        is_string($labelFormat) ? $labelFormat : null,
+                        $r->only(['extension', 'effective_caller_id_name', 'directory_first_name', 'directory_last_name']),
+                        '{name}'
+                    ),
+                ])
                 ->toArray();
 
             $labelsFilled = 0;
@@ -1566,7 +1886,7 @@ class ProvisioningController extends Controller
                     'speed_dial' => '13',
                     'dtmf' => '11',
                     '' => '0',
-                    'park' => '16',
+                    'park' => '10',
                     'check_voicemail' => '16',
                     default      => $t,
                 };

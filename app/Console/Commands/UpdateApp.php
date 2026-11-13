@@ -48,6 +48,27 @@ use App\Console\Commands\Updates\Update190;
 use App\Console\Commands\Updates\Update191;
 use App\Console\Commands\Updates\Update192;
 use App\Console\Commands\Updates\Update193;
+use App\Console\Commands\Updates\Update194;
+use App\Console\Commands\Updates\Update195;
+use App\Console\Commands\Updates\Update196;
+use App\Console\Commands\Updates\Update197;
+use App\Console\Commands\Updates\Update198;
+use App\Console\Commands\Updates\Update199;
+use App\Console\Commands\Updates\Update200;
+use App\Console\Commands\Updates\Update203;
+use App\Console\Commands\Updates\Update204;
+use App\Console\Commands\Updates\Update205;
+use App\Console\Commands\Updates\Update206;
+use App\Console\Commands\Updates\Update207;
+use App\Console\Commands\Updates\Update208;
+use App\Console\Commands\Updates\Update209;
+use App\Console\Commands\Updates\Update210;
+use App\Console\Commands\Updates\Update211;
+use App\Console\Commands\Updates\Update212;
+use App\Console\Commands\Updates\Update213;
+use App\Console\Commands\Updates\Update220;
+use App\Console\Commands\Updates\Update222;
+use App\Console\Commands\Updates\Update225;
 use App\Console\Commands\Updates\Update0917;
 use App\Console\Commands\Updates\Update0918;
 use App\Console\Commands\Updates\Update0924;
@@ -66,6 +87,7 @@ use App\Console\Commands\Updates\Update0969;
 use App\Console\Commands\Updates\Update0970;
 use App\Services\GitHubApiService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Process as LaravelProcess;
 use Symfony\Component\Process\Process;
 
 class UpdateApp extends Command
@@ -106,6 +128,10 @@ class UpdateApp extends Command
         $versionConfigFile = base_path('config/version.php');
         $downloadedVersionArray = include($versionConfigFile);
         $downloadedVersion = $downloadedVersionArray['release'] ?? null;
+
+        // Verify the release before update hooks, seeders, or service changes.
+        // Never turn a missing artifact into an automatic production build.
+        $this->executeCommand('php artisan frontend:install --prepare', 240);
 
         // Define version-specific steps using an array
         $updateSteps = [
@@ -172,6 +198,27 @@ class UpdateApp extends Command
             '1.9.1' => Update191::class,
             '1.9.2' => Update192::class,
             '1.9.3' => Update193::class,
+            '1.9.4' => Update194::class,
+            '1.9.5' => Update195::class,
+            '1.9.6' => Update196::class,
+            '1.9.7' => Update197::class,
+            '1.9.8' => Update198::class,
+            '1.9.9' => Update199::class,
+            '2.0.0' => Update200::class,
+            '2.0.3' => Update203::class,
+            '2.0.4' => Update204::class,
+            '2.0.5' => Update205::class,
+            '2.0.6' => Update206::class,
+            '2.0.7' => Update207::class,
+            '2.0.8' => Update208::class,
+            '2.0.9' => Update209::class,
+            '2.1.0' => Update210::class,
+            '2.1.1' => Update211::class,
+            '2.1.2' => Update212::class,
+            '2.1.3' => Update213::class,
+            '2.2.0' => Update220::class,
+            '2.2.2' => Update222::class,
+            '2.2.5' => Update225::class,
             // Add more versions as needed
         ];
 
@@ -181,7 +228,7 @@ class UpdateApp extends Command
             if (version_compare($currentVersion, $version, '<')) {
                 $this->info("Applying update steps for version $version...");
                 // Create instance of the class and call the apply() method
-                $updateInstance = new $updateClass();
+                $updateInstance = app($updateClass);
                 if (!$updateInstance->apply()) {
                     // If the update fails, stop further updates and exit with failure
                     $this->error("Update to version $version failed. Stopping further updates.");
@@ -197,6 +244,7 @@ class UpdateApp extends Command
 
                 // If the update is successful, call the version:set command
                 $this->call('version:set', ['version' => $version, '--force' => true]);
+                $currentVersion = $version;
                 $this->info("Version successfully updated to $version.");
             }
         }
@@ -214,8 +262,17 @@ class UpdateApp extends Command
         // Cache config and routes
         $this->executeCommand('php artisan config:cache');
 
-        // Refresh enabled modules using the DB license
-        $this->runArtisanCommand('modules:refresh');
+        // Optional module updates must never block the application update.
+        try {
+            $moduleRefreshExitCode = $this->call('modules:refresh');
+        } catch (\Throwable $exception) {
+            $moduleRefreshExitCode = 1;
+            $this->warn('Module refresh failed: '.$exception->getMessage());
+        }
+
+        if ($moduleRefreshExitCode !== 0) {
+            $this->warn('Module updates were skipped or incomplete. Continuing the application update. Retry with php artisan modules:refresh after resolving the warning.');
+        }
 
         $this->executeCommand('php artisan route:cache');
         $this->executeCommand('php artisan queue:restart');
@@ -227,13 +284,13 @@ class UpdateApp extends Command
         $this->info("Seeding Templates...");
         // Run prov:templates:seed in a subprocess too
         $this->executeCommand('php artisan prov:templates:seed --no-interaction', 300);
+        $this->executeCommand('php artisan email:templates:seed --no-interaction', 300);
 
         // Create storage link
         $this->runArtisanCommand('storage:link', ['--force' => true]);
 
-        // Update Vue files
-        $this->executeCommand('npm install');
-        $this->executeCommand('npm run build', 300);
+        // Module refresh installs its own licensed, prebuilt assets.
+        $this->executeCommand('php artisan frontend:install --activate', 60);
 
         // Output the current working directory
         $currentDirectory = $this->getCurrentDirectory();
@@ -242,13 +299,28 @@ class UpdateApp extends Command
         // Change ownership of the current directory
         $this->changeDirectoryOwnership($currentDirectory);
 
+        $modulePrograms = app(\App\Services\ProFeaturesService::class)->getSupervisorProgramsToRestart();
+        $supervisorProgramsToRestart = array_merge($supervisorProgramsToRestart, $modulePrograms);
         if (!empty($supervisorProgramsToRestart)) {
             $this->restartSupervisorPrograms($supervisorProgramsToRestart);
         }
 
+        try {
+            $toolSyncExitCode = $this->call('ai-agents:sync-provider-tools', [
+                '--delay' => 300,
+                '--reason' => 'app-update',
+            ]);
+        } catch (\Throwable $exception) {
+            $toolSyncExitCode = 1;
+            report($exception);
+        }
+
+        if ($toolSyncExitCode !== 0) {
+            $this->warn('AI provider tool synchronization could not be queued. Use the Sync Tools action on the AI Agents page after the update.');
+        }
+
         $this->info('Update completed successfully!');
     }
-
 
     protected function executeCommand($command, $timeout = 60, $failOnError = true)
     {
@@ -307,7 +379,7 @@ class UpdateApp extends Command
         $this->executeCommand("chown -R www-data:www-data $directory");
     }
 
-    protected function restartSupervisorPrograms(array $programs)
+    protected function restartSupervisorPrograms(array $programs): void
     {
         $programs = array_values(array_filter(array_unique($programs)));
 
@@ -315,10 +387,63 @@ class UpdateApp extends Command
             return;
         }
 
-        $this->info('Restarting Supervisor programs: ' . implode(', ', $programs));
+        try {
+            $result = LaravelProcess::timeout(15)->run(['supervisorctl', 'status']);
+        } catch (\Throwable $exception) {
+            $this->warn('Could not read Supervisor status; continuing the update: '.$exception->getMessage());
+            return;
+        }
 
-        $escapedPrograms = implode(' ', array_map('escapeshellarg', $programs));
+        // Status exits nonzero when any program is stopped. Use the individual
+        // states so an intentionally disabled service does not affect others.
+        preg_match_all(
+            '/^(\S+)\s+(STOPPED|STARTING|RUNNING|BACKOFF|STOPPING|EXITED|FATAL|UNKNOWN)\b/m',
+            $result->output(),
+            $matches,
+            PREG_SET_ORDER
+        );
+        $states = array_column($matches, 2, 1);
 
-        $this->executeCommand("supervisorctl restart {$escapedPrograms}", 120, false);
+        if (empty($states) && $result->failed()) {
+            $this->warn('Could not read Supervisor status; continuing the update: '.trim($result->errorOutput().' '.$result->output()));
+            return;
+        }
+
+        $restartTargets = [];
+        foreach ($programs as $program) {
+            $group = str_ends_with($program, ':*') ? substr($program, 0, -2) : $program;
+            $programStates = array_filter($states, fn ($name) => $name === $program || str_starts_with($name, $group.':'), ARRAY_FILTER_USE_KEY);
+
+            if (empty($programStates)) {
+                $this->info("Skipping Supervisor program {$program}: not configured.");
+                continue;
+            }
+
+            foreach ($programStates as $name => $state) {
+                if ($state === 'RUNNING') {
+                    $restartTargets[$name] = true;
+                } else {
+                    $this->info("Skipping Supervisor program {$name}: {$state}.");
+                }
+            }
+        }
+
+        // Restart each running process separately, including group members, so
+        // stopped siblings stay stopped and a failure cannot block the update.
+        foreach (array_keys($restartTargets) as $program) {
+            $this->info("Restarting Supervisor program: {$program}");
+
+            try {
+                $result = LaravelProcess::timeout(150)->run(['supervisorctl', 'restart', $program], function (string $type, string $output) {
+                    $this->output->write($output);
+                });
+
+                if ($result->failed()) {
+                    $this->warn("Could not restart Supervisor program {$program}; continuing the update. Retry: supervisorctl restart {$program}");
+                }
+            } catch (\Throwable $exception) {
+                $this->warn("Could not restart Supervisor program {$program}; continuing the update: ".$exception->getMessage().". Retry: supervisorctl restart {$program}");
+            }
+        }
     }
 }

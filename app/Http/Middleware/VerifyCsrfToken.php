@@ -16,6 +16,7 @@ class VerifyCsrfToken extends Middleware
         'webhook/mailgun',
         'webhook/commio/sms',
         'webhook/sinch/sms',
+        'webhook/voxutel/sms',
         'webhook/bandwidth/sms',
         'webhook/telnyx/sms',
         'webhook/clicksend/sms',
@@ -25,6 +26,8 @@ class VerifyCsrfToken extends Middleware
         'webhook/assemblyai',
         'webhook/apidaze/sms',
         'webhook/bulkvs/sms',
-        'webhook/voipms/sms'
+        'webhook/voipms/sms',
+        'webhook/fibernetics/sms',
+        'webhook/twilio/sms'
     ];
 }

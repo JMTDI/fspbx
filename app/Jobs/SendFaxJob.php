@@ -47,6 +47,28 @@ class SendFaxJob implements ShouldQueue
     private const ORIGINATE_THROTTLE_BLOCK_SECONDS = 60;
     private const ORIGINATE_THROTTLE_RELEASE_SECONDS = 10;
 
+    /**
+     * The loopback B leg runs the account outbound dialplan and then creates
+     * the real gateway channel. Export the completion hook and correlation
+     * fields so that final channel can report the actual fax result.
+     */
+    private const FAX_WEBHOOK_EXPORT_VARIABLES = [
+        'api_hangup_hook',
+        'fax_uuid',
+        'outbound_fax_uuid',
+        'outbound_fax_attempt_uuid',
+        'domain_uuid',
+        'domain_name',
+        'call_direction',
+        'fax_file',
+        'fax_uri',
+        'caller_destination',
+        'fax_retry_attempts',
+        'fax_retry_limit',
+        'fax_ident',
+        'fax_header',
+    ];
+
     public function __construct(public string $outboundFaxUuid)
     {
         $this->onQueue('faxes');
@@ -243,7 +265,11 @@ class SendFaxJob implements ShouldQueue
             $channelVariables['toll_allow'] = $tollAllow;
         }
 
-        $routeResult = outbound_route_to_bridge(
+        $localEndpoint = $this->localFaxEndpoint($fax, $domainName);
+        $routeResult = $localEndpoint !== null ? [
+            'bridges' => [$localEndpoint],
+            'route_destination' => $fax->destination,
+        ] : outbound_route_to_bridge(
             $fax->domain_uuid,
             $fax->destination,
             $channelVariables,
@@ -270,6 +296,7 @@ class SendFaxJob implements ShouldQueue
         }
 
         $faxUri = $routes[0];
+        $originateEndpoint = $localEndpoint ?? "loopback/{$routeDestination}/{$domainName}/XML";
         $selectedRoute = $routeResult['selected_route'] ?? null;
 
         fax_webhook_debug('Selected fax route', [
@@ -281,6 +308,7 @@ class SendFaxJob implements ShouldQueue
             'route_destination' => $routeDestination,
             'fallback_used'     => $fallbackUsed,
             'fax_uri'           => $faxUri,
+            'originate_endpoint' => $originateEndpoint,
             'lua_actions'       => $selectedRoute['lua_actions'] ?? [],
         ]);
 
@@ -300,6 +328,8 @@ class SendFaxJob implements ShouldQueue
             "call_direction='outbound'",
             "domain_uuid={$e($fax->domain_uuid)}",
             "domain_name={$e($domainName)}",
+            "outbound_caller_id_name='{$e($callerIdName)}'",
+            "outbound_caller_id_number='{$e($fax->source)}'",
             "origination_caller_id_name='{$e($callerIdName)}'",
             "origination_caller_id_number='{$e($fax->source)}'",
             "fax_ident='{$e($fax->source)}'",
@@ -307,11 +337,17 @@ class SendFaxJob implements ShouldQueue
             "fax_file='{$e($fax->file_path)}'",
             "hangup_after_bridge=true",
             "continue_on_fail=true",
+            "skip_cdr_causes=NORMAL_UNSPECIFIED",
+            "force_process_cdr=true",
             "media_mix_inbound_outbound_codecs=true",
             "sip_renegotiate-codec-on-reinvite=true",
             "absolute_codec_string='PCMU,PCMA'",
             "caller_destination={$e($fax->destination)}",
         ];
+
+        if (!empty($tollAllow)) {
+            $vars[] = "toll_allow='{$e($tollAllow)}'";
+        }
 
         // Verbose fax logging only when admin has enabled FAX_WEBHOOK_DEBUG —
         // keeps FreeSWITCH logs quiet in production.
@@ -320,15 +356,18 @@ class SendFaxJob implements ShouldQueue
         }
 
         // Per-attempt fallback ladder, mirrors legacy fax_send.php behavior.
-        // Earlier retries try defaults; later retries flip T38/ECM/V17 combos
-        // to coax a connection out of finicky receivers.
-        foreach ($this->retryLadderOptions((int) $fax->retry_count) as $opt) {
+        // Attempt 1 uses configured defaults; later retries flip T38/ECM/V17
+        // combos to coax a connection out of finicky receivers.
+        $retryOptions = $this->retryLadderOptions((int) $fax->retry_count);
+
+        foreach ($retryOptions as $opt) {
             $vars[] = $opt;
         }
 
-        // Domain-configured dial-plan variables (fax.variable settings).
+        // Shared default fax.variable settings apply to local and external sends. Retry
+        // options win only for the variables that this attempt explicitly sets.
         foreach ($this->domainDialplanVariables() as $extra) {
-            if ($this->retryLadderControlsVariable($extra)) {
+            if ($this->retryLadderControlsVariable($extra, $retryOptions)) {
                 continue;
             }
 
@@ -344,11 +383,24 @@ class SendFaxJob implements ShouldQueue
             "api_hangup_hook='lua lua/fax_hangup.lua'",
         ]);
 
-        $vars = $this->dedupeChannelVariables($vars);
-
         $dialplanContext = $domainName !== '' ? ' inline ' . $e($domainName) : '';
 
-        return '{' . implode(',', $vars) . '}' . $faxUri . " 'txfax:{$e($fax->file_path)}'" . $dialplanContext;
+        return '{' . $this->buildOriginateVariableBlock($vars) . '}' . $originateEndpoint . " 'txfax:{$e($fax->file_path)}'" . $dialplanContext;
+    }
+
+    private function localFaxEndpoint(OutboundFax $fax, string $domainName): ?string
+    {
+        if ($domainName === '' || !preg_match('/^[0-9]+$/', (string) $fax->destination)) {
+            return null;
+        }
+
+        $exists = \App\Models\Extensions::where('domain_uuid', $fax->domain_uuid)
+            ->where('extension', $fax->destination)
+            ->exists();
+
+        // Address the registered user directly, without a trunk prefix or
+        // extension call-forward/voicemail actions intercepting the fax.
+        return $exists ? "user/{$fax->destination}@{$domainName}" : null;
     }
 
     /**
@@ -369,7 +421,7 @@ class SendFaxJob implements ShouldQueue
     }
 
     /**
-     * Domain-configured channel vars from fax.variable settings. Cached for
+     * Global channel vars from Default Settings fax.variable. Cached for
      * a minute to avoid hammering DefaultSettings on every send.
      */
     private function domainDialplanVariables(): array
@@ -433,16 +485,21 @@ class SendFaxJob implements ShouldQueue
         };
     }
 
-    private function retryLadderControlsVariable(string $variable): bool
+    private function retryLadderControlsVariable(string $variable, array $retryOptions): bool
     {
         $name = trim(strtok($variable, '='));
 
-        return in_array($name, [
-            'fax_disable_v17',
-            'fax_enable_t38',
-            'fax_enable_t38_request',
-            'fax_use_ecm',
-        ], true);
+        if ($name === '') {
+            return false;
+        }
+
+        foreach ($retryOptions as $option) {
+            if ($name === trim(strtok($option, '='))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function dedupeChannelVariables(array $variables): array
@@ -462,5 +519,45 @@ class SendFaxJob implements ShouldQueue
         }
 
         return $deduped;
+    }
+
+    /**
+     * Build the originate variable block and ensure the fax result hook is
+     * inherited by the gateway channel created inside the outbound dialplan.
+     */
+    private function buildOriginateVariableBlock(array $variables): string
+    {
+        $variables = $this->dedupeChannelVariables($variables);
+        $exportVariables = self::FAX_WEBHOOK_EXPORT_VARIABLES;
+
+        foreach ($variables as $index => $variable) {
+            [$name, $value] = array_pad(explode('=', (string) $variable, 2), 2, '');
+
+            if (trim($name) !== 'export_vars') {
+                continue;
+            }
+
+            $configuredExports = explode(',', trim($value, " \t\n\r\0\x0B'\""));
+            $exportVariables = array_merge($configuredExports, $exportVariables);
+            unset($variables[$index]);
+        }
+
+        $exportVariables = array_values(array_unique(array_filter(
+            array_map('trim', $exportVariables)
+        )));
+
+        $variables[] = "export_vars='" . implode(',', $exportVariables) . "'";
+
+        // The originate API removes quotes before parsing channel variables.
+        // A comma delimiter would truncate export_vars and codec lists even
+        // when their values were quoted. Pick a delimiter absent from all values.
+        $contents = implode('', $variables);
+        foreach (['|', ';', '~', '^', '#'] as $delimiter) {
+            if (!str_contains($contents, $delimiter)) {
+                return '^^' . $delimiter . implode($delimiter, $variables);
+            }
+        }
+
+        throw new \RuntimeException('Unable to delimit fax originate variables.');
     }
 }

@@ -20,7 +20,7 @@
                                 <button type="button"
                                     class="rounded-md bg-white text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
                                     @click="emit('close')">
-                                    <span class="sr-only">Close</span>
+                                    <span class="sr-only">{{ $t('Close') }}</span>
                                     <XMarkIcon class="h-6 w-6" aria-hidden="true" />
                                 </button>
                             </div>
@@ -38,7 +38,7 @@
                                             </path>
                                         </svg>
                                     </div>
-                                    <div class="text-lg text-blue-600 m-auto">Loading...</div>
+                                    <div class="text-lg text-blue-600 m-auto">{{ $t('Loading...') }}</div>
                                 </div>
                             </div>
 
@@ -47,20 +47,40 @@
                                 @error="handleError" @response="handleResponse" :display-errors="false" :default="{
                                     destination: options.item.destination,
                                     carrier: options.item.carrier,
-                                    chatplan_detail_data: options.item.chatplan_detail_data,
+                                    allowed_extension_uuids: options.item.allowed_extension_uuids || [],
                                     email: options.item.email,
                                     description: options.item.description,
+                                    ...messageDeliveryDefaults(options.item, options.webhook),
+                                    opt_out_enabled: !!options.item.opt_out_enabled,
 
-                                }">
+                                }" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
 
                                 <template #empty>
 
                                     <FormElements>
 
-                                        <StaticElement name="h4" tag="h4" content="Update Settings" />
+                                        <StaticElement name="h4" tag="h4" :content="$t('Update Settings')" />
 
-                                        <TextElement name="destination" label="Phone Number"
-                                            placeholder="Enter Phone Number" :floating="false" :columns="{
+                                        <StaticElement name="uuid_clean">
+                                            <div class="mb-1">
+                                                <div class="mb-1 text-sm font-medium text-gray-600">
+                                                    {{ $t('Unique ID') }}
+                                                </div>
+                                                <div class="flex items-center">
+                                                    <span class="text-sm font-normal text-gray-900 select-all break-all">
+                                                        {{ options.item.sms_destination_uuid }}
+                                                    </span>
+                                                    <button type="button" @click="handleCopyToClipboard"
+                                                        class="ml-2 shrink-0 rounded-full p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2"
+                                                        :title="$t('Copy to clipboard')" :aria-label="$t('Copy to clipboard')">
+                                                        <ClipboardDocumentIcon class="h-4 w-4" aria-hidden="true" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </StaticElement>
+
+                                        <TextElement name="destination" :label="$t('Phone Number')"
+                                            :placeholder="$t('Enter Phone Number')" :floating="false" :columns="{
                                                 sm: {
                                                     container: 6,
                                                 },
@@ -68,37 +88,31 @@
 
 
                                         <SelectElement name="carrier" :items="options.carrier"
-                                            :search="true" :native="false" label="Message Provider" input-type="search"
+                                            :search="true" :native="false" :label="$t('Message Provider')" input-type="search"
                                             autocomplete="off" :floating="false" :strict="false"
-                                            placeholder="Choose Provider" :columns="{
+                                            :placeholder="$t('Choose Provider')" :columns="{
                                                 sm: {
                                                     container: 6,
                                                 },
                                             }" />
 
-                                        <SelectElement name="chatplan_detail_data" :items="options.chatplan_detail_data"
-                                            :search="true" :native="false" label="Extension" input-type="search"
-                                            autocomplete="off" :floating="false" description="Assign the extension
-                                                        to which the messages should be
-                                                        forwarded." :strict="false" placeholder="Choose extension"
-                                            :columns="{
-                                                sm: {
-                                                    container: 6,
-                                                },
-                                            }" />
+                                        <MessageDeliveryFields :settings="options.webhook" :extensions="options.extensions" />
+                                        <ToggleElement v-if="options.opt_out_available && options.opt_out_scope === 'number'" name="opt_out_enabled" :text="$t('Enable opt out')"
+                                            :conditions="[form => !options.webhook?.available || form.data.inbound_delivery === 'members']"
+                                            :true-value="true" :false-value="false"
+                                            :description="$t('An SMS matching an opt-out keyword blocks further Messages and Ringotel sends to that recipient. Manage keywords in Account Settings. Customer API sends are excluded.')" />
+                                        <StaticElement v-if="options.opt_out_available && options.opt_out_scope === 'account'" name="opt_out_account"
+                                            :content="$t('Account-wide opt-out handling is enabled for every phone number. Individual numbers cannot be excluded.')" />
+                                        <StaticElement v-if="options.opt_out_available && options.opt_out_route" name="manage_opt_outs">
+                                            <button type="button" class="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                                                @click="emit('manage-opt-outs', { route: options.opt_out_route, destination: options.item.destination_formatted || options.item.destination })">{{ $t('Manage opt-outs') }}</button>
+                                        </StaticElement>
 
-                                        <TextElement name="email" label="Email" placeholder="Optional" :floating="false"
-                                            :columns="{
-                                                sm: {
-                                                    container: 6,
-                                                },
-                                            }" />
-
-                                        <TextareaElement label="Description" name="description" :rows="2" />
+                                        <TextareaElement :label="$t('Description')" name="description" :rows="2" />
 
                                         <GroupElement name="container_3" />
 
-                                        <ButtonElement name="submit" button-label="Save" :submits="true"
+                                        <ButtonElement name="submit" :button-label="$t('Save')" :submits="true"
                                             align="right" />
 
                                     </FormElements>
@@ -116,12 +130,17 @@
 </template>
 
 <script setup>
+import { clearServerFormErrors } from '../../../composables/serverFormErrors.js';
+import { trans } from '@i18n';
 import { ref } from "vue";
+import MessageDeliveryFields from './MessageDeliveryFields.vue';
+import { messageDeliveryDefaults, messageDeliveryRequest } from '../../../composables/messageDelivery.js';
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from '@headlessui/vue'
 import { XMarkIcon } from "@heroicons/vue/24/solid";
+import { ClipboardDocumentIcon } from "@heroicons/vue/24/outline";
 
 
-const emit = defineEmits(['close', 'error', 'success', 'refresh-data', 'open-edit-form'])
+const emit = defineEmits(['close', 'error', 'success', 'refresh-data', 'open-edit-form', 'manage-opt-outs'])
 
 const props = defineProps({
     show: Boolean,
@@ -132,11 +151,19 @@ const props = defineProps({
 
 const form$ = ref(null)
 
+const handleCopyToClipboard = async () => {
+    try {
+        await navigator.clipboard.writeText(props.options.item.sms_destination_uuid);
+        emit('success', 'success', { message: [trans('Copied to clipboard.')] });
+    } catch {
+        emit('error', { response: { data: { errors: { request: [trans('Failed to copy to clipboard.')] } } } });
+    }
+};
+
 const submitForm = async (FormData, form$) => {
     // Using form$.requestData will EXCLUDE conditional elements and it 
     // will submit the form as Content-Type: application/json . 
-    const requestData = form$.requestData
-    // console.log(requestData);
+    const requestData = messageDeliveryRequest(form$.requestData, props.options.item, props.options.webhook)
 
     return await form$.$vueform.services.axios.put(props.options.routes.update_route, requestData)
 };
@@ -187,7 +214,7 @@ const handleError = (error, details, form$) => {
         case 'prepare':
             console.log(error) // Error object
 
-            form$.messageBag.append('Could not prepare form')
+            form$.messageBag.append(trans('Could not prepare form'))
             break
 
         // Error occured because response status is outside of 2xx
@@ -207,14 +234,14 @@ const handleError = (error, details, form$) => {
         case 'cancel':
             console.log(error) // Error object
 
-            form$.messageBag.append('Request cancelled')
+            form$.messageBag.append(trans('Request cancelled'))
             break
 
         // Some other errors happened (no response object)
         case 'other':
             console.log(error) // Error object
 
-            form$.messageBag.append('Couldn\'t submit form')
+            form$.messageBag.append(trans('Couldn\'t submit form'))
             break
     }
 }

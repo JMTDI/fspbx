@@ -77,7 +77,7 @@ class UpdateDeviceRequest extends FormRequest
             // Required fields for each key:
             'device_lines.*.line_type_id' => ['required', 'string'],
             'device_lines.*.auth_id' => ['required', 'string'],
-            'device_lines.*.line_number' => ['required', 'numeric'],
+            'device_lines.*.line_number' => ['required', 'integer', 'min:0', 'distinct'],
 
             // These fields can be null/empty:
             'device_lines.*.display_name' => ['nullable'],
@@ -101,6 +101,21 @@ class UpdateDeviceRequest extends FormRequest
                 'array',
             ],
 
+            'phonebook_mode' => [
+                'nullable',
+                'string',
+                Rule::in(['default', 'custom']),
+            ],
+
+            'phonebook_uuids' => [
+                'nullable',
+                'array',
+            ],
+
+            'phonebook_uuids.*' => [
+                'uuid',
+            ],
+
             'device_keys.*.key_index' => [
                 'required',
                 'integer',
@@ -109,7 +124,7 @@ class UpdateDeviceRequest extends FormRequest
             'device_keys.*.key_area' => [
                 'nullable',
                 'string',
-                Rule::in(['main', 'multi_purpose', 'expansion']),
+                Rule::in(['main', 'side', 'multi_purpose', 'expansion']),
             ],
 
             'device_keys.*.key_type' => [

@@ -14,5 +14,9 @@ class InboundMessageEventData extends MessagingEventData
         public string $text = '',
         public array $mediaUrls = [],
         public ?string $providerEvent = null,
+        public array $storedMedia = [],
+        public bool $isMms = false,
+        // Some carriers deliver one webhook per local number, with the full group in `to`.
+        public ?array $localRecipients = null,
     ) {}
 }

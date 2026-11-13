@@ -44,7 +44,6 @@ class CallFlowController extends Controller
                 'update' => userCheckPermission('call_flow_edit'),
                 'destroy' => userCheckPermission('call_flow_delete'),
                 'view_global' => userCheckPermission('call_flow_all'),
-                'context' => userCheckPermission('call_flow_context'),
             ],
         ]);
     }
@@ -53,7 +52,7 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -76,7 +75,7 @@ class CallFlowController extends Controller
             $this->notifyCallFlowBlf($validated['call_flow_extension'], $validated['call_flow_status']);
 
             return response()->json([
-                'messages' => ['success' => ['Call flow created successfully.']],
+                'messages' => ['success' => [__('Call flow created successfully.')]],
                 'call_flow_uuid' => $callFlowUuid,
             ], 201);
         } catch (\Throwable $e) {
@@ -84,7 +83,7 @@ class CallFlowController extends Controller
             logger('CallFlowController@store error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to create call flow.']],
+                'messages' => ['error' => [__('Failed to create call flow.')]],
             ], 500);
         }
     }
@@ -97,7 +96,7 @@ class CallFlowController extends Controller
 
         if (!userCheckPermission('call_flow_edit') || $callFlow->domain_uuid !== session('domain_uuid')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -119,14 +118,14 @@ class CallFlowController extends Controller
             $this->notifyCallFlowBlf($validated['call_flow_extension'], $validated['call_flow_status']);
 
             return response()->json([
-                'messages' => ['success' => ['Call flow updated successfully.']],
+                'messages' => ['success' => [__('Call flow updated successfully.')]],
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('CallFlowController@update error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['Failed to update call flow.']],
+                'messages' => ['error' => [__('Failed to update call flow.')]],
             ], 500);
         }
     }
@@ -137,13 +136,13 @@ class CallFlowController extends Controller
 
         if ($itemUuid && !userCheckPermission('call_flow_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         if (!$itemUuid && !userCheckPermission('call_flow_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -199,7 +198,7 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_add') && !userCheckPermission('call_flow_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -211,7 +210,7 @@ class CallFlowController extends Controller
 
         if ($name === '') {
             throw ValidationException::withMessages([
-                'name' => ['Enter a group name.'],
+                'name' => [__('Enter a group name.')],
             ]);
         }
 
@@ -233,7 +232,7 @@ class CallFlowController extends Controller
                 'label' => $group->call_flow_group_name,
             ],
             'group_options' => $this->groupOptions(),
-            'messages' => ['success' => ['Call flow group saved.']],
+            'messages' => ['success' => [__('Call flow group saved.')]],
         ], $group->wasRecentlyCreated ? 201 : 200);
     }
 
@@ -241,7 +240,7 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_view')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -258,6 +257,10 @@ class CallFlowController extends Controller
                 'call_flow_status',
                 'call_flow_label',
                 'call_flow_alternate_label',
+                'call_flow_app',
+                'call_flow_data',
+                'call_flow_alternate_app',
+                'call_flow_alternate_data',
                 'call_flow_context',
                 'call_flow_enabled',
                 'call_flow_group',
@@ -304,7 +307,17 @@ class CallFlowController extends Controller
                 'call_flow_description',
             ])
             ->defaultSort('call_flow_name')
-            ->paginate($this->perPage);
+            ->paginate($this->perPage)
+            ->through(function (CallFlows $callFlow) {
+                $route = $callFlow->activeRouteSummary();
+
+                return $callFlow
+                    ->makeHidden(['call_flow_app', 'call_flow_data', 'call_flow_alternate_app', 'call_flow_alternate_data'])
+                    ->toArray() + [
+                        'routing_to_name' => $route['name'],
+                        'routing_to_type' => $route['type'],
+                    ];
+            });
 
         return $items;
     }
@@ -313,7 +326,7 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_view')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -354,7 +367,7 @@ class CallFlowController extends Controller
 
         return response()->json([
             'items' => $items,
-            'messages' => ['success' => ['All matching call flows selected.']],
+            'messages' => ['success' => [__('All matching call flows selected.')]],
         ]);
     }
 
@@ -362,14 +375,14 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         $uuids = $this->validatedUuids($request);
         if (empty($uuids)) {
             return response()->json([
-                'messages' => ['error' => ['No call flows selected.']],
+                'messages' => ['error' => [__('No call flows selected.')]],
             ], 422);
         }
 
@@ -406,14 +419,14 @@ class CallFlowController extends Controller
             $this->afterDialplanChange($contexts);
 
             return response()->json([
-                'messages' => ['success' => ["Deleted {$deleted} call flow(s)."]],
+                'messages' => ['success' => [__('Deleted :count call flow(s).', ['count' => $deleted])]],
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('CallFlowController@bulkDelete error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting the selected call flows.']],
+                'messages' => ['error' => [__('An error occurred while deleting the selected call flows.')]],
             ], 500);
         }
     }
@@ -422,14 +435,14 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_add')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
         $uuids = $this->validatedUuids($request);
         if (empty($uuids)) {
             return response()->json([
-                'messages' => ['error' => ['No call flows selected.']],
+                'messages' => ['error' => [__('No call flows selected.')]],
             ], 422);
         }
 
@@ -474,14 +487,14 @@ class CallFlowController extends Controller
             $this->afterDialplanChange($contexts->filter()->unique()->values());
 
             return response()->json([
-                'messages' => ['success' => ["Copied {$copied} call flow(s)."]],
+                'messages' => ['success' => [__('Copied :count call flow(s).', ['count' => $copied])]],
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('CallFlowController@bulkCopy error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while copying the selected call flows.']],
+                'messages' => ['error' => [__('An error occurred while copying the selected call flows.')]],
             ], 500);
         }
     }
@@ -490,7 +503,7 @@ class CallFlowController extends Controller
     {
         if (!userCheckPermission('call_flow_edit')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']],
+                'messages' => ['error' => [__('Access denied.')]],
             ], 403);
         }
 
@@ -501,7 +514,7 @@ class CallFlowController extends Controller
         $uuids = $this->validatedUuids($request);
         if (empty($uuids)) {
             return response()->json([
-                'messages' => ['error' => ['No call flows selected.']],
+                'messages' => ['error' => [__('No call flows selected.')]],
             ], 422);
         }
 
@@ -540,14 +553,14 @@ class CallFlowController extends Controller
             $this->afterDialplanChange($callFlows->pluck('call_flow_context')->filter()->unique()->values());
 
             return response()->json([
-                'messages' => ['success' => ['Call flow setting toggled.']],
+                'messages' => ['success' => [__('Call flow setting toggled.')]],
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('CallFlowController@bulkToggle error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while toggling the selected call flows.']],
+                'messages' => ['error' => [__('An error occurred while toggling the selected call flows.')]],
             ], 500);
         }
     }
@@ -672,9 +685,6 @@ class CallFlowController extends Controller
 
     private function afterDialplanChange($contexts): void
     {
-        session(['reload_xml' => true]);
-        session()->forget('destinations.array');
-
         foreach ($contexts as $context) {
             cache()->forget('dialplan:' . $context);
         }

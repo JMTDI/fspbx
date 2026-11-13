@@ -7,7 +7,11 @@ use App\Actions\Fortify\RedirectToEmailChallengeIf2FAIsNotEnabled;
 use App\Actions\Fortify\ResetUserPassword;
 use App\Actions\Fortify\UpdateUserPassword;
 use App\Actions\Fortify\UpdateUserProfileInformation;
+use App\Mail\ResetPasswordMail;
 use App\Models\DefaultSettings;
+use App\Services\LdapUserAuthenticator;
+use App\Support\Localization\LocaleRegistry;
+use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -42,6 +46,34 @@ class FortifyServiceProvider extends ServiceProvider
         Fortify::updateUserProfileInformationUsing(UpdateUserProfileInformation::class);
         Fortify::updateUserPasswordsUsing(UpdateUserPassword::class);
         Fortify::resetUserPasswordsUsing(ResetUserPassword::class);
+
+        // Use editable email templates while retaining Laravel's reset-token flow.
+        ResetPassword::toMailUsing(function ($notifiable, string $token) {
+            $domainUuid = $notifiable->domain_uuid;
+            $email = $notifiable->getEmailForPasswordReset();
+            $url = url(route('password.reset', [
+                'token' => $token,
+                'email' => $email,
+            ], false));
+
+            return (new ResetPasswordMail([
+                'domain_uuid' => $domainUuid,
+                'language' => app(LocaleRegistry::class)->resolve(
+                    $domainUuid ? get_domain_setting('language', $domainUuid) : null
+                ),
+                'email' => $email,
+                'name' => $notifiable->name_formatted ?? null,
+                'url' => $url,
+                'expire_minutes' => config('auth.passwords.'.config('auth.defaults.passwords').'.expire'),
+            ]))->to($email);
+        });
+
+        Fortify::authenticateUsing(function (Request $request) {
+            return app(LdapUserAuthenticator::class)->authenticate(
+                (string) $request->input(Fortify::username()),
+                (string) $request->input('password')
+            );
+        });
 
         Fortify::authenticateThrough(function () {
             logger('Checking email challenge enabled status...'  . $this->emailChallengeEnabled());

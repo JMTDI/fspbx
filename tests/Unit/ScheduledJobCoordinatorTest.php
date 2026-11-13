@@ -1,0 +1,1592 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Models\ScheduledJobHandoff;
+use App\Models\ScheduledJobNode;
+use App\Services\Ha\ActiveNodeResolver;
+use App\Services\Ha\ScheduledJobPeerAuthenticator;
+use App\Services\Ha\ScheduledJobPeerClient;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
+use Mockery;
+use ReflectionMethod;
+use RuntimeException;
+use Tests\TestCase;
+
+class ScheduledJobCoordinatorTest extends TestCase
+{
+    private string $originalConnection;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->originalConnection = config('database.default');
+        config()->set('database.connections.scheduled_job_test', [
+            'driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
+        config()->set('database.default', 'scheduled_job_test');
+        config()->set('cache.default', 'array');
+        config()->set('app.url', 'https://pbx-a.example.test');
+        DB::purge('scheduled_job_test');
+
+        Schema::create('v_default_settings', function (Blueprint $table) {
+            $table->uuid('default_setting_uuid')->primary();
+            $table->string('default_setting_category');
+            $table->string('default_setting_subcategory');
+            $table->string('default_setting_name')->nullable();
+            $table->text('default_setting_value')->nullable();
+            $table->integer('default_setting_order')->nullable();
+            $table->boolean('default_setting_enabled')->default(false);
+            $table->text('default_setting_description')->nullable();
+        });
+        $migration = require base_path('database/migrations/2026_09_04_000001_create_scheduled_job_coordination_tables.php');
+        $migration->up();
+        Cache::flush();
+    }
+
+    protected function tearDown(): void
+    {
+        DB::disconnect('scheduled_job_test');
+        config()->set('database.default', $this->originalConnection);
+        Mockery::close();
+        parent::tearDown();
+    }
+
+    public function test_scheduled_jobs_permission_can_read_shared_server_selection(): void
+    {
+        session()->put('permissions', [(object) ['permission_name' => 'scheduled_jobs_manage']]);
+        $resolver = Mockery::mock(ActiveNodeResolver::class);
+        $resolver->shouldReceive('statusContext')->once()->andReturn(['selected_node' => '1001']);
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController($resolver);
+        $this->assertSame(['active_node' => ['selected_node' => '1001']], $controller->show()->getData(true));
+    }
+
+    public function test_contact_center_settings_permission_does_not_authorize_global_owner_changes(): void
+    {
+        session()->put('permissions', [(object) ['permission_name' => 'contact_center_settings_edit']]);
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController(Mockery::mock(ActiveNodeResolver::class));
+        try {
+            $controller->updateOwner(new \Illuminate\Http\Request());
+            $this->fail('Only superadmins may change global ownership.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+    public function test_shared_control_props_use_existing_routes_and_do_not_create_a_second_owner(): void
+    {
+        session()->put('permissions', [(object) ['permission_name' => 'scheduled_jobs_manage']]);
+        $resolver = Mockery::mock(ActiveNodeResolver::class);
+        $resolver->shouldReceive('statusContext')->once()->andReturn(['selected_node' => '1001']);
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController($resolver);
+        $props = $controller->controlProps();
+        $this->assertSame(['selected_node' => '1001'], $props['active_node']);
+        $this->assertSame(route('scheduled-jobs.active-node.update'), $props['routes']['active_node']);
+        $this->assertSame(route('scheduled-jobs.nodes.approve', ['node' => '__NODE__']), $props['routes']['node_approve']);
+        $this->assertTrue($props['manage']);
+        $this->assertDatabaseCount('v_default_settings', 0);
+    }
+
+    public function test_directory_or_contact_center_permissions_do_not_expose_global_controls(): void
+    {
+        session()->put('permissions', [
+            (object) ['permission_name' => 'ldap_directory_view'],
+            (object) ['permission_name' => 'contact_center_settings_edit'],
+        ]);
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController(Mockery::mock(ActiveNodeResolver::class));
+        foreach (['show', 'controlProps', 'rotateSecret'] as $action) {
+            try {
+                $controller->$action();
+                $this->fail('Expected the dedicated scheduled jobs permission to be required.');
+            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) {
+                $this->assertSame(403, $error->getStatusCode());
+            }
+        }
+        $ldap = new \App\Http\Controllers\LdapDirectoryController();
+        $this->assertSame([], (new ReflectionMethod($ldap, 'activeNodeContext'))->invoke($ldap));
+        $this->assertFalse((new ReflectionMethod($ldap, 'permissions'))->invoke($ldap)['manage_active_node']);
+    }
+
+    public function test_scheduled_jobs_permission_authorizes_management_through_existing_resolver(): void
+    {
+        session()->put('permissions', [(object) ['permission_name' => 'scheduled_jobs_manage']]);
+        $resolver = Mockery::mock(ActiveNodeResolver::class);
+        $resolver->shouldReceive('discover')->once()->with(null)->andReturn([]);
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController($resolver);
+        $this->assertSame(['candidates' => []], $controller->discover(new \Illuminate\Http\Request())->getData(true));
+    }
+
+    public function test_main_seeder_assigns_scheduled_jobs_permission_only_to_superadmin_idempotently(): void
+    {
+        Schema::create('v_permissions', function (Blueprint $table) {
+            $table->uuid('permission_uuid')->primary();
+            $table->string('application_name');
+            $table->string('permission_name')->unique();
+            $table->timestamp('insert_date');
+        });
+        Schema::create('v_groups', function (Blueprint $table) {
+            $table->uuid('group_uuid')->primary();
+            $table->string('group_name');
+        });
+        Schema::create('v_group_permissions', function (Blueprint $table) {
+            $table->uuid('group_permission_uuid')->primary();
+            $table->uuid('group_uuid');
+            $table->string('group_name');
+            $table->string('permission_name');
+            $table->string('permission_protected');
+            $table->string('permission_assigned');
+            $table->timestamp('insert_date');
+        });
+        foreach (['superadmin', 'admin', 'user'] as $group) {
+            DB::table('v_groups')->insert(['group_uuid' => (string) Str::uuid(), 'group_name' => $group]);
+        }
+        $seeder = new \Database\Seeders\DatabaseSeeder();
+        for ($i = 0; $i < 2; $i++) {
+            (new ReflectionMethod($seeder, 'createPermissions'))->invoke($seeder);
+            (new ReflectionMethod($seeder, 'createGroupPermissions'))->invoke($seeder);
+        }
+        $this->assertSame(1, DB::table('v_permissions')->where('permission_name', 'scheduled_jobs_manage')->count());
+        $this->assertSame(['superadmin'], DB::table('v_group_permissions')
+            ->where('permission_name', 'scheduled_jobs_manage')->where('permission_assigned', 'true')->pluck('group_name')->all());
+    }
+
+    public function test_standalone_node_runs_without_a_persisted_registry_heartbeat(): void
+    {
+        $resolver = $this->resolver('1001', []);
+
+        $this->assertTrue($resolver->resolve()['active']);
+        $this->assertSame('standalone', $resolver->resolve()['source']);
+        $this->assertDatabaseCount('scheduled_job_nodes', 0);
+    }
+
+    public function test_subscription_names_do_not_affect_cluster_detection(): void
+    {
+        $resolver = $this->resolver('1001', ['https://10.0.0.2'], [
+            ['name' => 'anything_at_all', 'enabled' => false, 'hosts' => ['10.0.0.2']],
+        ]);
+
+        $decision = $resolver->resolve();
+
+        $this->assertFalse($decision['active']);
+        $this->assertSame('unconfigured', $decision['source']);
+        $this->assertSame('anything_at_all', $decision['subscription_discovery']['subscriptions'][0]['name']);
+    }
+
+    public function test_keyword_and_uri_subscription_hosts_are_parsed_without_using_names(): void
+    {
+        $resolver = $this->resolver('1001', []);
+        $method = new ReflectionMethod($resolver, 'hostsFromConninfo');
+
+        $keywordHosts = $method->invoke($resolver, "host='pbx-b.example.test,10.0.0.3' port=5432 dbname=fspbx");
+        $uriHosts = $method->invoke($resolver, 'postgresql://replicator@pbx-c.example.test:5432/fspbx');
+
+        $this->assertSame(['pbx-b.example.test', '10.0.0.3'], $keywordHosts);
+        $this->assertSame(['pbx-c.example.test'], $uriHosts);
+    }
+
+    public function test_duplicate_system_identifier_from_multiple_endpoints_fails_closed_in_discovery(): void
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(fn (string $endpoint) => [
+            'system_identifier' => '2002', 'hostname' => $endpoint,
+        ]);
+        $resolver = $this->resolver('1001', ['https://pbx-a.example.test', 'https://pbx-b.example.test'], [], $peer);
+
+        $candidates = collect($resolver->discover());
+
+        $this->assertCount(2, $candidates);
+        $this->assertTrue($candidates->every(fn (array $candidate) => $candidate['duplicate_identity']));
+    }
+
+    public function test_discovery_finds_both_replication_addresses_without_probing_failover_dns(): void
+    {
+        config()->set('app.url', 'https://shared.example.test');
+        foreach (['1001', '2002'] as $localId) {
+            Cache::flush();
+            $peer = Mockery::mock(ScheduledJobPeerClient::class);
+            $peer->shouldNotReceive('identify')->with('https://shared.example.test');
+            $peer->shouldReceive('identify')->once()->with('https://10.0.0.1')->andReturn([
+                'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', '1001'),
+                'discovery_endpoints' => ['https://10.0.0.2'],
+            ]);
+            $peer->shouldReceive('identify')->once()->with('https://10.0.0.2')->andReturn([
+                'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+                'discovery_endpoints' => ['https://10.0.0.1'],
+            ]);
+            $resolver = $this->resolver($localId, [$localId === '1001' ? 'https://10.0.0.2' : 'https://10.0.0.1'], [], $peer);
+
+            $candidates = collect($resolver->discover())->keyBy('system_identifier');
+
+            $this->assertCount(2, $candidates);
+            $this->assertSame('https://10.0.0.1', $candidates['1001']['endpoint']);
+            $this->assertSame('https://10.0.0.2', $candidates['2002']['endpoint']);
+            $this->assertTrue($candidates->every(fn ($candidate) => $candidate['reachable'] && ! $candidate['duplicate_identity']));
+            $this->assertDatabaseCount('scheduled_job_nodes', 0);
+            $this->assertNull($resolver->statusContext()['nodes'][0]['endpoint']);
+        }
+    }
+
+    public function test_older_peer_requires_a_manual_local_address_instead_of_falling_back_to_app_url(): void
+    {
+        $peer = $this->peer(); // Older responses contain no discovery addresses.
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+
+        $this->assertSame(['2002'], array_column($resolver->discover(), 'system_identifier'));
+        try {
+            $resolver->requestNodeApproval('https://pbx-b.example.test', '2002', null);
+            $this->fail('Initial approval must still require both verified servers.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('Discover both nodes', $exception->getMessage());
+        }
+        $this->assertDatabaseCount('scheduled_job_nodes', 0);
+
+        $result = $resolver->requestNodeApproval('https://pbx-a.example.test', '1001', null);
+        $this->assertFalse($result['forwarded']);
+        $this->assertSame('https://pbx-a.example.test', $result['node']['endpoint']);
+    }
+
+    public function test_peer_discovery_hints_are_checked_individually_and_are_not_followed_recursively(): void
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->once()->with('https://10.0.0.2')->andReturn([
+            'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+            'discovery_endpoints' => [
+                'http://insecure.example.test', 'https://user:password@credentials.example.test',
+                ['invalid'], str_repeat('x', 2049), 'https://10.0.0.1', 'https://10.0.0.1/',
+                'https://stale.example.test',
+            ],
+        ]);
+        $peer->shouldReceive('identify')->once()->with('https://10.0.0.1')->andReturn([
+            'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', '1001'),
+            'discovery_endpoints' => ['https://third-hop.example.test'],
+        ]);
+        $peer->shouldReceive('identify')->once()->with('https://stale.example.test')
+            ->andThrow(new RuntimeException('The scheduled-job peer returned an invalid signature.'));
+        $resolver = $this->resolver('1001', ['https://10.0.0.2'], [], $peer);
+
+        $candidates = collect($resolver->discover())->keyBy('endpoint');
+
+        $this->assertSame(['https://10.0.0.2', 'https://10.0.0.1', 'https://stale.example.test'], $candidates->keys()->all());
+        $this->assertTrue($candidates['https://10.0.0.1']['reachable']);
+        $this->assertFalse($candidates['https://stale.example.test']['reachable']);
+        $this->assertDatabaseCount('scheduled_job_nodes', 0);
+    }
+
+    public function test_peer_discovery_hints_are_bounded(): void
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->once()->with('https://10.0.0.2')->andReturn([
+            'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+            'discovery_endpoints' => array_map(fn ($i) => 'https://hint-'.$i.'.example.test', range(1, 20)),
+        ]);
+        for ($i = 1; $i <= 16; $i++) {
+            $peer->shouldReceive('identify')->once()->with('https://hint-'.$i.'.example.test')
+                ->andThrow(new RuntimeException('Unreachable.'));
+        }
+
+        $this->assertCount(17, $this->resolver('1001', ['https://10.0.0.2'], [], $peer)->discover());
+    }
+
+    public function test_peer_discovered_addresses_still_detect_conflicting_host_identities(): void
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->with('https://10.0.0.2')->andReturn([
+            'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', 'clone'),
+            'discovery_endpoints' => ['https://10.0.0.1'],
+        ]);
+        $peer->shouldReceive('identify')->with('https://10.0.0.1')->andReturn([
+            'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', '1001'),
+        ]);
+        $resolver = $this->resolver('1001', ['https://10.0.0.2'], [], $peer);
+
+        $this->assertTrue(collect($resolver->discover())->every(fn ($candidate) => $candidate['duplicate_identity']));
+        $this->expectExceptionMessage('more than one endpoint');
+        $resolver->approveNode('https://10.0.0.1', '1001', null);
+    }
+
+    public function test_peer_discovered_address_can_replace_a_failed_over_registered_hostname(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://shared.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '4', 'numeric');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(function ($endpoint) {
+            $id = $endpoint === 'https://10.0.0.1' ? '1001' : '2002';
+
+            return ['system_identifier' => $id, 'host_fingerprint' => hash('sha256', $id),
+                'discovery_endpoints' => [$id === '1001' ? 'https://10.0.0.2' : 'https://10.0.0.1']];
+        });
+        $resolver = $this->resolver('1001', ['https://10.0.0.2'], [], $peer);
+        $candidate = collect($resolver->discover())->firstWhere('system_identifier', '1001');
+        $this->assertSame('https://10.0.0.1', $candidate['endpoint']);
+        $this->assertSame('https://shared.example.test', $candidate['registered_endpoint']);
+        $this->assertSame('https://shared.example.test', ScheduledJobNode::where('system_identifier', '1001')->value('endpoint'));
+
+        $result = $resolver->requestNodeApproval($candidate['endpoint'], '1001', null);
+
+        $this->assertSame('https://10.0.0.1', $result['node']['endpoint']);
+        $this->assertSame('1001', $resolver->configuredNode());
+        $this->assertSame(4, $resolver->generation());
+        $this->assertDatabaseCount('scheduled_job_nodes', 1);
+    }
+
+    public function test_only_the_approved_system_identifier_owner_is_active(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '7', 'numeric');
+
+        $active = $this->resolver('1001', ['https://pbx-b.example.test'])->resolve();
+        $standby = $this->resolver('2002', ['https://pbx-a.example.test'])->resolve();
+
+        $this->assertTrue($active['active']);
+        $this->assertSame(7, $active['generation']);
+        $this->assertFalse($standby['active']);
+        $this->assertSame('standby', $standby['status']);
+    }
+
+    public function test_ownership_decision_reads_settings_and_membership_once(): void
+    {
+        $resolver = $this->configuredPair();
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $decision = $resolver->resolve();
+            $queries = collect(DB::getQueryLog())->pluck('query');
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertTrue($decision['active']);
+        $this->assertSame([
+            'settings' => 1,
+            'membership' => 1,
+        ], [
+            'settings' => $queries->filter(fn ($sql) => str_contains($sql, 'from "v_default_settings"'))->count(),
+            'membership' => $queries->filter(fn ($sql) => str_contains($sql, 'from "scheduled_job_nodes"'))->count(),
+        ]);
+        $this->assertCount(0, $queries->filter(fn ($sql) => preg_match('/^\s*(insert|update|delete)/i', $sql)));
+    }
+
+    public function test_same_resolver_rechecks_owner_generation_draining_and_membership(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->assertTrue($resolver->resolve()['active']);
+
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node_generation')->update(['default_setting_value' => '5']);
+        $this->assertSame(5, $resolver->resolve()['generation']);
+
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')->update(['default_setting_value' => '2002']);
+        $this->assertSame('standby', $resolver->resolve()['status']);
+
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')->update(['default_setting_value' => '1001']);
+        $this->assertTrue($resolver->resolve()['active']);
+        ScheduledJobHandoff::query()->create([
+            'idempotency_key' => (string) Str::uuid(), 'from_node_id' => '1001', 'to_node_id' => '2002',
+            'expected_generation' => 5, 'status' => 'draining', 'requested_at' => now(),
+        ]);
+        $this->assertSame('draining', $resolver->resolve()['status']);
+
+        ScheduledJobNode::query()->where('system_identifier', '1001')->update(['status' => 'retired']);
+        $this->assertSame('unrecognized', $resolver->resolve()['source']);
+    }
+
+    public function test_a_retired_or_unknown_identifier_fails_closed(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test', 'retired');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '0', 'numeric');
+
+        $decision = $this->resolver('1001', ['https://pbx-b.example.test'])->resolve();
+
+        $this->assertFalse($decision['active']);
+        $this->assertFalse($decision['recognized']);
+    }
+
+    public function test_a_legacy_hostname_is_only_a_visible_migration_hint_after_approval(): void
+    {
+        $this->node('1001', 'pbx-a.example.test', 'https://pbx-a.example.test');
+        $this->setting('active_node', 'pbx-a.example.test');
+        $this->setting('active_node_generation', '0', 'numeric');
+
+        $decision = $this->resolver('1001', ['https://pbx-b.example.test'])->resolve();
+
+        $this->assertFalse($decision['active']);
+        $this->assertTrue($decision['legacy_match']);
+        $this->assertSame('pbx-a.example.test', DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')->value('default_setting_value'));
+    }
+
+    public function test_draining_rejects_new_execution_claims(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '3', 'numeric');
+        ScheduledJobHandoff::query()->create([
+            'idempotency_key' => (string) Str::uuid(), 'from_node_id' => '1001', 'to_node_id' => '2002',
+            'expected_generation' => 3, 'status' => 'draining', 'requested_at' => now(),
+        ]);
+
+        $claim = $this->resolver('1001', ['https://pbx-b.example.test'])->claimExecution('ldap_directory_sync', 'directory-1', 600);
+
+        $this->assertNull($claim);
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_execution_claim_records_node_and_generation_and_deduplicates_running_work(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '9', 'numeric');
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test']);
+
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory-1', 600, fn () => true);
+        $duplicate = $resolver->claimExecution('ldap_directory_sync', 'directory-1', 600, fn () => true);
+
+        $this->assertNotNull($execution);
+        $this->assertSame('1001', $execution->node_id);
+        $this->assertSame(9, $execution->ownership_generation);
+        $this->assertNull($duplicate);
+    }
+
+    public function test_handoff_is_idempotent_and_waits_for_running_execution_to_finish(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '4', 'numeric');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->once()->with('https://pbx-b.example.test')->andReturn([
+            'system_identifier' => '2002', 'hostname' => 'pbx-b', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory-1', 600);
+        $idempotency = (string) Str::uuid();
+        $payload = [
+            'target_node_id' => '2002', 'target_endpoint' => 'https://pbx-b.example.test',
+            'expected_generation' => 4, 'idempotency_key' => $idempotency,
+        ];
+
+        $first = $resolver->prepareHandoff($payload);
+        $retry = $resolver->prepareHandoff($payload);
+
+        $this->assertSame('draining', $first['status']);
+        $this->assertSame($first['handoff']['id'], $retry['handoff']['id']);
+        $this->assertSame('1001', $resolver->configuredNode());
+        $resolver->finishExecution($execution);
+        $resolver->finalizePendingHandoff();
+        $this->assertSame('2002', $resolver->configuredNode());
+        $this->assertSame(5, $resolver->generation());
+    }
+
+    public function test_wrong_owner_prepare_returns_conflict_without_forwarding(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '2002');
+        $this->setting('active_node_generation', '2', 'numeric');
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test']);
+
+        try {
+            $resolver->prepareHandoff([
+                'target_node_id' => '1001', 'target_endpoint' => 'https://pbx-a.example.test',
+                'expected_generation' => 2, 'idempotency_key' => (string) Str::uuid(),
+            ]);
+            $this->fail('Expected the non-owner to reject the request.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+    }
+
+    public function test_external_resources_block_handoff_without_a_long_lived_execution_claim(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '4', 'numeric');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->once()->andReturn([
+            'system_identifier' => '2002', 'hostname' => 'pbx-b', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+        $released = false;
+        \Illuminate\Support\Facades\Event::listen(\App\Events\ScheduledJobsDraining::class, function ($event) use (&$released, $resolver) {
+            $this->assertSame(0, DB::transactionLevel(), 'External cleanup must not hold the ownership lock');
+            $this->assertSame('1001', $event->nodeId);
+            $this->assertSame(4, $event->generation);
+            $this->assertNull($resolver->claimExecution('test', 'new-work', 60), 'Draining must reject new work');
+            if (! $released) { $event->ready = false; }
+        });
+        $result = $resolver->prepareHandoff(['target_node_id' => '2002', 'target_endpoint' => 'https://pbx-b.example.test',
+            'expected_generation' => 4, 'idempotency_key' => (string) Str::uuid()]);
+        $this->assertSame('draining', $result['status']);
+        $this->assertSame('1001', $resolver->configuredNode());
+        $released = true;
+        $this->assertSame('completed', $resolver->finalizePendingHandoff()->status);
+        $this->assertSame('2002', $resolver->configuredNode());
+    }
+
+    public function test_forced_takeover_records_fenced_endpoint_and_advances_generation(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '6', 'numeric');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->once()->with('https://pbx-b.example.test')->andReturn([
+            'system_identifier' => '2002', 'hostname' => 'pbx-b', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $resolver = $this->resolver('2002', ['https://pbx-a.example.test'], [], $peer);
+
+        $handoff = $resolver->forceTakeover('2002', 6, 'https://pbx-a.example.test', '11111111-1111-4111-8111-111111111111');
+
+        $this->assertTrue($handoff->forced);
+        $this->assertSame('https://pbx-a.example.test', $handoff->fenced_endpoint);
+        $this->assertSame('11111111-1111-4111-8111-111111111111', $handoff->requested_by);
+        $this->assertSame('2002', $resolver->configuredNode());
+        $this->assertSame(7, $resolver->generation());
+    }
+
+    public function test_expired_worker_cannot_write_or_resurrect_its_execution(): void
+    {
+        $resolver = $this->configuredPair();
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory', 600);
+        $this->travel(601)->seconds();
+        $resolver->finalizePendingHandoff();
+        $resolver->finishExecution($execution);
+        $this->assertSame('expired', $execution->fresh()->status);
+        try {
+            $resolver->withExecution($execution, fn () => $this->setting('should_not_exist', 'bad'));
+            $this->fail('Expired execution wrote data.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseMissing('v_default_settings', ['default_setting_subcategory' => 'should_not_exist']);
+    }
+
+    public function test_batch_crossing_deadline_rolls_back_all_its_writes(): void
+    {
+        $resolver = $this->configuredPair();
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory', 600);
+        try {
+            $resolver->withExecution($execution, function () {
+                $this->setting('must_rollback', 'bad');
+                $this->travel(601)->seconds();
+            });
+            $this->fail('Deadline did not roll back the write transaction.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseMissing('v_default_settings', ['default_setting_subcategory' => 'must_rollback']);
+    }
+
+    public function test_draining_worker_may_finish_but_revoked_generation_may_not_write(): void
+    {
+        $resolver = $this->configuredPair();
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory', 600);
+        $payload = $this->payload();
+        $resolver->prepareHandoff($payload);
+        $this->assertSame('ok', $resolver->withExecution($execution, fn () => 'ok'));
+        $this->assertNotNull($this->resolver('2002', [])->resolve()['handoff']);
+        $resolver->finishExecution($execution);
+        $this->assertSame('2002', $resolver->configuredNode());
+        $this->expectExceptionCode(409);
+        $resolver->withExecution($execution, fn () => $this->fail('Revoked worker executed.'));
+    }
+
+    public function test_completed_retry_returns_original_result_and_rejects_changed_payload(): void
+    {
+        $resolver = $this->configuredPair();
+        $payload = $this->payload();
+        $first = $resolver->prepareHandoff($payload);
+        $retry = $resolver->prepareHandoff($payload);
+        $this->assertSame('completed', $retry['status']);
+        $this->assertSame($first, $retry);
+        $payload['expected_generation']++;
+        $this->expectExceptionCode(409);
+        $resolver->prepareHandoff($payload);
+    }
+
+    public function test_duplicate_settings_fail_closed_instead_of_picking_a_row(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->setting('active_node', '2002');
+        $this->assertFalse($resolver->resolve()['active']);
+        $this->assertSame('inconsistent', $resolver->resolve()['source']);
+        $this->expectExceptionCode(409);
+        $resolver->requestHandoff('2002', 4, null);
+    }
+
+    public function test_database_clone_with_different_host_identity_cannot_claim(): void
+    {
+        $resolver = $this->configuredPair();
+        ScheduledJobNode::query()->where('system_identifier', '1001')->update(['host_fingerprint' => hash('sha256', 'different-machine')]);
+        $this->assertSame('identity_mismatch', $resolver->resolve()['source']);
+        $this->assertNull($resolver->claimExecution('ldap_directory_sync', 'directory', 600));
+    }
+
+    public function test_same_host_at_two_endpoints_is_an_alias_not_a_clone(): void
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturn(['system_identifier' => '1001', 'host_fingerprint' => hash('sha256', '1001')]);
+        $candidates = $this->resolver('1001', ['https://alias.example.test', 'https://pbx-a.example.test'], [], $peer)->discover();
+        $this->assertCount(2, $candidates);
+        $this->assertFalse($candidates[0]['duplicate_identity']);
+        $this->assertFalse($candidates[1]['duplicate_identity']);
+    }
+
+    public function test_unknown_owner_is_never_bootstrapped_without_fencing(): void
+    {
+        $resolver = $this->configuredPair();
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')->update(['default_setting_value' => 'removed-host']);
+        try {
+            $resolver->requestHandoff('2002', 4, null);
+            $this->fail('Unknown ownership was bootstrapped.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+    }
+
+    public function test_legacy_normalization_preserves_generation_and_drains_older_claims(): void
+    {
+        $resolver = $this->configuredPair();
+        $execution = $resolver->claimExecution('ldap_directory_sync', 'directory', 600);
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')->update(['default_setting_value' => 'pbx-a']);
+        $resolver->requestHandoff('1001', 4, null);
+        $this->assertSame(4, $resolver->generation());
+        $execution->forceFill(['ownership_generation' => 3])->save();
+        $this->assertSame('draining', $resolver->prepareHandoff($this->payload())['status']);
+    }
+
+    public function test_forced_takeover_supersedes_old_drain_and_preserves_requester(): void
+    {
+        $resolver = $this->configuredPair();
+        $resolver->claimExecution('ldap_directory_sync', 'directory', 600);
+        $payload = $this->payload() + ['requested_by' => '11111111-1111-4111-8111-111111111111'];
+        $first = $resolver->prepareHandoff($payload);
+        $peer = $this->peer();
+        $target = $this->resolver('2002', [], [], $peer);
+        $forced = $target->forceTakeover('2002', 4, 'https://pbx-a.example.test', '22222222-2222-4222-8222-222222222222');
+        $old = ScheduledJobHandoff::query()->findOrFail($first['handoff']['id']);
+        $this->assertSame('superseded', $old->status);
+        $this->assertSame($payload['requested_by'], $old->requested_by);
+        $this->assertSame('22222222-2222-4222-8222-222222222222', $forced->forced_by);
+        $back = ['target_node_id' => '1001', 'target_endpoint' => 'https://pbx-a.example.test', 'expected_generation' => 5, 'idempotency_key' => (string) Str::uuid()];
+        $this->assertSame('completed', $target->prepareHandoff($back)['status']);
+    }
+
+    public function test_retired_endpoint_can_be_reused_by_a_replacement_identity(): void
+    {
+        $this->configuredPair();
+        ScheduledJobNode::query()->where('system_identifier', '2002')->update(['status' => 'retired', 'retired_at' => now()]);
+        $peer = $this->peer('3003');
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+        $node = $resolver->approveNode('https://pbx-b.example.test', '3003', null);
+        $this->assertSame('3003', $node->system_identifier);
+        $this->assertSame('retired', ScheduledJobNode::query()->where('system_identifier', '2002')->value('status'));
+        $this->assertSame($node->getKey(), collect($resolver->statusContext()['nodes'])->firstWhere('id', '3003')['registry_uuid']);
+    }
+
+    public function test_status_and_idle_maintenance_do_not_write_heartbeats(): void
+    {
+        $resolver = $this->configuredPair();
+        DB::enableQueryLog();
+        $resolver->statusContext();
+        $resolver->finalizePendingHandoff();
+        $writes = collect(DB::getQueryLog())->filter(fn ($query) => preg_match('/^\s*(insert|update|delete)/i', $query['query']));
+        $this->assertCount(0, $writes);
+        DB::disableQueryLog();
+    }
+
+    public function test_first_approval_uses_one_elected_writer_and_requires_a_pair(): void
+    {
+        $peer = $this->peer();
+        $other = $this->resolver('2002', ['https://pbx-a.example.test', 'https://pbx-b.example.test'], [], $peer);
+        try {
+            $other->approveNode('https://pbx-b.example.test', '2002', null);
+            $this->fail('Both nodes could register initial membership independently.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $first = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+        $node = $first->approveNode('https://pbx-a.example.test', '1001', null);
+        $this->assertSame('1001', $node->registered_on_node_id);
+        $this->assertDatabaseCount('scheduled_job_nodes', 1);
+    }
+
+    public function test_bootstrap_requires_matching_signed_snapshots_and_only_initial_writer(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $peer);
+        $snapshot = $resolver->coordinationSnapshot();
+        $peer->shouldReceive('identify')->andReturnUsing(function ($endpoint) use ($snapshot) {
+            $id = str_contains($endpoint, 'pbx-a') ? '1001' : '2002';
+            return ['system_identifier' => $id, 'host_fingerprint' => hash('sha256', $id), 'coordination' => $snapshot];
+        });
+        $other = $this->resolver('2002', [], [], $peer);
+        foreach (['1001', '2002'] as $requestedWriter) {
+            try {
+                $other->prepareInitialOwner(array_replace($this->payload(), [
+                    'expected_generation' => 0, 'initial_owner' => true, 'writer_node_id' => $requestedWriter,
+                ]));
+                $this->fail('The other node initialized ownership.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame(409, $exception->getCode());
+            }
+        }
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+        $this->assertDatabaseCount('v_default_settings', 0);
+        $result = $resolver->requestHandoff('1001', 0, null);
+        $this->assertSame('completed', $result['status']);
+        $this->assertSame(1, $resolver->generation());
+        $this->assertSame('1001', $resolver->configuredNode());
+    }
+
+    public function test_first_owner_selection_forwards_from_the_other_server_without_local_writes(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = $this->peer();
+        $ui = $this->resolver('2002', ['https://pbx-a.example.test'], [], $peer);
+        $actor = (string) Str::uuid();
+
+        foreach (['1001', '2002'] as $target) {
+            $key = (string) Str::uuid();
+            $response = ['status' => 'completed', 'handoff' => [
+                'id' => (string) Str::uuid(), 'from_node_id' => null, 'to_node_id' => $target,
+                'expected_generation' => 0, 'status' => 'completed', 'forced' => false,
+            ]];
+            $peer->shouldReceive('prepareHandoff')->once()->with('https://pbx-a.example.test', [
+                'target_node_id' => $target,
+                'target_endpoint' => $target === '1001' ? 'https://pbx-a.example.test' : 'https://pbx-b.example.test',
+                'expected_generation' => 0, 'requested_by' => $actor, 'idempotency_key' => $key,
+                'initial_owner' => true, 'writer_node_id' => '1001',
+            ], $key)->andReturn($response);
+
+            $this->assertSame($response, $ui->requestHandoff($target, 0, $actor, $key));
+            $this->assertNull($ui->configuredNode());
+            $this->assertSame(0, $ui->generation());
+            $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+            $this->assertDatabaseCount('v_default_settings', 0);
+        }
+    }
+
+    public function test_initial_owner_receiver_preserves_the_actor_and_retries_after_ownership_changes(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $writer = $this->resolver('1001', [], [], $peer);
+        $snapshot = $writer->coordinationSnapshot();
+        $peer->shouldReceive('identify')->andReturnUsing(function ($endpoint) use ($snapshot) {
+            $id = str_contains($endpoint, 'pbx-a') ? '1001' : '2002';
+
+            return ['system_identifier' => $id, 'host_fingerprint' => hash('sha256', $id), 'coordination' => $snapshot];
+        });
+        $payload = array_replace($this->payload(), [
+            'expected_generation' => 0, 'initial_owner' => true, 'writer_node_id' => '1001',
+            'requested_by' => (string) Str::uuid(),
+        ]);
+
+        $first = $writer->prepareInitialOwner($payload);
+        $this->assertSame('completed', $first['status']);
+        $this->assertSame('2002', $writer->configuredNode());
+        $this->assertSame(1, $writer->generation());
+        $this->assertSame($first, $writer->prepareInitialOwner($payload));
+        $this->assertDatabaseCount('scheduled_job_handoffs', 1);
+        $this->assertSame($payload['requested_by'], ScheduledJobHandoff::first()->requested_by);
+        $this->assertSame($payload['idempotency_key'], ScheduledJobHandoff::first()->idempotency_key);
+
+        $payload['target_node_id'] = '1001';
+        $this->expectExceptionMessage('This idempotency key belongs to a different ownership request.');
+        $writer->prepareInitialOwner($payload);
+    }
+
+    public function test_initial_owner_receiver_requires_converged_signed_membership(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = $this->peer(); // No matching coordination snapshot.
+        $writer = $this->resolver('1001', [], [], $peer);
+        try {
+            $writer->prepareInitialOwner(array_replace($this->payload(), [
+                'expected_generation' => 0, 'initial_owner' => true, 'writer_node_id' => '1001',
+            ]));
+            $this->fail('Initialization must wait for matching replicated membership.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('Wait for both nodes to agree', $exception->getMessage());
+        }
+        $this->assertNull($writer->configuredNode());
+        $this->assertSame(0, $writer->generation());
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+        $this->assertDatabaseCount('v_default_settings', 0);
+    }
+
+    public function test_initial_owner_receiver_rejects_changed_ownership_without_a_new_write(): void
+    {
+        $writer = $this->configuredPair();
+        try {
+            $writer->prepareInitialOwner(array_replace($this->payload(), [
+                'expected_generation' => 0, 'initial_owner' => true, 'writer_node_id' => '1001',
+            ]));
+            $this->fail('An initial selection must not overwrite established ownership.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('ownership changed', $exception->getMessage());
+        }
+        $this->assertSame('1001', $writer->configuredNode());
+        $this->assertSame(4, $writer->generation());
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+    }
+
+    public function test_initial_owner_receiver_rechecks_the_target_endpoint(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $writer = $this->resolver('1001', [], [], $this->peer());
+        $this->expectExceptionMessage('The requested target does not match an approved node.');
+        $writer->prepareInitialOwner(array_replace($this->payload(), [
+            'expected_generation' => 0, 'target_endpoint' => 'https://wrong.example.test',
+            'initial_owner' => true, 'writer_node_id' => '1001',
+        ]));
+    }
+
+    public function test_initial_owner_forwarding_requires_an_updated_setup_server(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(function ($endpoint) {
+            $id = str_contains($endpoint, 'pbx-a') ? '1001' : '2002';
+
+            return ['system_identifier' => $id, 'host_fingerprint' => hash('sha256', $id), 'capabilities' => ['node_approval']];
+        });
+        $peer->shouldNotReceive('prepareHandoff');
+        $ui = $this->resolver('2002', [], [], $peer);
+        $this->expectExceptionCode(409);
+        $this->expectExceptionMessage('Update FS PBX on pbx-a to select the first owner from either server.');
+        $ui->requestHandoff('2002', 0, null);
+    }
+
+    public function test_unreachable_initial_writer_never_causes_a_local_ownership_write(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->with('https://pbx-a.example.test')->andThrow(new RuntimeException('Unreachable.'));
+        $peer->shouldReceive('identify')->with('https://pbx-b.example.test')->andReturn([
+            'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $peer->shouldNotReceive('prepareHandoff');
+        $ui = $this->resolver('2002', [], [], $peer);
+        try {
+            $ui->requestHandoff('2002', 0, null);
+            $this->fail('An unavailable setup server must not authorize a local write.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('Cannot reach the setup server pbx-a', $exception->getMessage());
+        }
+        $this->assertNull($ui->configuredNode());
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+        $this->assertDatabaseCount('v_default_settings', 0);
+    }
+
+    public function test_lost_initial_owner_response_is_recovered_before_replication_arrives(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = $this->peer();
+        $key = (string) Str::uuid();
+        $peer->shouldReceive('prepareHandoff')->once()->andThrow(new RuntimeException('Response lost.'));
+        $peer->shouldReceive('handoffStatus')->once()->with('https://pbx-a.example.test', $key)->andReturn([
+            'status' => 'completed', 'handoff' => ['from_node_id' => null, 'to_node_id' => '2002', 'expected_generation' => 0],
+        ]);
+        $ui = $this->resolver('2002', [], [], $peer);
+
+        $this->assertSame('completed', $ui->requestHandoff('2002', 0, null, $key)['status']);
+        $this->assertNull($ui->configuredNode());
+        $this->assertFalse($ui->isActive());
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+        $this->assertDatabaseCount('v_default_settings', 0);
+    }
+
+    public function test_initial_owner_forwarding_rejects_an_unexpected_acknowledgement(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $peer = $this->peer();
+        $peer->shouldReceive('prepareHandoff')->once()->andReturn([
+            'status' => 'completed', 'handoff' => ['from_node_id' => null, 'to_node_id' => '1001', 'expected_generation' => 0],
+        ]);
+        $ui = $this->resolver('2002', [], [], $peer);
+        $this->expectExceptionMessage('The setup server returned an unexpected result.');
+        $ui->requestHandoff('2002', 0, null);
+    }
+
+    public function test_approval_forwards_to_a_verified_direct_owner_address_without_writing_locally(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://shared.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '4', 'numeric');
+        $peer = $this->peer(); // The shared address answers as pbx-b, not the owner.
+        $user = (string) Str::uuid();
+        $approved = [
+            'scheduled_job_node_uuid' => (string) Str::uuid(), 'system_identifier' => '2002',
+            'endpoint' => 'https://pbx-b.example.test', 'status' => 'approved',
+            'host_fingerprint' => hash('sha256', '2002'),
+        ];
+        $peer->shouldReceive('approveNode')->once()->with('https://pbx-a.example.test', [
+            'writer_node_id' => '1001', 'target_node_id' => '2002',
+            'target_endpoint' => 'https://pbx-b.example.test',
+            'target_host_fingerprint' => hash('sha256', '2002'), 'requested_by' => $user,
+        ])->andReturn(['node' => $approved]);
+        $resolver = $this->resolver('2002', ['https://pbx-a.example.test'], [], $peer);
+
+        $result = $resolver->requestNodeApproval('https://pbx-b.example.test', '2002', $user);
+
+        $this->assertSame(['node' => $approved, 'forwarded' => true], $result);
+        $this->assertDatabaseCount('scheduled_job_nodes', 1);
+        $this->assertDatabaseMissing('scheduled_job_nodes', ['system_identifier' => '2002']);
+        $this->assertSame('1001', $resolver->configuredNode());
+        $this->assertSame(4, $resolver->generation());
+    }
+
+    public function test_initial_approval_can_be_requested_on_the_other_server(): void
+    {
+        $peer = $this->peer();
+        $approved = ['system_identifier' => '2002', 'endpoint' => 'https://pbx-b.example.test',
+            'status' => 'approved', 'host_fingerprint' => hash('sha256', '2002')];
+        $peer->shouldReceive('approveNode')->once()->with('https://pbx-a.example.test', Mockery::on(
+            fn ($payload) => $payload['writer_node_id'] === '1001' && $payload['target_node_id'] === '2002'
+        ))->andReturn(['node' => $approved]);
+        $resolver = $this->resolver('2002', ['https://pbx-a.example.test', 'https://pbx-b.example.test'], [], $peer);
+
+        $this->assertTrue($resolver->requestNodeApproval('https://pbx-b.example.test', '2002', null)['forwarded']);
+        $this->assertDatabaseCount('scheduled_job_nodes', 0);
+        $this->assertNull($resolver->configuredNode());
+    }
+
+    public function test_unreachable_owner_never_falls_back_to_a_local_approval(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->setting('active_node', '1001');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->with('https://pbx-a.example.test')->andThrow(new RuntimeException('Connection refused'));
+        $peer->shouldReceive('identify')->with('https://pbx-b.example.test')->andReturn([
+            'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $peer->shouldNotReceive('approveNode');
+        $resolver = $this->resolver('2002', [], [], $peer);
+        try {
+            $resolver->requestNodeApproval('https://pbx-b.example.test', '2002', null);
+            $this->fail('An unavailable authority must not be bypassed.');
+        } catch (RuntimeException $error) {
+            $this->assertSame(409, $error->getCode());
+            $this->assertStringContainsString('Cannot reach the approval server pbx-a', $error->getMessage());
+        }
+        $this->assertDatabaseCount('scheduled_job_nodes', 1);
+        $this->assertSame('1001', $resolver->configuredNode());
+    }
+
+    public function test_cached_discovery_cannot_authorize_forwarding_to_a_changed_host(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->setting('active_node', '1001');
+        Cache::put('scheduled-jobs:peer-identity:'.sha1('https://pbx-a.example.test'), [
+            'endpoint' => 'https://pbx-a.example.test', 'reachable' => true,
+            'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', '1001'),
+        ], 15);
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->with('https://pbx-a.example.test')->once()->andReturn([
+            'system_identifier' => '1001', 'host_fingerprint' => hash('sha256', 'different-host'),
+            'capabilities' => ['node_approval'],
+        ]);
+        $peer->shouldReceive('identify')->with('https://pbx-b.example.test')->andReturn([
+            'system_identifier' => '2002', 'host_fingerprint' => hash('sha256', '2002'),
+        ]);
+        $peer->shouldNotReceive('approveNode');
+        $resolver = $this->resolver('2002', ['https://pbx-b.example.test'], [], $peer);
+        $this->expectExceptionMessage('Cannot reach the approval server');
+        $resolver->requestNodeApproval('https://pbx-b.example.test', '2002', null);
+    }
+
+    public function test_forwarding_to_an_older_owner_reports_that_it_needs_an_update(): void
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->setting('active_node', '1001');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(fn ($endpoint) => [
+            'system_identifier' => str_contains($endpoint, 'pbx-a') ? '1001' : '2002',
+            'host_fingerprint' => hash('sha256', str_contains($endpoint, 'pbx-a') ? '1001' : '2002'),
+        ]);
+        $peer->shouldNotReceive('approveNode');
+        $resolver = $this->resolver('2002', ['https://pbx-b.example.test'], [], $peer);
+        $this->expectExceptionMessage('Update FS PBX on pbx-a to support forwarded approvals.');
+        $resolver->requestNodeApproval('https://pbx-b.example.test', '2002', null);
+    }
+
+    public function test_approval_retry_and_address_repair_keep_the_existing_registry_uuid_and_owner(): void
+    {
+        $this->configuredPair();
+        $uuid = ScheduledJobNode::where('system_identifier', '1001')->value('scheduled_job_node_uuid');
+        ScheduledJobNode::where('system_identifier', '1001')->update(['endpoint' => 'https://shared.example.test']);
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test'], [], $this->peer());
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $result = $resolver->requestNodeApproval('https://pbx-a.example.test', '1001', null);
+            $this->assertFalse($result['forwarded']);
+            $this->assertSame($uuid, $result['node']['scheduled_job_node_uuid']);
+            $this->assertSame('https://pbx-a.example.test', $result['node']['endpoint']);
+        }
+        $this->assertDatabaseCount('scheduled_job_nodes', 2);
+        $this->assertSame('1001', $resolver->configuredNode());
+        $this->assertSame(4, $resolver->generation());
+    }
+
+    public function test_receiving_writer_rejects_a_target_that_changed_identity_in_transit(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->expectExceptionMessage('The peer identity changed while it was being approved.');
+        $resolver->approveNode('https://pbx-b.example.test', '2002', null, hash('sha256', 'old-host'));
+    }
+
+    public function test_unapproved_replacement_is_not_reported_as_a_host_identity_mismatch(): void
+    {
+        $this->configuredPair();
+        ScheduledJobNode::where('system_identifier', '2002')->update(['status' => 'retired']);
+        $resolver = $this->resolver('3003', [], [], $this->peer('3003'));
+        $decision = $resolver->resolve();
+        $this->assertSame('unapproved', $decision['source']);
+        $this->assertFalse($decision['active']);
+        $this->assertSame('1001', $decision['effective_owner']);
+    }
+
+    public function test_removing_a_retired_registration_keeps_ownership_and_transfer_history(): void
+    {
+        $resolver = $this->configuredPair();
+        $node = ScheduledJobNode::where('system_identifier', '2002')->firstOrFail();
+        $resolver->retireNode($node, null);
+        $handoff = ScheduledJobHandoff::query()->create([
+            'idempotency_key' => (string) Str::uuid(), 'from_node_id' => '2002', 'to_node_id' => '1001',
+            'expected_generation' => 3, 'status' => 'completed', 'requested_at' => now(), 'completed_at' => now(),
+        ]);
+
+        $this->assertFalse($resolver->requestNodeRemoval($node)['forwarded']);
+        $resolver->requestNodeRemoval($node); // Lost-response retry.
+
+        $this->assertDatabaseMissing('scheduled_job_nodes', ['system_identifier' => '2002']);
+        $this->assertNotNull($handoff->fresh());
+        $this->assertSame(['1001'], array_column($resolver->statusContext()['nodes'], 'id'));
+        $this->assertSame('1001', $resolver->configuredNode());
+        $this->assertSame(4, $resolver->generation());
+        $this->assertDatabaseCount('scheduled_job_nodes', 1);
+        // A remaining subscription can still find the server, but cannot approve it.
+        $candidate = collect($resolver->discover())->firstWhere('system_identifier', '2002');
+        $this->assertNotNull($candidate);
+        $this->assertNull($candidate['registered']);
+        $this->assertFalse($this->resolver('2002', [], [], $this->peer())->isActive());
+    }
+
+    public function test_retired_registration_does_not_trigger_a_discovery_probe(): void
+    {
+        $this->node('2002', 'old-server', 'https://retired.example.test', 'retired');
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldNotReceive('identify');
+        $resolver = $this->resolver('1001', [], [], $peer);
+
+        $this->assertSame([], $resolver->discover());
+    }
+
+    public function test_replacement_can_be_discovered_at_a_removed_servers_address(): void
+    {
+        $resolver = $this->configuredPair();
+        $old = ScheduledJobNode::where('system_identifier', '2002')->firstOrFail();
+        $resolver->retireNode($old, null);
+        $resolver->removeNode($old);
+        Cache::flush();
+        $replacement = $this->resolver('1001', ['https://pbx-b.example.test'], [], $this->peer('3003'));
+
+        $candidate = collect($replacement->discover())->firstWhere('system_identifier', '3003');
+        $this->assertNotNull($candidate);
+        $this->assertNull($candidate['registered']);
+        $approved = $replacement->approveNode('https://pbx-b.example.test', '3003', null);
+        $this->assertSame('approved', $approved->status);
+        $this->assertNull($old->fresh());
+    }
+
+    public function test_approved_server_cannot_be_removed_even_with_a_stale_retired_model(): void
+    {
+        $resolver = $this->configuredPair();
+        $stale = ScheduledJobNode::where('system_identifier', '2002')->firstOrFail();
+        $stale->status = 'retired';
+        $this->expectExceptionMessage('Only retired servers can be removed from the list.');
+        $resolver->removeNode($stale);
+    }
+
+    public function test_retired_target_of_a_pending_transfer_cannot_be_removed(): void
+    {
+        $resolver = $this->configuredPair();
+        $node = ScheduledJobNode::where('system_identifier', '2002')->firstOrFail();
+        $resolver->retireNode($node, null);
+        ScheduledJobHandoff::query()->create([
+            'idempotency_key' => (string) Str::uuid(), 'from_node_id' => '1001', 'to_node_id' => '2002',
+            'expected_generation' => 4, 'status' => 'draining', 'requested_at' => now(),
+        ]);
+        $this->expectExceptionMessage('Finish the pending ownership transfer before removing this server.');
+        $resolver->removeNode($node);
+    }
+
+    public function test_removal_from_another_server_is_forwarded_without_a_local_write(): void
+    {
+        $this->configuredPair();
+        $this->node('3003', 'old-server', 'https://old.example.test', 'retired');
+        $node = ScheduledJobNode::where('system_identifier', '3003')->firstOrFail();
+        $peer = $this->peer();
+        $peer->shouldReceive('removeNode')->once()->with('https://pbx-a.example.test', [
+            'writer_node_id' => '1001', 'node_uuid' => $node->getKey(),
+            'target_node_id' => '3003',
+        ])->andReturn(['node_uuid' => $node->getKey(), 'target_node_id' => '3003']);
+        $resolver = $this->resolver('2002', [], [], $peer);
+
+        $this->assertTrue($resolver->requestNodeRemoval($node)['forwarded']);
+        $this->assertSame('retired', $node->fresh()->status);
+        $this->assertSame('1001', $resolver->configuredNode());
+    }
+
+    public function test_forwarded_removal_requires_a_receiver_that_supports_it(): void
+    {
+        $this->configuredPair();
+        $this->node('3003', 'old-server', 'https://old.example.test', 'retired');
+        $node = ScheduledJobNode::where('system_identifier', '3003')->firstOrFail();
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(fn ($endpoint) => [
+            'system_identifier' => str_contains($endpoint, 'pbx-a') ? '1001' : '2002',
+            'host_fingerprint' => hash('sha256', str_contains($endpoint, 'pbx-a') ? '1001' : '2002'),
+            'capabilities' => ['node_approval'],
+        ]);
+        $resolver = $this->resolver('2002', [], [], $peer);
+        try {
+            $resolver->requestNodeRemoval($node);
+            $this->fail('The receiver must support forwarded removal.');
+        } catch (RuntimeException $error) {
+            $this->assertSame(409, $error->getCode());
+            $this->assertStringContainsString('to support removing retired servers', $error->getMessage());
+        }
+        $this->assertNotNull($node->fresh());
+    }
+
+    public function test_remove_endpoint_requires_the_scheduled_jobs_permission(): void
+    {
+        session()->put('permissions', []);
+        $resolver = Mockery::mock(ActiveNodeResolver::class);
+        $resolver->shouldNotReceive('requestNodeRemoval');
+        $controller = new \App\Http\Controllers\ScheduledJobCoordinationController($resolver);
+        try {
+            $controller->remove(new ScheduledJobNode());
+            $this->fail('Removal must require the scheduled jobs management permission.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+    public function test_stale_queued_ldap_job_does_not_advance_next_due_time(): void
+    {
+        $this->configuredPair();
+        Schema::create('ldap_directories', function (Blueprint $table) {
+            $table->uuid('directory_uuid')->primary();
+            $table->boolean('enabled');
+            $table->timestamp('next_sync_at');
+        });
+        $id = (string) Str::uuid();
+        $due = now()->subMinute()->format('Y-m-d H:i:s');
+        DB::table('ldap_directories')->insert(['directory_uuid' => $id, 'enabled' => true, 'next_sync_at' => $due]);
+        $service = Mockery::mock(\App\Services\LdapDirectorySyncService::class);
+        $service->shouldNotReceive('sync');
+        (new \App\Jobs\SyncLdapDirectory($id))->handle($service, $this->resolver('2002', []));
+        $this->assertSame($due, DB::table('ldap_directories')->value('next_sync_at'));
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_failed_target_verification_never_begins_a_handoff(): void
+    {
+        $this->configuredPair();
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andThrow(new RuntimeException('Unreachable peer.'));
+        $resolver = $this->resolver('1001', [], [], $peer);
+        try {
+            $resolver->prepareHandoff($this->payload());
+            $this->fail('Unverified target accepted.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Unreachable peer.', $exception->getMessage());
+        }
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+        $this->assertSame('1001', $resolver->configuredNode());
+    }
+
+    public function test_manual_ldap_dry_run_uses_claim_and_records_node_visibility(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->app->instance(ActiveNodeResolver::class, $resolver);
+        $directory = $this->ldapFixture();
+        $client = Mockery::mock(\App\Services\ActiveDirectoryClient::class);
+        $client->shouldReceive('users')->once()->andReturn([['samaccountname' => ['alice']]]);
+        $client->shouldReceive('groups')->once()->andReturn([]);
+        $this->app->bind(\App\Services\ActiveDirectoryClient::class, fn () => $client);
+
+        $this->artisan('ldap:sync', ['directory' => $directory->getKey(), '--dry-run' => true])->assertExitCode(0);
+        $run = \App\Models\LdapSyncRun::query()->with('execution')->firstOrFail();
+        $this->assertSame('completed', $run->status);
+        $this->assertSame('completed', $run->execution->status);
+        $this->assertSame('1001', $run->node_id);
+        $this->assertSame(4, $run->ownership_generation);
+        $this->assertSame('pbx-a.example.test', $run->node_name);
+        $this->assertNull($directory->fresh()->last_sync_at);
+    }
+
+    public function test_ldap_failure_after_revocation_cannot_update_directory_or_retry_state(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->app->instance(ActiveNodeResolver::class, $resolver);
+        $directory = $this->ldapFixture();
+        $dueAfterClaim = null;
+        $client = Mockery::mock(\App\Services\ActiveDirectoryClient::class);
+        $client->shouldReceive('users')->once()->andReturnUsing(function () use ($directory, &$dueAfterClaim) {
+            $dueAfterClaim = $directory->fresh()->next_sync_at;
+            $this->travel(601)->seconds();
+            throw new RuntimeException('Read failed after execution expiry.');
+        });
+        $this->app->bind(\App\Services\ActiveDirectoryClient::class, fn () => $client);
+        try {
+            (new \App\Jobs\SyncLdapDirectory($directory->getKey()))->handle(new \App\Services\LdapDirectorySyncService(), $resolver);
+            $this->fail('Expected the directory read to fail.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Read failed after execution expiry.', $exception->getMessage());
+        }
+        $this->assertNotNull($dueAfterClaim);
+        $this->assertEquals($dueAfterClaim, $directory->fresh()->next_sync_at);
+        $this->assertNull($directory->fresh()->last_sync_status);
+        $this->assertNull(\App\Models\LdapSyncRun::query()->first()->finished_at);
+        $resolver->finalizePendingHandoff();
+        $this->assertSame('expired', \App\Models\ScheduledJobExecution::query()->first()->status);
+    }
+
+    public function test_lost_api_response_is_recovered_without_pretending_replication_arrived(): void
+    {
+        $this->configuredPair();
+        $peer = $this->peer();
+        $key = (string) Str::uuid();
+        $peer->shouldReceive('prepareHandoff')->once()->andThrow(new RuntimeException('Response lost.'));
+        $peer->shouldReceive('handoffStatus')->once()->with('https://pbx-a.example.test', $key)->andReturn([
+            'status' => 'completed', 'handoff' => ['to_node_id' => '2002', 'expected_generation' => 4],
+        ]);
+        $ui = $this->resolver('2002', [], [], $peer);
+        $this->assertSame('completed', $ui->requestHandoff('2002', 4, null, $key)['status']);
+        $this->assertSame('1001', $ui->configuredNode());
+        $this->assertFalse($ui->isActive());
+    }
+
+    public function test_unreachable_owner_stops_normal_transfer_without_local_ownership_write(): void
+    {
+        $this->configuredPair();
+        $peer = $this->peer();
+        $peer->shouldReceive('prepareHandoff')->andThrow(new RuntimeException('Owner unreachable.'));
+        $peer->shouldReceive('handoffStatus')->andThrow(new RuntimeException('Owner unreachable.'));
+        $ui = $this->resolver('2002', [], [], $peer);
+        try {
+            $ui->requestHandoff('2002', 4, null);
+            $this->fail('Normal transfer continued without its owner.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Owner unreachable.', $exception->getMessage());
+        }
+        $this->assertSame('1001', $ui->configuredNode());
+        $this->assertDatabaseCount('scheduled_job_handoffs', 0);
+    }
+
+    public function test_s3_claim_drains_with_the_shared_owner_and_blocks_the_next_recording(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->setting('s3_upload_calls', 'true', 'boolean');
+        $command = $this->s3Command($resolver);
+        $run = new ReflectionMethod($command, 'runSelected');
+        $coordinated = true;
+        $work = function ($authorize, $write) use ($resolver) {
+            $this->assertDatabaseHas('scheduled_job_executions', [
+                'job_type' => 's3_recording_upload', 'node_id' => '1001',
+                'ownership_generation' => 4, 'status' => 'running',
+            ]);
+            $this->assertSame('draining', $resolver->prepareHandoff($this->payload())['status']);
+            $authorize();
+            $write(fn () => $this->setting('s3_committed', 'true'));
+            $this->assertSame('1001', $resolver->configuredNode());
+        };
+        $this->assertTrue($run->invokeArgs($command, ['recording', $work, &$coordinated]));
+        $this->assertSame('2002', $resolver->configuredNode());
+        $this->assertDatabaseHas('scheduled_job_executions', ['job_type' => 's3_recording_upload', 'status' => 'completed']);
+        $this->assertFalse($run->invokeArgs($command, ['next-recording', fn () => $this->fail('Old owner ran.'), &$coordinated]));
+    }
+
+    public function test_s3_write_crossing_claim_expiry_rolls_back_and_keeps_cleanup_from_running(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->setting('s3_upload_calls', 'true', 'boolean');
+        $command = $this->s3Command($resolver);
+        $coordinated = true;
+        try {
+            (new ReflectionMethod($command, 'runSelected'))->invokeArgs($command, ['recording',
+                function ($authorize, $write) {
+                    $write(function () {
+                        $this->setting('s3_must_rollback', 'true');
+                        $this->travel(901)->seconds();
+                    });
+                    $this->fail('Cleanup was reached after revocation.');
+                }, &$coordinated]);
+            $this->fail('Expired execution was accepted.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseMissing('v_default_settings', ['default_setting_subcategory' => 's3_must_rollback']);
+    }
+
+    public function test_s3_invocation_never_downgrades_to_mac_after_coordinated_ownership_is_lost(): void
+    {
+        $resolver = $this->configuredPair();
+        $this->setting('s3_upload_calls_aa:bb:cc:dd:ee:ff', 'true', 'boolean');
+        DB::table('v_default_settings')->where('default_setting_subcategory', 'active_node')
+            ->update(['default_setting_value' => 'unknown-owner']);
+        $command = $this->s3Command($resolver);
+        $coordinated = true;
+        $this->assertFalse((new ReflectionMethod($command, 'runSelected'))->invokeArgs($command, [
+            'recording', fn () => $this->fail('Fell back to MAC mid-run.'), &$coordinated,
+        ]));
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_s3_legacy_run_uses_mac_but_stops_if_ownership_becomes_definite_before_writing(): void
+    {
+        $resolver = $this->resolver('1001', ['https://pbx-b.example.test']);
+        $this->setting('s3_upload_calls_aa:bb:cc:dd:ee:ff', 'true', 'boolean');
+        $command = $this->s3Command($resolver);
+        $coordinated = false;
+        try {
+            (new ReflectionMethod($command, 'runSelected'))->invokeArgs($command, ['recording',
+                function ($authorize, $write) {
+                    $authorize();
+                    $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+                    $this->setting('active_node', '1001');
+                    $this->setting('active_node_generation', '1', 'numeric');
+                    $write(fn () => $this->fail('Legacy work wrote without a new claim.'));
+                }, &$coordinated]);
+            $this->fail('Legacy work continued after selection changed.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(409, $exception->getCode());
+        }
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_s3_scheduled_command_on_standby_skips_before_reading_recordings(): void
+    {
+        $this->configuredPair();
+        $this->setting('s3_upload_calls_aa:bb:cc:dd:ee:ff', 'true', 'boolean');
+        $resolver = $this->resolver('2002', ['https://pbx-a.example.test']);
+        $command = $this->s3Command($resolver);
+        $command->setInput(new \Symfony\Component\Console\Input\ArrayInput(['--scheduled' => true], $command->getDefinition()));
+        $output = new \Symfony\Component\Console\Output\BufferedOutput();
+        $command->setOutput(new \Illuminate\Console\OutputStyle(new \Symfony\Component\Console\Input\ArrayInput([]), $output));
+        $this->assertSame(0, $command->handle());
+        $this->assertStringContainsString('S3 upload skipped', $output->fetch());
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_s3_manual_run_bypasses_disabled_uploads_and_standby_selection(): void
+    {
+        $this->configuredPair();
+        $this->setting('s3_upload_calls', 'false', 'boolean');
+        $command = $this->s3Command($this->resolver('2002', ['https://pbx-a.example.test']));
+        $coordinated = false;
+        $this->assertTrue((new ReflectionMethod($command, 'runSelected'))->invokeArgs($command, [
+            'manual-recording', function ($authorize, $write) {
+                $authorize();
+                $write(fn () => $this->setting('manual_s3_ran', 'true'));
+            }, &$coordinated, false,
+        ]));
+        $this->assertDatabaseHas('v_default_settings', ['default_setting_subcategory' => 'manual_s3_ran']);
+        $this->assertDatabaseCount('scheduled_job_executions', 0);
+    }
+
+    public function test_s3_seeding_preserves_existing_enablement_and_explicit_shared_choice(): void
+    {
+        $this->setting('s3_upload_calls_aa:bb:cc:dd:ee:ff', 'true', 'boolean');
+        $seeder = new class extends \Database\Seeders\DatabaseSeeder {
+            public function getMacAddress() { return 'aa:bb:cc:dd:ee:ff'; }
+        };
+        $seed = new ReflectionMethod(\Database\Seeders\DatabaseSeeder::class, 'createDefaultSettings');
+        $seed->invoke($seeder);
+        $this->assertDatabaseHas('v_default_settings', [
+            'default_setting_subcategory' => 's3_upload_calls',
+            'default_setting_value' => 'true', 'default_setting_enabled' => false,
+        ]);
+        $this->assertDatabaseHas('v_default_settings', [
+            'default_setting_subcategory' => 's3_upload_calls_aa:bb:cc:dd:ee:ff',
+            'default_setting_value' => 'true', 'default_setting_enabled' => true,
+        ]);
+        DB::table('v_default_settings')->where('default_setting_subcategory', 's3_upload_calls')
+            ->update(['default_setting_value' => 'false', 'default_setting_enabled' => true]);
+        $seed->invoke($seeder);
+        $this->assertSame(1, DB::table('v_default_settings')->where('default_setting_subcategory', 's3_upload_calls')->count());
+        $this->assertDatabaseHas('v_default_settings', [
+            'default_setting_subcategory' => 's3_upload_calls',
+            'default_setting_value' => 'false', 'default_setting_enabled' => true,
+        ]);
+    }
+
+    public function test_s3_scheduler_uses_scheduled_mode_and_preserves_time_and_timezone(): void
+    {
+        $this->setting('s3_upload_calls_time', '03:45');
+        $this->setting('scheduled_jobs_timezone', 'America/New_York');
+        $schedule = new \Illuminate\Console\Scheduling\Schedule();
+        $kernel = app(\App\Console\Kernel::class);
+        (new ReflectionMethod($kernel, 'schedule'))->invoke($kernel, $schedule);
+        $event = collect($schedule->events())->first(fn ($event) =>
+            str_contains($event->command ?? '', 'fs:upload-call-recordings-to-s3-storage'));
+        $this->assertNotNull($event);
+        $this->assertStringContainsString('--scheduled', $event->command);
+        $this->assertSame('45 3 * * *', $event->expression);
+        $this->assertSame('America/New_York', $event->timezone);
+        $this->assertTrue($event->withoutOverlapping);
+
+        $selector = Mockery::mock(\App\Services\S3UploadServerSelector::class);
+        $selector->shouldReceive('resolve')->twice()->andReturn(['allowed' => false], ['allowed' => true]);
+        $this->app->instance(\App\Services\S3UploadServerSelector::class, $selector);
+        $this->assertFalse($event->filtersPass($this->app));
+        $this->assertTrue($event->filtersPass($this->app));
+    }
+
+    private function s3Command(ActiveNodeResolver $resolver): \App\Console\Commands\UploadCallRecordingsToS3Storage
+    {
+        $selector = new class($resolver) extends \App\Services\S3UploadServerSelector {
+            public function macAddress(): ?string { return 'aa:bb:cc:dd:ee:ff'; }
+        };
+        return new \App\Console\Commands\UploadCallRecordingsToS3Storage(
+            Mockery::mock(\App\Services\S3StorageConfigService::class), $selector, $resolver,
+            Mockery::mock(\App\Services\S3RecordingArchiver::class),
+        );
+    }
+
+    private function ldapFixture(): \App\Models\LdapDirectory
+    {
+        (require base_path('database/migrations/2026_08_24_000001_create_ldap_directory_tables.php'))->up();
+        (require base_path('database/migrations/2026_09_04_000001_create_scheduled_job_coordination_tables.php'))->up();
+        Schema::create('v_domains', function (Blueprint $table) {
+            $table->uuid('domain_uuid')->primary();
+            $table->string('domain_enabled');
+        });
+        $domain = (string) Str::uuid();
+        DB::table('v_domains')->insert(['domain_uuid' => $domain, 'domain_enabled' => 'true']);
+
+        return \App\Models\LdapDirectory::query()->create([
+            'domain_uuid' => $domain, 'name' => 'Lab LDAP', 'hosts' => 'unused.example.test',
+            'bind_username' => 'reader', 'ad_domain' => 'example.test', 'base_dn' => 'dc=example,dc=test',
+            'enabled' => true, 'next_sync_at' => now()->subMinute(),
+        ])->fresh();
+    }
+
+    private function configuredPair(): ActiveNodeResolver
+    {
+        $this->node('1001', 'pbx-a', 'https://pbx-a.example.test');
+        $this->node('2002', 'pbx-b', 'https://pbx-b.example.test');
+        $this->setting('active_node', '1001');
+        $this->setting('active_node_generation', '4', 'numeric');
+
+        return $this->resolver('1001', ['https://pbx-b.example.test'], [], $this->peer());
+    }
+
+    private function peer(string $otherId = '2002'): ScheduledJobPeerClient
+    {
+        $peer = Mockery::mock(ScheduledJobPeerClient::class);
+        $peer->shouldReceive('identify')->andReturnUsing(function ($endpoint) use ($otherId) {
+            $id = str_contains($endpoint, 'pbx-a') ? '1001' : $otherId;
+            return ['system_identifier' => $id, 'hostname' => $id, 'host_fingerprint' => hash('sha256', $id), 'capabilities' => ['node_approval', 'node_removal', 'initial_owner']];
+        });
+
+        return $peer;
+    }
+
+    private function payload(): array
+    {
+        return ['target_node_id' => '2002', 'target_endpoint' => 'https://pbx-b.example.test', 'expected_generation' => 4, 'idempotency_key' => (string) Str::uuid()];
+    }
+
+    private function resolver(
+        string $nodeId,
+        array $endpoints,
+        array $subscriptions = [],
+        ?ScheduledJobPeerClient $peer = null
+    ): ActiveNodeResolver
+    {
+        $peer ??= Mockery::mock(ScheduledJobPeerClient::class);
+        $authenticator = Mockery::mock(ScheduledJobPeerAuthenticator::class);
+        $authenticator->shouldReceive('secretConfigured')->andReturn(true)->byDefault();
+
+        return new class($peer, $authenticator, $nodeId, $endpoints, $subscriptions) extends ActiveNodeResolver
+        {
+            public function __construct(
+                ScheduledJobPeerClient $peer,
+                ScheduledJobPeerAuthenticator $authenticator,
+                private readonly string $fixedNodeId,
+                private readonly array $fixedEndpoints,
+                private readonly array $fixedSubscriptions
+            ) {
+                parent::__construct($peer, $authenticator);
+            }
+
+            public function localNodeId(): ?string
+            {
+                return $this->fixedNodeId;
+            }
+
+            public function hostname(): string
+            {
+                return $this->fixedNodeId === '1001' ? 'pbx-a.example.test' : 'pbx-b.example.test';
+            }
+
+            public function hostFingerprint(): ?string
+            {
+                return hash('sha256', $this->fixedNodeId);
+            }
+
+            protected function subscriptionDiscovery(): array
+            {
+                return ['readable' => true, 'endpoints' => $this->fixedEndpoints, 'subscriptions' => $this->fixedSubscriptions];
+            }
+        };
+    }
+
+    private function node(string $id, string $hostname, string $endpoint, string $status = 'approved'): void
+    {
+        ScheduledJobNode::query()->create([
+            'system_identifier' => $id, 'hostname' => $hostname, 'endpoint' => $endpoint,
+            'status' => $status, 'approved_at' => now(),
+            'host_fingerprint' => hash('sha256', $id), 'registered_on_node_id' => '1001',
+        ]);
+    }
+
+    private function setting(string $subcategory, string $value, string $type = 'text'): void
+    {
+        DB::table('v_default_settings')->insert([
+            'default_setting_uuid' => (string) Str::uuid(),
+            'default_setting_category' => 'scheduled_jobs',
+            'default_setting_subcategory' => $subcategory,
+            'default_setting_name' => $type,
+            'default_setting_value' => $value,
+            'default_setting_enabled' => true,
+        ]);
+    }
+}

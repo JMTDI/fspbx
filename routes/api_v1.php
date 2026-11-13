@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\DomainController;
 use App\Http\Controllers\Api\V1\ActiveCallController;
+use App\Http\Controllers\Api\V1\ActiveExtensionReportController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\ExtensionController;
 use App\Http\Controllers\Api\V1\ExtensionStatisticController;
@@ -11,6 +12,11 @@ use App\Http\Controllers\Api\V1\RingGroupController;
 use App\Http\Controllers\Api\V1\VoicemailController;
 use App\Http\Controllers\Api\V1\PhoneNumberController;
 use App\Http\Controllers\Api\V1\CdrController;
+use App\Http\Controllers\Api\V1\ClickToDialController;
+use App\Http\Controllers\Api\V1\PhoneControlController;
+use App\Http\Controllers\Api\V1\RecordingController;
+use App\Http\Controllers\Api\V1\UserController;
+use App\Http\Controllers\Api\V1\MessageSettingsController;
 
 /*
 |--------------------------------------------------------------------------
@@ -20,6 +26,18 @@ use App\Http\Controllers\Api\V1\CdrController;
 */
 
 Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(function () {
+
+    /*
+    |--------------------------------------------------------------------------
+    | Messages (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+
+    Route::post('/domains/{domain_uuid}/messages', [\App\Http\Controllers\Api\V1\MessageController::class, 'store'])
+        ->middleware('user.authorize:messages_send')->name('api.v1.messages.send');
+
+    Route::post('/domains/{domain_uuid}/messages/group_mms', [\App\Http\Controllers\Api\V1\MessageController::class, 'group'])
+        ->middleware('user.authorize:messages_send')->name('api.v1.messages.group');
 
     /*
     |--------------------------------------------------------------------------
@@ -44,6 +62,40 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     /*
     |--------------------------------------------------------------------------
+    | Users (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/users', [UserController::class, 'index'])
+        ->middleware('user.authorize:user_view');
+    Route::get('/domains/{domain_uuid}/users/{user_uuid}', [UserController::class, 'show'])
+        ->middleware('user.authorize:user_view');
+    Route::post('/domains/{domain_uuid}/users', [UserController::class, 'store'])
+        ->middleware('user.authorize:user_add');
+    Route::patch('/domains/{domain_uuid}/users/{user_uuid}', [UserController::class, 'update'])
+        ->middleware('user.authorize:user_edit');
+    Route::post('/domains/{domain_uuid}/users/{user_uuid}/password-reset', [UserController::class, 'sendPasswordReset'])
+        ->middleware('user.authorize:user_edit');
+    Route::delete('/domains/{domain_uuid}/users/{user_uuid}', [UserController::class, 'destroy'])
+        ->middleware('user.authorize:user_delete');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Message Settings (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/message-settings', [MessageSettingsController::class, 'index'])
+        ->middleware('user.authorize:message_settings_list_view');
+    Route::get('/domains/{domain_uuid}/message-settings/{sms_destination_uuid}', [MessageSettingsController::class, 'show'])
+        ->middleware('user.authorize:message_settings_list_view');
+    Route::post('/domains/{domain_uuid}/message-settings', [MessageSettingsController::class, 'store'])
+        ->middleware('user.authorize:message_settings_manage');
+    Route::patch('/domains/{domain_uuid}/message-settings/{sms_destination_uuid}', [MessageSettingsController::class, 'update'])
+        ->middleware('user.authorize:message_settings_manage');
+    Route::delete('/domains/{domain_uuid}/message-settings/{sms_destination_uuid}', [MessageSettingsController::class, 'destroy'])
+        ->middleware('user.authorize:message_settings_manage');
+
+    /*
+    |--------------------------------------------------------------------------
     | Extensions (domain-scoped)
     |--------------------------------------------------------------------------
     */
@@ -64,6 +116,14 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     Route::delete('/domains/{domain_uuid}/extensions/{extension_uuid}', [ExtensionController::class, 'destroy'])
         ->middleware('user.authorize:extension_delete');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reports (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/reports/active-extensions', [ActiveExtensionReportController::class, 'show'])
+        ->middleware('user.authorize:extension_view');
 
     /*
     |--------------------------------------------------------------------------
@@ -91,7 +151,7 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
     |--------------------------------------------------------------------------
     */
     Route::get('/domains/{domain_uuid}/ring-groups', [RingGroupController::class, 'index'])
-        ->middleware('user.authorize:ring_group_domain');
+        ->middleware('user.authorize:ring_group_view');
 
     Route::get('/domains/{domain_uuid}/ring-groups/{ring_group_uuid}', [RingGroupController::class, 'show'])
         ->middleware('user.authorize:ring_group_view');
@@ -161,23 +221,43 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     /*
     |--------------------------------------------------------------------------
+    | Phone Control (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/click-to-dial/targets', [ClickToDialController::class, 'targets'])
+        ->middleware('user.authorize:phone_control_view');
+
+    Route::post('/domains/{domain_uuid}/click-to-dial', [ClickToDialController::class, 'store'])
+        ->middleware('user.authorize:phone_control_call');
+
+    Route::get('/domains/{domain_uuid}/phone-control/targets', [PhoneControlController::class, 'targets'])
+        ->middleware('user.authorize:phone_control_view');
+
+    Route::get('/domains/{domain_uuid}/phone-control/calls', [PhoneControlController::class, 'calls'])
+        ->middleware('user.authorize:phone_control_view');
+
+    Route::post('/domains/{domain_uuid}/phone-control/actions', [PhoneControlController::class, 'store'])
+        ->middleware('user.authorize:phone_control_call');
+
+    /*
+    |--------------------------------------------------------------------------
     | Phone Numbers (domain-scoped)
     |--------------------------------------------------------------------------
     */
     Route::get('/domains/{domain_uuid}/phone-numbers', [PhoneNumberController::class, 'index'])
-        ->middleware('user.authorize:ring_group_domain');
+        ->middleware('user.authorize:destination_view');
 
     Route::get('/domains/{domain_uuid}/phone-numbers/{destination_uuid}', [PhoneNumberController::class, 'show'])
-        ->middleware('user.authorize:ring_group_view');
+        ->middleware('user.authorize:destination_view');
 
     Route::post('/domains/{domain_uuid}/phone-numbers', [PhoneNumberController::class, 'store'])
-        ->middleware('user.authorize:ring_group_add');
+        ->middleware('user.authorize:destination_add');
 
     Route::patch('/domains/{domain_uuid}/phone-numbers/{destination_uuid}', [PhoneNumberController::class, 'update'])
-        ->middleware('user.authorize:ring_group_edit');
+        ->middleware('user.authorize:destination_edit');
 
     Route::delete('/domains/{domain_uuid}/phone-numbers/{destination_uuid}', [PhoneNumberController::class, 'destroy'])
-        ->middleware('user.authorize:ring_group_delete');
+        ->middleware('user.authorize:destination_delete');
 
     /*
     |--------------------------------------------------------------------------
@@ -192,4 +272,20 @@ Route::middleware(['auth:sanctum', 'api.token.auth', 'throttle:api'])->group(fun
 
     Route::get('/domains/{domain_uuid}/cdrs/{xml_cdr_uuid}/recording-url', [CdrController::class, 'recordingUrl'])
         ->middleware('user.authorize:xml_cdr_view');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Recording Manager (domain-scoped)
+    |--------------------------------------------------------------------------
+    */
+    Route::get('/domains/{domain_uuid}/recordings', [RecordingController::class, 'index'])
+        ->middleware('user.authorize:recording_view');
+    Route::post('/domains/{domain_uuid}/recordings', [RecordingController::class, 'store'])
+        ->middleware('user.authorize:recording_upload');
+    Route::get('/domains/{domain_uuid}/recordings/{recording_uuid}', [RecordingController::class, 'show'])
+        ->middleware('user.authorize:recording_view');
+    Route::patch('/domains/{domain_uuid}/recordings/{recording_uuid}', [RecordingController::class, 'update'])
+        ->middleware('user.authorize:recording_upload');
+    Route::delete('/domains/{domain_uuid}/recordings/{recording_uuid}', [RecordingController::class, 'destroy'])
+        ->middleware('user.authorize:recording_delete');
 });

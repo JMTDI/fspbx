@@ -69,6 +69,7 @@ class FaxSentController extends Controller
                     'preview' => route('fax-sent.preview', ':file'),
                 ],
                 'permissions' => [
+                    'download' => userCheckPermission('fax_sent_download'),
                     'delete' => userCheckPermission('fax_sent_delete'),
                 ],
 
@@ -208,7 +209,7 @@ class FaxSentController extends Controller
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $data,
             ], 200);
         } catch (\Exception $e) {
@@ -216,13 +217,20 @@ class FaxSentController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
 
     public function download($file)
     {
+        if (! userCheckPermission('fax_sent_download')) {
+            return response()->json([
+                'success' => false,
+                'errors' => ['auth' => [__('Access denied.')]],
+            ], 403);
+        }
+
         try {
             $file = FaxFiles::where('fax_file_uuid', $file)
                 ->with(['fax' => function ($query) {
@@ -237,7 +245,7 @@ class FaxSentController extends Controller
             if (session('domain_uuid') && $file->domain_uuid !== session('domain_uuid')) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['auth' => ['You are not authorized to access this file.']],
+                    'errors' => ['auth' => [__('You are not authorized to access this file.')]],
                 ], 403);
             }
 
@@ -252,7 +260,7 @@ class FaxSentController extends Controller
             if (!Storage::disk('fax')->exists($relative)) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['file' => ['File not found.']],
+                    'errors' => ['file' => [__('File not found.')]],
                 ], 404);
             }
 
@@ -265,14 +273,14 @@ class FaxSentController extends Controller
         } catch (ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
-                'errors' => ['file' => ['File not found.']],
+                'errors' => ['file' => [__('File not found.')]],
             ], 404);
         } catch (\Throwable $e) {
             logger('Error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to download the file.']],
+                'errors' => ['server' => [__('Failed to download the file.')]],
             ], 500);
         }
     }
@@ -290,7 +298,7 @@ class FaxSentController extends Controller
             if (session('domain_uuid') && $file->domain_uuid !== session('domain_uuid')) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['auth' => ['You are not authorized to access this file.']],
+                    'errors' => ['auth' => [__('You are not authorized to access this file.')]],
                 ], 403);
             }
 
@@ -302,7 +310,7 @@ class FaxSentController extends Controller
             if (!Storage::disk('fax')->exists($relative)) {
                 return response()->json([
                     'success' => false,
-                    'errors' => ['file' => ['File not found.']],
+                    'errors' => ['file' => [__('File not found.')]],
                 ], 404);
             }
 
@@ -317,14 +325,14 @@ class FaxSentController extends Controller
         } catch (ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
-                'errors' => ['file' => ['File not found.']],
+                'errors' => ['file' => [__('File not found.')]],
             ], 404);
         } catch (\Throwable $e) {
             logger('Error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to preview the file.']],
+                'errors' => ['server' => [__('Failed to preview the file.')]],
             ], 500);
         }
     }
@@ -340,7 +348,7 @@ class FaxSentController extends Controller
     {
         if (! userCheckPermission('fax_sent_delete')) {
             return response()->json([
-                'messages' => ['error' => ['Access denied.']]
+                'messages' => ['error' => [__('Access denied.')]]
             ], 403);
         }
 
@@ -419,7 +427,7 @@ class FaxSentController extends Controller
                 DB::rollBack();
 
                 return response()->json([
-                    'messages' => ['error' => ['Some fax files could not be deleted, so no records were removed.']],
+                    'messages' => ['error' => [__('Some fax files could not be deleted, so no records were removed.')]],
                     'failed' => $failed,
                 ], 422);
             }
@@ -427,14 +435,14 @@ class FaxSentController extends Controller
             DB::commit();
 
             return response()->json([
-                'messages' => ['success' => ['Selected fax file(s) were deleted successfully.']]
+                'messages' => ['success' => [__('Selected fax file(s) were deleted successfully.')]]
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
             logger('FaxSentController@bulkDelete error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
-                'messages' => ['error' => ['An error occurred while deleting the selected fax file(s).']]
+                'messages' => ['error' => [__('An error occurred while deleting the selected fax file(s).')]]
             ], 500);
         }
     }

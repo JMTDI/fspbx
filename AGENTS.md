@@ -11,6 +11,14 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - Keep user-facing copy short and practical.
 - For release notes, write for users first. Avoid implementation details unless they explain visible behavior.
 
+## Release Notes
+
+- When asked to write FS PBX release notes, save them in `.github/release-notes/vX.Y.Z.md` for the requested version (for example, `.github/release-notes/v2.1.6.md`), unless the user explicitly requests another location or a temporary draft.
+- Use adjacent `config/version.php` version-bump commits to determine the release's changes; tags may have been created later.
+- Use the published [v2.1.2 release](https://github.com/nemerald-voip/fspbx/releases/tag/v2.1.2) as the format reference for all future release notes: start with `## What's new`, give each major topic a `###` heading and a short user-facing introduction, then a `**Highlights**` label and practical bullet points. Add any necessary usage or compatibility note under that topic. Finish with `## Improvements and fixes`. Scale the number of topics to the actual changes; do not reduce the entire release to a flat fixes list. Omit `## Upgrade notes`.
+- Include the matching notes file in the commit that bumps `config/version.php`, before pushing to `main`. The automated release workflow uses that file when creating the draft; if it is missing, GitHub generates the notes automatically. See [.github/RELEASING.md](.github/RELEASING.md).
+- Existing draft and published release descriptions are preserved by the workflow. Adding or changing the Markdown file after draft creation does not automatically update the GitHub release description.
+
 ## Laravel And Vue Pages
 
 - Rebuild legacy `/public/app/.../*.php` admin pages as native Laravel/Vue pages when asked.
@@ -21,7 +29,29 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - For modern Inertia pages, pass page-specific permissions from the controller as a `permissions` prop and read `props.permissions` in Vue. Do not add new page-specific permission keys to `HandleInertiaRequests` unless a truly shared layout/component needs them globally.
 - For date filters, follow the CDR pattern: pass `timezone` as a top-level Inertia prop for the DatePicker/UI, but do not include it in the API `filter` payload. Only send filters the QueryBuilder endpoint explicitly allows.
 - Use VueForm for create/update modals.
+- All new or revised VueForms must use server-side validation only. Do not add VueForm `rules`, custom client validators, or client validity checks that block submission. Keep validation in Laravel, display returned field errors through VueForm's message bags, and clear previous errors before resubmitting. Disable VueForm validation for newly created forms; field formatting and input widgets may remain.
 - Keep forms clear and operational. Avoid marketing-style UI.
+
+## Email Templates
+
+- Native email templates live in the `email_templates` table. Do not restore the legacy `v_email_templates` schema, legacy template-population blocks, install-time cleanup scripts, or `LegacyEmailTemplateCleaner`.
+- Default email template sources use `resources/views/emails/{locale}/{category}/{subcategory}.blade.php` and a required `{subcategory}-text.blade.php` companion. Folder names match registered locale codes, including `en-us`. Each locale owns its static `email_layout.blade.php`; `emails.email_layout` remains an English compatibility view for saved templates and optional modules. Email content is not translated through JSON at send time.
+- `email:templates:seed` imports every language folder and prints a summary by default; use `-v` for per-template details. Duplicate cleanup must stay within the same template key and language.
+- The HTML file owns shared `email-template` metadata, including `version`, language, category, subcategory, subject, and description. Its plain-text companion carries only `format: text` and `layout: none`; bump the version once in the HTML file when either body changes.
+- Bump the template version whenever seeded subject, HTML, text, or layout content changes. Updates overwrite versioned defaults but never custom overrides.
+- The email template create-table migration runs `email:templates:seed` immediately after creating the table, so manually running migrations after `app:update` populates defaults even when the earlier update-time seed skipped a missing table.
+- Runtime resolution order is current-account custom, global custom, then shipped default, with the requested language preferred before `en-us`. The database is the source of truth once a matching row exists.
+- Application mailables extend `BaseMailable`, prepare trusted data in the constructor, call `useEmailTemplate(category, subcategory)`, and declare an explicit Laravel `content(): Content` method showing the HTML/text view pair. The base class owns shared `Envelope`, headers, and database-override wrapping.
+- Editable templates support Blade directives but reject `@php`, raw PHP tags, and scripts. Superadmin access is still the trust boundary because Blade expressions are executable.
+- Email template previews must render through `SafeEmailTemplateRenderer` with representative sample variables; never send raw Blade source directly to an iframe. Read-only rows preview stored content, while authorized editable rows may preview unsaved content.
+- Email Template visibility is fixed to shipped defaults, global custom overrides, and custom overrides for `session('domain_uuid')`; never add an all-accounts view. `email_templates_manage_global` controls global-custom mutations only and does not broaden record visibility.
+- This feature is a breaking change for installations that edited legacy email templates: legacy customizations are not imported or used. Release notes must tell administrators to save those changes before upgrading and recreate them as custom templates afterward.
+
+## Extensions And Voicemail
+
+- Extension numbers and voicemail IDs are only unique inside a domain. Any lookup, relationship use, eager load, listener, observer, job, or response reload that connects `v_extensions.extension` to `v_voicemails.voicemail_id` must also constrain `domain_uuid`.
+- `Extensions::voicemail()` is intentionally broad because Eloquent does not enforce the domain match there. Do not update, delete, sync copies, or read user-facing voicemail data from `$extension->voicemail` unless the relation was loaded with a domain filter or the voicemail was queried explicitly by `domain_uuid + voicemail_id`.
+- Extension suspension and unsuspension must only toggle voicemail for the same tenant. DND updates should target the concrete extension row by `extension_uuid` and `domain_uuid`, not by extension number alone.
 
 ## Settings Pages
 
@@ -47,6 +77,7 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - Keep vendor translation and normalization in the existing provisioning path. Do not add new broad vendor translations unless the stored data shape truly requires it.
 - The modern provisioning path is `app/Http/Controllers/ProvisioningController.php`; the old provisioning URL still uses `public/app/provision/resources/classes/provision.php`.
 - Native provisioning renders `provisioning_templates.content` from the database, not the resource file directly. Changes under `resources/provisioning/.../template.blade.php` require reseeding default templates with `php artisan prov:templates:seed` or manually updating custom template content.
+- After reseeding provisioning templates, run `php artisan view:clear`. Changed template content forces Blade to recompile the stored string, and a stale/wrongly-owned compiled view causes a 500 on the phone's config request. Do not render provisioning Blade as root (via `tinker`/`artisan`) — it writes root-owned files in `storage/framework/views` that the `www-data` web server cannot overwrite. Verify template rendering with `curl` against `/prov/...`, not a root tinker `Blade::render`.
 - Custom provisioning templates do not inherit default template changes automatically.
 - When changing default provisioning templates, bump the Blade front-matter `version:` so the seeder can update the database row clearly.
 - The provisioning template seeder keys default rows by `vendor + folder name + type`. When renaming a default template folder, add an update step before `prov:templates:seed` runs that renames the existing `provisioning_templates.name` row and any custom `base_template` references, otherwise the seeder will create a second default row under the new folder name.
@@ -54,9 +85,38 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - The old provisioning URL delegates modern `device_keys` overlay behavior to `fspbx_apply_new_keys_override()` in `app/helpers.php`. Key Template support for that old path should stay in helpers where possible.
 - `device_key_templates.enabled` is stored as the string `'true'`, not a boolean. Legacy SQL helpers should compare it as `t.enabled = 'true'`.
 - If the old `provision.php` path must participate in a new behavior, remember `public/` is not tracked. Make the runtime file change for the working server, then add or update an update class to download/replace the file for deployed systems.
+- When expanding a Grandstream template from an official configuration file, use active `P... = ...` assignments as the vendor baseline and retain commented P-value entries as documentation only. Apply FS PBX system, account, credential, and key values as an explicit overlay after parsing the baseline.
+- Comments inside Blade/PHP setup blocks are not part of the provisioned XML. If provisioning previews should explain each Grandstream P-value, render the captured descriptions as XML comments next to the resulting elements and render prominent XML-comment banners for section headings.
+- Grandstream key mode numbers are key-family specific. On GXP17xx, fixed/line VPKs 1-6 use values such as `11` for BLF and `26` for Monitored Call Park, while dynamic VPKs 7-32 use `1` for BLF and `16` for Monitored Call Park. Do not reuse one mode map for both families.
+- Grandstream account selectors in P-values are zero-based even when the UI labels them as Account 1, Account 2, and so on. Normalize FS PBX line assignments accordingly.
+- For normal GXP17xx BLF operation, leave the account BLF server blank so subscriptions use the configured SIP server. Monitored park values use the form `park+*5901`.
+- When a vendor baseline contains settings for unsupported accounts or model variants as commented entries, do not activate them merely to make the generated template more complete. Only emit supported active settings and intentional FS PBX overrides.
 - Yealink templates should use `$main_keys` for `linekey.*` output and `$expansion_keys` for `expansion_module.1.key.*` output.
 - Yealink phone line keys should clear unused slots through 30; Yealink expansion module keys should clear unused slots through 60 per module.
 - Yealink devices can use the Expansion Keys tab in the device edit modal.
+
+## Phonebooks
+
+- A phonebook is a device directory made of optional internal extensions (an `include_extensions` toggle) plus the phonebook's own contacts. This supports extensions-only, contacts-only, or both. Keep the editor simple enough that an end user grasps that composition at a glance.
+- Contacts are per-phonebook in `phonebook_contacts`, not the shared CRM `contacts`/Messages store. Each phonebook owns its list; do not reuse account-wide contacts for phonebooks or every phonebook shows the same people. Contacts save together with the phonebook via `PhonebookService` (delete + recreate), not through separate contact endpoints.
+- Data model: `phonebooks` (`enabled`, `is_default`, `include_extensions`), `phonebook_contacts` (per phonebook), and `device_phonebook` (per-device assignment with `slot`).
+- Directory entries are built in `app/Services/Provisioning/Phonebook/PhonebookBuilder.php` and rendered by vendor formatters (Grandstream `AddressBook`, Yealink `YealinkIPPhoneDirectory`). The final list is de-duplicated and sorted by last name, then first name, then display name, matching Grandstream's on-phone `phonebook.sortBy = LastName`.
+- Phones fetch directories from `/prov/directory/{book}/{path}` (`PhonebookController`), reusing the `provision.digest` middleware. `{book}` is a phonebook UUID or `all`. The device is resolved from the MAC/serial path segment, because some phones append a fixed filename (Grandstream requests `<server>/phonebook.xml`) so the basename is not the device token — `DigestProvisionAuth` scans path segments when the basename yields no token.
+- Grandstream downloads a single `phonebook.xml`, so its config points at the device-merged `all` directory (`/prov/directory/all/{mac}`), which combines every assigned phonebook. Yealink supports multiple remote phonebooks, so it gets one credentialed URL per phonebook via `remote_phonebook.data.X`.
+- Grandstream `phonebook.download.server` must be host/path WITHOUT a scheme; the separate `phonebook.download.mode`/P330 selects HTTP vs HTTPS. Item-style templates strip the scheme inline; GXP17xx strips it for P331 and derives P330 from the scheme.
+- Grandstream config is injected through settings in `ProvisioningController::buildTemplateVars` (`grandstream_phonebook_server`/`_username`/`_password`/`_download_interval`), so every Grandstream model picks it up without per-template edits. When no phonebook resolves, leave any manually-configured phonebook settings intact.
+- Device assignment lives on the device edit modal's Phonebook tab: "Use account default" (all `is_default` phonebooks) or "Custom" (rows in `device_phonebook`, order = slot). `DeviceService` syncs `device_phonebook` from `phonebook_mode` + `phonebook_uuids`.
+- Provisioning preview mirrors the phone: Grandstream shows one merged `phonebook.xml`; Yealink shows one file per phonebook.
+- User-facing phonebook copy uses "Account", never "domain" (the internal multi-tenant term). Show a per-vendor hint on the device Phonebook tab so the Grandstream-merges-into-one vs Yealink-separate-directories behavior is not surprising.
+
+## Shared Routing Destinations
+
+- Define selectable destinations in `CallRoutingOptionsService::destinations()`: label, model, destination field, and display-name field. Model-backed destinations default to a transfer; special actions declare a handler implemented by `buildDestinationAction()`.
+- Reuse `buildDestinationAction()` for normalized destination values and `CallRoutingOptionsService::actionForTarget()` for saved Eloquent targets. Do not add per-feature destination-field maps or copies of the action switch. Use the registry's `requiresTarget()` for target requirements.
+- Business Hours, Phone Numbers, Ring Groups, IVRs, Call Flows, Basic Queues, Basic Dialer, and the installed Contact Center timeout editor share this path. Forwarding supports number-based handlers through `forwardingTarget()`; Dynamic Routes deliberately exclude another Dynamic Route as a target.
+- Add independent expected values in `tests/Unit/RoutingDestinations.php` for every new selectable type. Run the Business Hours, Shared Routing Destination, Routing Target Validation, and Call Routing Options Service tests. Preserve Bridge UUID handling, recording playback, voicemail prefixes, account scoping, and feature-specific output formats.
+- Preserve the exact generated XML and stored action strings for previously working routes when refactoring routing.
+- Stored dialplan XML and action strings are regenerated by saving the affected feature; source changes do not rewrite existing records automatically.
 
 ## Basic Queues
 
@@ -73,6 +133,7 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 
 - Not every server has optional modules under `Modules/`. Main-repo features should not assume an optional module exists unless the code has an explicit availability check and a safe fallback.
 - Module-specific implementation notes belong in an `AGENTS.md` inside that module instead of the root guide.
+- Modules add menu entries at request time, not as `v_menu_items` rows: call `App\Support\ModuleMenuItems::addToAdvanced(title, link, permission)` from the module's service provider (it only boots while the module is enabled). `HandleInertiaRequests` applies them to copies of the session menu, finds Advanced by its `/default-settings`, `/menus`, `/modules` links (titles and IDs differ per menu and language), skips links already in the menu, and gives the entries their own menu when the user has no Advanced menu. Legacy `/public` pages build their own menu and don't show these entries.
 
 ## FreeSWITCH Modules Page
 
@@ -98,6 +159,39 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - The Lua XML generator should build directory names as `{domain_name}/{music_on_hold_name}` without appending the rate, while the row path still points to the rate-specific directory. It should default blank or null rates to `48000` and honor row-level `channels` and `interval` values.
 - Deleting a stream should delete the whole generated stream folder under `/usr/share/freeswitch/sounds/music/{domain-or-global}/{stream-name}`, not just individual DB rows. Keep deletion guarded so it cannot remove the music root or a domain root.
 - Avoid icons that look like playback unless the action actually starts playback. For file selection rows, prefer an audio/file icon; reserve play icons for buttons that open or start the player.
+
+## Scheduled-Job Coordination
+
+- The generic coordinator in `app/Services/Ha/ActiveNodeResolver.php` is the standard for future scheduled jobs that need one owner across redundant servers. LDAP is the first consumer. Reuse the same global owner, registry, handoff protocol, and execution records; do not introduce per-directory/per-tenant owners or a second job-specific coordinator. Jobs that must run on every node remain local.
+- Durable authority is the replicated `scheduled_jobs.active_node` plus `scheduled_jobs.active_node_generation`, changed atomically. `scheduled_job_nodes`, `scheduled_job_handoffs`, and `scheduled_job_executions` hold membership, transfers, and running-work attribution. Local Redis locks, `withoutOverlapping()`, queue uniqueness, random delays, and local PostgreSQL locks are not cross-node mutual exclusion under logical replication.
+- Identify the connected PostgreSQL cluster with `SELECT system_identifier::text FROM pg_control_system()` and keep the identifier as a string. Do not cache it across decisions: Redis may survive database replacement. Subscription names are never identities; all subscription connection hosts, including disabled/stale entries, are discovery hints only. Do not require floating DNS or fixed subscription names.
+- Membership requires a signed HTTPS identity probe and explicit superadmin approval. Manual direct endpoints support replacement nodes. Endpoint aliases with the same database identity and host fingerprint are allowed; the same database identity with different host fingerprints fails closed. Use the dedicated replicated `scheduled_jobs.coordination_secret`, not the certificate-push secret, and preserve signed requests/responses, replay protection, and idempotent handoffs.
+- Approval does not select an owner. On a redundant installation, approve nodes, verify replicated membership/settings have converged, then explicitly select the initial owner through the Scheduled job server control. Unknown, ambiguous, retired, or inconsistent ownership fails closed. Preserve the resolver's standalone behavior when there is no configured ownership, registry membership, or replication and subscription discovery is readable.
+- Normal transfer goes through the current owner: verify the target, enter draining, reject new claims, finish or expire existing executions, then commit the new owner and incremented generation. The target starts only after that transaction replicates. Preserve idempotent retries and wrong-owner rejection; do not add automatic election or infer takeover permission from an unreachable peer.
+- Forced takeover requires the operator to power off or network-fence the old node, confirm its address, and record the audit. Before a returning node's scheduler/workers restart, require `php artisan scheduled-jobs:verify-rejoin` and application-data replication verification. Rotate the coordination secret after retiring/replacing a node.
+- Default Settings remain editable by explicit user preference; do not reintroduce `PROTECTED_DEFAULT_SETTINGS`. Normal ownership changes must use the coordination API/UI. Direct setting edits bypass draining and can create split ownership; they are not a safe handoff shortcut.
+
+### Consumer Contract
+
+- A scheduler-only `isActive()` check is insufficient. Claim execution at the actual worker/command entry point with `claimExecution(jobType, jobKey, ttlSeconds, callback)` before advancing due state or mutating application data. The claim records the current node and generation transactionally. Cover queued, manual, retry, and direct CLI paths; for LDAP, the queue payload contains the directory UUID, and the worker acquires its claim when it runs.
+- Use `withExecution(execution, callback)` around coordinated database mutations. It takes the local ownership lock and checks execution status, node, generation, and deadline before and after the write transaction. Reuse reads within one resolver decision only; every later claim/write decision must read fresh authority. Keep network I/O outside these transactions.
+- Use bounded work units and enforced worker, subprocess, and network timeouts. Claim expiry revokes authorization; it does not prove a process has stopped. Call `finishExecution()` on normal success/failure so draining can progress, and retain maintenance recovery for killed/crashed workers. Do not add heartbeat-based claim renewal.
+- LDAP advances `next_sync_at` only inside a successful claim transaction; work rejected before authorization leaves the directory due. Link `ldap_sync_runs` to its generic execution and preserve actual hostname/node/generation visibility. Keep latest-run queries timestamp-ordered; PostgreSQL does not support the previous `MAX(uuid)` approach.
+
+### Operations And Verification
+
+- Use the application's normal Laravel cache store, locally hosted Redis on these deployments; do not add a separate coordination cache-store setting. Discovery (15 seconds) and reachability (10 seconds) caches are on-demand, not background timers or ownership authority. Approval and transfer require fresh verification. No recurring database heartbeat writes.
+- `app/Console/Kernel.php` currently schedules `ldap:dispatch-due` and the separate generic `scheduled-jobs:maintain` every five minutes. Maintenance recovers expired executions and progresses pending handoffs; it does not select an owner. Finishing an execution attempts handoff completion immediately. Idle checks write no database heartbeat; actual execution, expiry, membership, and handoff transitions may write.
+- Reuse `ScheduledJobServerControl.vue` in Directory Services and the Scheduled Jobs tabs in System Settings and Contact Center Settings. Gate the control and its API actions with `scheduled_jobs_manage`, seeded only for superadmins. Show selected owner separately from actual running executions. Use manual refresh, not polling or auto-refresh; preserve dirty/focused selections. State which jobs have actually adopted coordination.
+- Run coordination migrations independently on each database and refresh both logical-replication subscriptions before enabling coordination. Keep coordination/settings and participating application tables in an ordered replication stream in each direction. Never run these migrations through `app:update` or update classes. Refer to `documentation/docs/tutorials/08-ha/04-scheduled-jobs-on-one-node.md`, `tests/Unit/ScheduledJob*Test.php`, and the opt-in disposable PostgreSQL/Redis lab `tests/Unit/run-scheduled-job-lab.sh`; distinguish focused tests from production verification.
+
+### S3 Upload Coordination
+
+- `S3UploadServerSelector` prefers a definite generic owner (including standalone); standby and draining never fall back to MAC. When coordination is unavailable or uncertain, S3 intentionally uses the enabled local `s3_upload_calls_<MAC>` switch for backward compatibility. Other coordinated jobs still fail closed. A running coordinated S3 invocation must never downgrade to MAC mode.
+- An enabled `scheduled_jobs.s3_upload_calls` row controls upload enablement globally. Until that row is enabled, any enabled true MAC switch preserves existing upload enablement. The new row ships disabled; do not silently enable archiving from storage credentials alone. Keep the existing upload time, timezone, limit, and account storage overrides.
+- The scheduler passes `--scheduled` to apply selection and enablement. Explicit user preference preserves the plain CLI command as a manual override of both checks, without coordination claims; do not gate that path. Scheduled coordinated runs claim one recording at a time (900-second claim, 840-second deadline), fence CDR mutations with `withExecution()`, and finish claims so S3 drains alongside LDAP and callbacks. Network I/O stays outside database transactions.
+- `S3RecordingArchiver` snapshots input, converts into a private temporary file, and preserves the existing archive filenames/folders by explicit user preference. Upload first, then verify remote size/checksum metadata before committing CDR references and deleting the original source. Do not add pre-upload object verification or unique filename suffixes; an existing object at the same key may be replaced. Keep CDR updates and cleanup reference checks bounded to 24 hours before and after the call. Cleanup requires a committed S3 reference, no remaining local references within that window (including other accounts), and the original source hash. Receipts in `storage/app/s3-upload-cleanup` allow cleanup retries on that server; preserve them during updates. Older receipts without call timestamps remain untouched rather than triggering unbounded CDR searches.
+- Missing recordings may be Syncthing lag: defer and report without clearing CDR references. Keep delayed replication, shared-file CDRs, object collisions, lost responses, verification retries, ownership changes, and cleanup recovery covered. Deploy on both nodes and replicate `v_xml_cdr` with coordination/settings before enabling coordinated S3. Announcements and certificates retain their specialized selection.
 
 ## Scheduled Announcements
 
@@ -141,16 +235,22 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 
 ## Updates
 
+- Whenever changing the included FusionPBX application in the separate `public/` repository, also increment its release version in `public/version.json`. This is the version used by its release workflow and the installer.
 - If an update version has shipped, do not keep editing it for new behavior. Create the next update.
 - An update should be best-effort when touching host services. App updates should not fail just because a FreeSWITCH module cannot be compiled.
+- Update classes can expose `getSupervisorProgramsToRestart()` for `UpdateApp` to restart long-running processes after code, templates, assets, and ownership are updated. The opt-in `fs-esl-listener-call-webhooks` program ships with `numprocs=0` and `autostart=true`: zero instances keeps it disabled even during `supervisorctl restart all`. Preserve an administrator's configured process count and never enable an opt-in service during an update. Horizon is already recycled with `horizon:terminate`.
 - When updates change generated dialplan XML or dialplan details, clear only the affected dialplan cache contexts.
 - Keep update console output truthful. Do not claim a module, file, or cache was refreshed unless it actually was.
 - When replacing untracked legacy files under `public/app/...`, follow the existing update pattern: download from the canonical GitHub raw URL, ensure the destination directory exists, reject empty downloads, and register the update step in `UpdateApp.php`.
 
 ## FreeSWITCH Files
 
-- New Lua scripts belong in `resources/lua`.
-- Future-install FreeSWITCH config belongs under `public/app/switch/resources/conf/...`.
+- FreeSWITCH BLF daemons, including voicemail, call flow, follow-me, and agent presence, belong under `resources/freeswitch_scripts/lua`.
+- New event-driven BLF daemons should follow the established `resources/freeswitch_scripts/lua/vm_blf.lua` structure: a simple local logger, explicit event handlers, raw `freeswitch.EventConsumer` instances, nonblocking queue drains, and a short idle sleep. Do not copy unused state or known parsing defects merely for visual parity.
+- Compact agent BLF actions use the purpose-built `resources/freeswitch_scripts/lua/agent_toggle.lua`; do not route `agent<id>` or `break<id>` through the legacy `app/agent_status` script used by `*22`, `*23`, and `*24`.
+- `resources/autoload_configs/lua.conf.xml` is the canonical future-install startup configuration. New Lua startup services must be added there and patched into `/etc/freeswitch/autoload_configs/lua.conf.xml` for existing installs.
+- Enabling a new Lua startup service requires a complete, administrator-controlled FreeSWITCH restart. Updates may patch `lua.conf.xml`, but must not start the script with `luarun`, reload `mod_lua`, or restart FreeSWITCH automatically; print the manual restart command instead.
+- Other future-install FreeSWITCH autoload config belongs under `resources/autoload_configs`; other FreeSWITCH config remains under `public/app/switch/resources/conf/...`.
 - Existing-install FreeSWITCH config usually needs to be written or patched under `/etc/freeswitch/...` from an update class.
 - Dialplan templates live under `public/app/dialplans/resources/switch/conf/dialplan`.
 - For Lua called by dialplan XML, use paths that match the FreeSWITCH runtime script directory, such as `lua/call_block.lua`.
@@ -175,6 +275,21 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 - Preserve call routing safety: avoid blocking calls from unsupported or malformed rules unless behavior is explicit.
 - Use atomic SQL for counters where concurrent calls can update the same row.
 
+## Localization
+
+- Backend and frontend share one translation catalog: `resources/lang/{locale}.json`, keyed by the literal English source string, not an invented dot-namespaced key. Wrap new UI copy with `__()`/`trans()`/`@lang()` in PHP/Blade or `$t()`/`$tChoice()`/`trans()` in Vue, then run `php artisan lang:sync` -- this not only adds the string to `resources/lang/en-us.json`, it also propagates the key to every other registered locale file automatically (see below), so a translator only ever has to fill in a blank, never chase a missing key. User-facing docs (for translators and admins, not engineering detail) live at `documentation/docs/tutorials/10-additional-information/05-translations.md`.
+- **`lang:sync` keeps every locale file's key set in sync with the source automatically.** A newly-added source key is appended to every other `resources/lang/{locale}.json` with `""` as the value (unconditional, no flag). A key no longer in source is removed from every *other* locale file unconditionally too (an orphan key can't be looked up by the running app and already hard-fails CI, so there's no reason to gate that); `--prune` additionally removes it from the source file itself, which stays opt-in since that's the bigger, less reversible call. An existing non-empty translation whose `:placeholder` tokens don't match the source string's is reset to `""` rather than left broken. `""` is the "not translated yet" marker -- `App\Support\Localization\LocaleFileLoader` (backend) and the `resolve` callback in `resources/js/vue.js` (frontend) both strip empty values before the translation library ever sees them, so a blank behaves exactly like an absent key: falls back to English, rather than rendering as blank text. This replaced Crowdin's automatic source-upload step; there's no CI equivalent by design, it's automatic the moment a dev runs the command they already had to run.
+- `resources/lang/en-us.json` is the source manifest everything else is translated against. `config('app.locale')`/`fallback_locale` are `en-us`, matching the FusionPBX `domain_setting_category=domain, subcategory=language, name=code` convention that already existed (seeded, and already read by legacy `get_domain_setting('language')`). Laravel's own framework translation files live at `resources/lang/en-us/*.php`, not `resources/lang/en/` -- don't recreate an `en/` directory.
+- Locale is a per-domain setting, not a per-user preference. `App\Http\Middleware\SetApplicationLocale` (registered in the `web` group, after `CheckFusionPBXLogin` and before `HandleInertiaRequests`) resolves it from `session('domain.language.code')`, falling back to `get_domain_setting('language')` for guests, and calls `App::setLocale()`. Like every other domain setting, a change takes effect on next login or an explicit "Reload Settings" action, not mid-session.
+- **Every locale falls back straight to `en-us` for a key it doesn't define -- there's no dialect-to-dialect inheritance.** An earlier version chained regional variants (`es-mx` -> `es-419` -> `es-es` -> `en-us`) so a variant only had to override the handful of words that differ from its parent, but that meant knowing which of several files to edit for a given string, which was confusing enough to drop (explicit user decision) in favor of every locale file being fully independent. `config/locales.php` no longer has a per-locale `fallback` key; `App\Support\Localization\LocaleRegistry::chain()` and `LocaleFileLoader`'s merge-over-chain still exist and still work (they degrade to a trivial `[en-us, locale]`), so reintroducing chaining, if ever wanted, is just adding `fallback` back to a locale's config entry, not new code. **Remember to `php artisan config:clear` after editing `config/locales.php`** -- a stale `bootstrap/cache/config.php` will silently keep serving the old fallback chain.
+- Locale codes are standard lowercased BCP-47-ish identifiers (e.g. `es-es`, `pt-br`), not invented codes.
+- A locale only appears in a domain's language picker once `LocaleRegistry::available()` reports its own keys at or above `config('locales.minimum_completion')` coverage of `en-us.json`. `ownKeys()` counts only keys with a *non-empty* value as "own" -- since `lang:sync` seeds every locale file with every key (blank where untranslated), counting bare key presence would make every locale read 100% regardless of real progress and defeat this gate entirely. Below the threshold a locale still renders correctly via fallback and can still be worked on across multiple PRs -- don't block partial translation work on this, only picker visibility.
+- `.github/workflows/validate-translations.yml` fails a PR only for invalid JSON, a key not present in `en-us.json`, or a `:placeholder` mismatch in a *non-empty* translation -- an empty value is a deliberate "not translated" marker, not a translation attempt, so it's exempt from the placeholder check. Never fails for incomplete coverage.
+- Translation is contributed directly via PR against `resources/lang/{locale}.json` -- there is no third-party translation platform (Crowdin was evaluated and dropped: their free tier caps at 60k words and the project's open-source-license application was declined). Everything above is self-contained to this repo.
+- To see a locale's untranslated keys without editing the file (or to bulk-stub them with real English text as a starting point), run `php artisan lang:missing {locale}` / `--stub`. `php .github/scripts/validate-translations.php --missing={locale}` gives the same list without needing the app bootstrapped (no `composer install`, just `php`).
+- Installed module source under `Modules/` participates in this shared catalog. `lang:sync` scans PHP/Blade and Vue/JS/MJS/TS files even when a module is disabled; dependencies, tests, generated bundles, locale files, and email templates are excluded. Missing optional modules are allowed. Legacy `/public/app/...` pages retain their separate translation system.
+- Keep translation calls statically discoverable: `$t('Literal text')` or `trans('Literal text')`. The scanner cannot extract `trans(status.label)` from a separate label map, and plain VueForm `label="Name"` does not use the shared catalog; use `:label="$t('Name')"`. Synchronizing keys does not translate their values or localize recorded audio. Run normal `lang:sync` after new module copy; reserve `--prune` for intentional removal with the relevant module source present.
+
 ## Verification
 
 - Run `php -l` on changed PHP files when practical.
@@ -184,4 +299,20 @@ This repo is a Laravel, Vue/Inertia, VueForm, and FreeSWITCH application. Before
 
 ## Included Legacy Files
 
-- Legacy admin files are included in the `/public` directory. This directory is not tracked. All updates must be made via an update file.
+- Legacy admin files live in `public/`, which is a separate Git repository and is not tracked by the main FS PBX repository. Inspect both working trees and preserve unrelated changes.
+- Deliver changes to legacy files on existing installations through an update file when that deployment work is in scope. Removing a replaced legacy app follows the procedure below; it does not automatically require an existing-system cleanup update.
+
+## Removing a Replaced Legacy App
+
+When asked to delete an old app under `public/app/{app}`, default to removing its source folder and making fresh installations independent of its `app_config.php`. Do not add cleanup for existing systems, an update class, or a main application release bump unless that work is requested.
+
+1. Read the app's `app_config.php`, menu definitions, and other install/runtime hooks before deleting it. Inventory its tables, columns, permissions, default settings, and selectable destinations. Trace the native replacement through its controller, request validation, Vue form, service, and FreeSWITCH consumers; search for callers of the old files.
+2. Move any still-required table creation into `app/Services/Install/InstallSchema.php` and call it from `ensureSchemas()`, which `FSPBXInitialDBSeed` already invokes. Match the required legacy column types, UUID primary keys, nullability, indexes, and audit fields. Guard creation with `Schema::hasTable()` so existing tables and records remain intact. Check install ordering if another setup step needs the table earlier.
+3. Do not add a Laravel migration solely to replace schema creation lost with `app_config.php`. The installer schema handles this fresh-install task; a migration needs a separate schema-change requirement. Never run migrations through `app:update` or an update class.
+4. Add permissions still used by the native feature to `DatabaseSeeder::createPermissions()` and their intended groups to `createGroupPermissions()`. Preserve existing grants and denials. Do not carry over permissions used only by deleted legacy features.
+5. Verify each legacy default setting has an actual consumer before recreating it. Follow the value all the way into the form or runtime: a controller returning a field does not prove the frontend uses it. If the native code already supplies the supported defaults, or the setting is unused, omit its seeding. Put genuinely required defaults through the existing `createDefaultSettings()` procedure; avoid a separate app-specific seeding method. If required array settings need distinct-value matching, handle that in the shared procedure while preserving existing customizations.
+6. Clean up the native controller alongside the removal: delete unused settings readers, helpers, and response fields. Use the supported action list directly when legacy setting overrides are no longer needed, keeping it consistent with request validation. Preserve existing saved destination data and runtime behavior; saved variables are separate from obsolete UI default settings.
+7. Ensure required native navigation, routing destinations, and runtime files remain available, then remove the legacy folder from the `public/` repository. Increment `public/version.json` as required for changes to that repository. Do not delete feature tables, saved records, or existing database settings as part of source removal.
+8. Run PHP lint, focused feature/install tests, and diff checks in both repositories. Where schema ownership changes, verify fresh table creation, repeated setup preserving existing records, and native saves against an isolated test database. Do not run the full installer, live seeders, or migrations merely to verify the change. Report source/test verification separately from deployment or live-call verification.
+
+Bridges is the reference example: `InstallSchema::ensureBridgesSchema()` owns `v_bridges`; native permissions live in `DatabaseSeeder`; no migration or bridge-default seeding is needed. `BridgeController` supplies its four supported actions directly and no longer returns the unused variable-settings response. `BridgeService` still preserves variables embedded in saved destinations. See `tests/Unit/BridgeInstallationTest.php` for the isolated schema and permission checks.

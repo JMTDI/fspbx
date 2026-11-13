@@ -16,6 +16,10 @@ use Illuminate\Support\Facades\Session;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Contracts\Foundation\Application;
 use App\Http\Requests\UpdateAccountSettingsRequest;
+use App\Http\Requests\UpdateMessagingSettingsRequest;
+use App\Services\Messaging\PhotoCompressionSettings;
+use App\Services\Messaging\PhotoCompressionService;
+use App\Services\Settings\AccountSettingsSchema;
 use App\Services\Settings\SettingsManagementService;
 
 class AccountSettingsController extends Controller
@@ -23,7 +27,11 @@ class AccountSettingsController extends Controller
     public $model;
     protected $viewName = 'AccountSettings';
 
-    public function __construct(private readonly SettingsManagementService $settings)
+    public function __construct(
+        private readonly SettingsManagementService $settings,
+        private readonly DomainSettingsController $domainSettingsController,
+        private readonly AccountSettingsSchema $schema,
+    )
     {
         $this->model = new Domain();
     }
@@ -34,7 +42,7 @@ class AccountSettingsController extends Controller
      * @param  Request  $request
      * @return Redirector|Response|RedirectResponse|Application
      */
-    public function index()
+    public function index(Request $request)
     {
         if (!userCheckPermission("account_settings_list_view")) {
             return redirect('/');
@@ -46,12 +54,13 @@ class AccountSettingsController extends Controller
                 'data' => function () {
                     return $this->getData();
                 },
-                'timezones' => function () {
-                    return getGroupedTimezones();
-                },
                 'routes' => [
                     'dashboard_route' => route('dashboard'),
                     'settings_update' => route('account-settings.update'),
+                    'messaging_update' => route('account-settings.messaging.update'),
+                    'messaging_reset' => route('account-settings.messaging.destroy'),
+                    'message_webhook_update' => route('account-settings.message-webhook.update'),
+                    'message_webhook_secret' => route('account-settings.message-webhook.secret'),
                     'emergency_calls' => route('emergency-calls.index'),
                     'emergency_calls_store' => route('emergency-calls.store'),
                     'emergency_calls_item_options' => route('emergency-calls.item.options'),
@@ -79,14 +88,48 @@ class AccountSettingsController extends Controller
                     'assemblyai_store_route' => route('call-transcription.assemblyai.store'),
                     'pms_provider' => route('account-settings.pms-provider'),
                     'pms_provider_update' => route('account-settings.pms-provider.update'),
+                    'call_webhook_save' => route('call-webhooks.save'),
+                    'call_webhook_show' => route('call-webhooks.show'),
+                    'call_webhook_test' => route('call-webhooks.test'),
+                    'call_webhook_rotate_secret' => route('call-webhooks.rotate-secret'),
+                    'call_webhook_destroy' => route('call-webhooks.destroy'),
 
                     //'bulk_update' => route('devices.bulk.update'),
                 ],
                 'pms_provider_options' => app(PmsProviderSettings::class)->options(),
+                'messagingSettings' => [
+                    ...app(\App\Services\Messaging\MessagingPageSettings::class)->props(session('domain_uuid')),
+                ],
+                'messageWebhookSettings' => fn () => app(\App\Services\Messaging\MessageWebhookSettings::class)
+                    ->props((string) session('domain_uuid'), \App\Services\Messaging\MessageSettingsAccess::canManage()),
+                // Schema-driven General-tab settings: the declarative field
+                // list, its resolved option lists, and this account's own
+                // override values (null = inheriting the default).
+                'settings_schema' => $this->schema->fields(),
+                'settings_options' => function () {
+                    return $this->schema->options(Domain::query()->find(session('domain_uuid')));
+                },
+                'settings_values' => function () {
+                    $domain = Domain::query()->find(session('domain_uuid'));
+
+                    return $domain ? $this->schema->values($domain) : [];
+                },
                 'permissions' => function () {
                     return $this->getUserPermissions();
                 },
+                'initial_section' => $request->string('section')->toString(),
+                'ldapDirectorySettings' => function () {
+                    return app(LdapDirectoryController::class)->accountSettingsProps();
+                },
+                'domainSettings' => function () {
+                    if (! userCheckPermission('domain_setting_view')) {
+                        return null;
+                    }
 
+                    $domain = Domain::query()->find(session('domain_uuid'));
+
+                    return $domain ? $this->domainSettingsController->pageProps($domain) : null;
+                },
             ]
         );
     }
@@ -154,7 +197,7 @@ class AccountSettingsController extends Controller
             $domain = Domain::where('domain_uuid', $data['domain_uuid'])->first();
 
             if (!$domain) {
-                throw new \Exception('Domain not found.');
+                throw new \Exception(__('Domain not found.'));
             }
 
             $domain->update([
@@ -163,77 +206,13 @@ class AccountSettingsController extends Controller
                 'domain_enabled'     => $data['domain_enabled'],
             ]);
 
-            // Apply all existing‐row updates
-            if (!empty($data['updatedSettings'])) {
-                foreach ($data['updatedSettings'] as $s) {
-                    // if the new value is NULL, we disable this setting
-                    $enabled = is_null($s['domain_setting_value'])
-                        ? false
-                        : $s['domain_setting_enabled'];
-
-                    $setting = DomainSettings::where('domain_uuid', $domain->domain_uuid)
-                        ->where('domain_setting_uuid', $s['domain_setting_uuid'])
-                        ->first();
-
-                    if (! $setting) {
-                        continue;
-                    }
-
-                    $this->settings->saveDomainOverride($domain, [
-                        'domain_setting_category' => $setting->domain_setting_category,
-                        'domain_setting_subcategory' => $setting->domain_setting_subcategory,
-                        'domain_setting_name' => $setting->domain_setting_name,
-                        'domain_setting_value' => $s['domain_setting_value'],
-                        'domain_setting_order' => $setting->domain_setting_order,
-                        'domain_setting_enabled' => $enabled,
-                        'domain_setting_description' => $setting->domain_setting_description,
-                    ], $setting);
-                }
-            }
-
-            // 3️⃣ Prepare and insert brand‐new settings in one go
-            if (!empty($data['newSettings'])) {
-                // extract the subcategories to look up
-                $subs = collect($data['newSettings'])
-                    ->pluck('domain_setting_subcategory')
-                    ->unique()
-                    ->all();
-
-                // single query to get their default definitions
-                $defaults = DB::table('v_default_settings')
-                    ->whereIn('default_setting_subcategory', $subs)
-                    ->get()
-                    ->keyBy('default_setting_subcategory');
-
-                foreach ($data['newSettings'] as $new) {
-                    $sub = $new['domain_setting_subcategory'];
-
-                    // skip any subcategory we couldn't find in defaults
-                    if (! isset($defaults[$sub])) {
-                        logger("No default_setting found for subcategory: {$sub}");
-                        continue;
-                    }
-
-                    $def = $defaults[$sub];
-
-                    $this->settings->saveDomainOverride($domain, [
-                        'domain_setting_category' => $def->default_setting_category,
-                        'domain_setting_subcategory' => $sub,
-                        'domain_setting_name' => $def->default_setting_name,
-                        'domain_setting_value' => $new['domain_setting_value'],
-                        'domain_setting_order' => $def->default_setting_order,
-                        'domain_setting_enabled' => true,
-                        'domain_setting_description' => $def->default_setting_description,
-                    ]);
-                }
-            }
-
+            $this->applySettings($domain, $data['settings'] ?? []);
 
             // Commit Transaction
             DB::commit();
 
             return response()->json([
-                'messages' => ['server' => ['Settings updated successfully.']],
+                'messages' => ['server' => [__('Settings updated successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             // Rollback Transaction if any error occurs
@@ -244,15 +223,71 @@ class AccountSettingsController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while processing your request.']]
+                'errors' => ['server' => [__('Server returned an error while processing your request.')]]
             ], 500); // 500 Internal Server Error for any other errors
+        }
+    }
+
+    /**
+     * Persist the submitted {key: value} settings map against the schema.
+     * The schema carries each field's category/subcategory/name, so there's
+     * no guessing which form fields are settings and no subcategory lookup.
+     * An empty value removes the account's own override (reverting to the
+     * inherited default); a changed value upserts it; an unchanged value is
+     * skipped so re-saving the tab writes nothing.
+     *
+     * @param array<string, mixed> $submitted
+     */
+    private function applySettings(Domain $domain, array $submitted): void
+    {
+        $fields = collect($this->schema->fields())->keyBy('key');
+
+        $existing = DomainSettings::query()
+            ->where('domain_uuid', $domain->domain_uuid)
+            ->whereIn('domain_setting_subcategory', $fields->pluck('subcategory')->all())
+            ->get();
+
+        foreach ($submitted as $key => $value) {
+            $field = $fields->get($key);
+            if (! $field) {
+                continue; // validated already; defensive against unknown keys
+            }
+
+            $value = is_string($value) ? trim($value) : $value;
+            $row = $existing->first(fn (DomainSettings $row) =>
+                $row->domain_setting_category === $field['category']
+                && $row->domain_setting_subcategory === $field['subcategory']
+                && $row->domain_setting_name === $field['name']
+            );
+
+            if ($value === null || $value === '') {
+                if ($row) {
+                    $this->settings->revertDomain($domain, [$row->domain_setting_uuid]);
+                }
+                continue;
+            }
+
+            if ($row && filter_var($row->domain_setting_enabled, FILTER_VALIDATE_BOOLEAN)
+                && (string) $row->domain_setting_value === (string) $value) {
+                continue; // unchanged
+            }
+
+            $this->settings->saveDomainOverride($domain, [
+                'domain_setting_category' => $field['category'],
+                'domain_setting_subcategory' => $field['subcategory'],
+                'domain_setting_name' => $field['name'],
+                'domain_setting_value' => $value,
+                'domain_setting_order' => $row?->domain_setting_order,
+                'domain_setting_enabled' => true,
+                'domain_setting_description' => $row?->domain_setting_description,
+            ], $row);
         }
     }
 
     public function pmsProvider(PmsProviderSettings $settings): JsonResponse
     {
         if (!userCheckPermission("account_settings_list_view")) {
-            return response()->json(['errors' => ['authorization' => ['Access denied.']]], 403);
+            return response()->json(['errors' => ['authorization' => [__('Access denied.')]]], 403);
         }
 
         return response()->json([
@@ -264,28 +299,58 @@ class AccountSettingsController extends Controller
     public function updatePmsProvider(Request $request, PmsProviderSettings $settings): JsonResponse
     {
         if (!userCheckPermission("account_settings_list_view")) {
-            return response()->json(['errors' => ['authorization' => ['Access denied.']]], 403);
+            return response()->json(['errors' => ['authorization' => [__('Access denied.')]]], 403);
         }
 
         $validated = $request->validate([
             'pms_provider' => ['required', 'string', 'in:charpms,tigertms'],
+        ], \App\Support\Localization\ValidationMessages::common(), [
+            'pms_provider' => __('Provider'),
         ]);
 
         $settings->saveProvider((string) session('domain_uuid'), $validated['pms_provider']);
 
         return response()->json([
             'provider' => $validated['pms_provider'],
-            'messages' => ['server' => ['PMS provider updated.']],
+            'messages' => ['server' => [__('PMS provider updated.')]],
+        ]);
+    }
+
+    public function updateMessaging(UpdateMessagingSettingsRequest $request, PhotoCompressionSettings $settings)
+    {
+        return response()->json([
+            ...app(\App\Services\Messaging\MessagingPageSettings::class)->save(session('domain_uuid'), $request->validated()),
+            'available' => app(PhotoCompressionService::class)->available(),
+            'messages' => ['success' => [__('Messaging settings saved.')]],
+        ]);
+    }
+
+    public function destroyMessaging(PhotoCompressionSettings $settings)
+    {
+        abort_unless(userCheckPermission('account_settings_list_view')
+            && session('domain_uuid') && \App\Services\Messaging\MessageSettingsAccess::canManage(), 403);
+
+        return response()->json([
+            ...$settings->revert(session('domain_uuid')),
+            'available' => app(PhotoCompressionService::class)->available(),
+            'messages' => ['success' => [__('Reverted to defaults.')]],
         ]);
     }
 
     public function getUserPermissions()
     {
         $permissions = [];
+        $permissions['messaging_manage'] = \App\Services\Messaging\MessageSettingsAccess::canManage();
         $permissions['location_view'] = userCheckPermission('location_view');
         $permissions['location_create'] = userCheckPermission('location_create');
+        $permissions['ldap_directory_view'] = userCheckPermission('ldap_directory_view');
         $permissions['location_update'] = userCheckPermission('location_update');
         $permissions['location_delete'] = userCheckPermission('location_delete');
+        $permissions['call_webhook_view'] = userCheckPermission('call_webhook_view');
+        $permissions['call_webhook_create'] = userCheckPermission('call_webhook_create');
+        $permissions['call_webhook_update'] = userCheckPermission('call_webhook_update');
+        $permissions['call_webhook_delete'] = userCheckPermission('call_webhook_delete');
+        $permissions['call_webhook_test'] = userCheckPermission('call_webhook_test');
 
         return $permissions;
     }

@@ -7,13 +7,16 @@ use Inertia\Inertia;
 use App\Models\Extensions;
 use Illuminate\Http\Request;
 use App\Models\MessageSetting;
-use Illuminate\Support\Facades\DB;
 use Spatie\QueryBuilder\QueryBuilder;
 use Spatie\QueryBuilder\AllowedFilter;
 use Illuminate\Support\Facades\Session;
 use App\Http\Requests\CreateMessageSettingRequest;
 use App\Http\Requests\UpdateMessageSettingRequest;
 use App\Http\Requests\BulkUpdateMessageSettingRequest;
+use App\Services\Messaging\MessageParticipantService;
+use App\Services\Messaging\MessageSettingsAccess;
+use App\Services\Messaging\MessageSettingsService;
+use App\Services\Messaging\MessageWebhookSettings;
 
 class MessageSettingsController extends Controller
 {
@@ -24,7 +27,7 @@ class MessageSettingsController extends Controller
     protected $viewName = 'MessageSettings';
     protected $searchable = ['destination', 'carrier', 'description', 'chatplan_detail_data', 'email'];
 
-    public function __construct()
+    public function __construct(private MessageSettingsService $settings)
     {
         $this->model = new MessageSetting();
     }
@@ -44,6 +47,8 @@ class MessageSettingsController extends Controller
         return Inertia::render(
             $this->viewName,
             [
+                'permissions' => ['manage' => MessageSettingsAccess::canManage(), 'opt_out_manage' => userCheckPermission('message_opt_out_manage')],
+                'webhook_available' => app(MessageWebhookSettings::class)->available(),
                 'routes' => [
                     'current_page' => route('messages.settings'),
                     'data_route' => route('messages.settings.data'),
@@ -59,6 +64,7 @@ class MessageSettingsController extends Controller
 
     public function getItemOptions()
     {
+        abort_unless(userCheckPermission('message_settings_list_view'), 403);
         try {
             $itemUuid = request('itemUuid');
 
@@ -76,8 +82,14 @@ class MessageSettingsController extends Controller
                         'chatplan_detail_data',
                         'email',
                     ])
+                    ->when(app(MessageWebhookSettings::class)->available(),
+                        fn ($query) => $query->addSelect(['inbound_delivery', 'inbound_webhook_url']))
+                    ->when(app(\App\Services\Messaging\MessageOptOutService::class)->available(), fn ($query) => $query->addSelect('opt_out_enabled'))
                     ->whereKey($itemUuid)
+                    ->whereIn('domain_uuid', MessageSettingsAccess::domains())
                     ->firstOrFail();
+
+                $item->allowed_extension_uuids = app(MessageParticipantService::class)->assigned($item)->pluck('extension_uuid')->all();
 
 
                 $routes = array_merge($routes, [
@@ -86,19 +98,11 @@ class MessageSettingsController extends Controller
             }
 
             // Define the options for the 'carrier' field
-            $carrierOptions = [
-                ['value' => 'apidaze', 'label' => 'Apidaze'],
-                ['value' => 'bandwidth', 'label' => 'Bandwidth'],
-                ['value' => 'bulkvs', 'label' => 'BulkVS'],
-                ['value' => 'clicksend', 'label' => 'ClickSend'],
-                ['value' => 'sinch', 'label' => 'Sinch'],
-                ['value' => 'telnyx', 'label' => 'Telnyx'],
-                ['value' => 'thinq', 'label' => 'Commio (ThinQ)'],
-                ['value' => 'voipms', 'label' => 'VoIP.MS'],
-            ];
+            $carrierOptions = collect(MessageSettingsService::carriers())
+                ->map(fn ($label, $value) => ['value' => $value, 'label' => $label])->values()->all();
 
             // Define the options for the 'chatplan_detail_data' field
-            $extensions = Extensions::where('domain_uuid', session('domain_uuid'))
+            $extensions = Extensions::where('domain_uuid', $item->domain_uuid ?? session('domain_uuid'))
                 ->get([
                     'extension_uuid',
                     'extension',
@@ -121,9 +125,24 @@ class MessageSettingsController extends Controller
 
             // Construct the itemOptions object
             $itemOptions = [
+                'opt_out_scope' => app(\App\Services\Messaging\MessageOptOutSettings::class)
+                    ->props($item->domain_uuid ?? session('domain_uuid'))['opt_out_effective_scope'],
+                'opt_out_available' => app(\App\Services\Messaging\MessageOptOutService::class)->available()
+                    && app(\App\Services\Messaging\MessageOptOutService::class)->eligible($item ?? new MessageSetting(['domain_uuid' => session('domain_uuid')])),
+                'opt_out_route' => isset($item) && userCheckPermission('message_opt_out_manage')
+                    ? route('messages.opt-outs.index', ['setting' => $item->getKey()]) : null,
+                'webhook' => [
+                    ...app(MessageWebhookSettings::class)
+                        ->props($webhookDomain = (string) ($item->domain_uuid ?? session('domain_uuid'))),
+                    // The secret itself is fetched on demand, and only by users who may manage this number.
+                    'secret_route' => MessageSettingsAccess::canManage($webhookDomain)
+                        ? route('account-settings.message-webhook.secret') : null,
+                    'domain_uuid' => $webhookDomain,
+                ],
                 'item' => $item ?? null,
                 'carrier' => $carrierOptions,
                 'chatplan_detail_data' => $chatplanDetailDataOptions,
+                'extensions' => $extensions->map(fn ($ext) => ['value' => $ext->extension_uuid, 'label' => $ext->name_formatted])->values(),
                 'routes' => $routes,
                 // Define options for other fields as needed
             ];
@@ -134,13 +153,14 @@ class MessageSettingsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to get item details']]
+                'errors' => ['server' => [__('Failed to get item details')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
 
     public function getData()
     {
+        abort_unless(userCheckPermission('message_settings_list_view'), 403);
 
         $perPage = 50;
         $currentDomain = session('domain_uuid');
@@ -156,6 +176,7 @@ class MessageSettingsController extends Controller
         }
 
         $data = QueryBuilder::for(MessageSetting::class)
+            ->whereIn('domain_uuid', MessageSettingsAccess::domains())
             ->select([
                 'sms_destination_uuid',
                 'destination',
@@ -167,6 +188,9 @@ class MessageSettingsController extends Controller
                 'domain_uuid',
 
             ])
+            ->when(app(MessageWebhookSettings::class)->available(),
+                fn ($query) => $query->addSelect(['inbound_delivery', 'inbound_webhook_url']))
+            ->when(app(\App\Services\Messaging\MessageOptOutService::class)->available(), fn ($query) => $query->addSelect('opt_out_enabled'))
             ->with('domain:domain_uuid,domain_name,domain_description')
             ->allowedFilters([
                 AllowedFilter::callback('search', function ($query, $value) {
@@ -198,7 +222,7 @@ class MessageSettingsController extends Controller
         $rows = $data->getCollection();
 
         if (request('filter.showGlobal')) {
-            $domainUuids = Session::get('domains')->pluck('domain_uuid');
+            $domainUuids = MessageSettingsAccess::domains();
             $extensions = Extensions::whereIn('domain_uuid', $domainUuids)
                 ->get(['domain_uuid', 'extension', 'effective_caller_id_name']);
         } else {
@@ -207,13 +231,23 @@ class MessageSettingsController extends Controller
         }
 
         foreach ($rows as $destination) {
+            $autoReplies = app(\App\Services\Messaging\MessageAutoReplyService::class);
+            $destination->auto_replies_available = $autoReplies->available() && $autoReplies->eligible($destination);
+            $destination->auto_replies_route = route('messages.auto-replies.index', ['setting' => $destination->getKey()]);
+            $optOuts = app(\App\Services\Messaging\MessageOptOutService::class);
+            $destination->opt_out_available = $optOuts->available() && $optOuts->eligible($destination);
+            $destination->opt_out_route = route('messages.opt-outs.index', ['setting' => $destination->getKey()]);
             $match = $extensions->first(function ($ext) use ($destination) {
                 return $ext->domain_uuid === $destination->domain_uuid
                     && $ext->extension === $destination->chatplan_detail_data;
             });
 
             $destination->extension = $match;
+            $destination->allowed_extensions = app(MessageParticipantService::class)->assigned($destination)
+                ->map(fn ($ext) => ['value' => $ext->extension_uuid, 'label' => $ext->name_formatted])->values();
         }
+
+        app(MessageWebhookSettings::class)->describe($rows);
 
         // Set modified collection back into paginator
         $data->setCollection($rows);
@@ -242,26 +276,23 @@ class MessageSettingsController extends Controller
         if (!$setting) {
             return response()->json([
                 'success' => false,
-                'errors' => ['model' => ['Item not found']]
+                'errors' => ['model' => [__('Item not found')]]
             ], 404);
         }
 
         try {
-            DB::beginTransaction();
-
-            $setting->update($inputs);
-
-            DB::commit();
+            $this->settings->update($setting, $inputs);
 
             return response()->json([
-                'messages' => ['success' => ['Settings updated succesfully.']]
+                'messages' => ['success' => [__('Settings updated successfully.')]]
             ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
-            DB::rollBack();
             logger('MesssageSettingsController@update error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update this device']]
+                'errors' => ['server' => [__('Failed to update message settings.')]]
             ], 500);
         }
     }
@@ -277,22 +308,18 @@ class MessageSettingsController extends Controller
         $data = $request->validated();
 
         try {
-            DB::beginTransaction();
-
-            $newSetting = new MessageSetting($data);
-            $newSetting->save();
-
-            DB::commit();
+            $this->settings->create($data['domain_uuid'], $data);
 
             return response()->json([
-                'messages' => ['success' => ['Request processed successfully.']]
+                'messages' => ['success' => [__('Request processed successfully.')]]
             ], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
-            DB::rollBack();
-            logger('DeviceController@store error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            logger('MessageSettingsController@store error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to create device']]
+                'errors' => ['server' => [__('Failed to create message settings.')]]
             ], 500);
         }
     }
@@ -305,9 +332,10 @@ class MessageSettingsController extends Controller
      */
     public function selectAll()
     {
+        abort_unless(userCheckPermission('message_settings_list_view'), 403);
         try {
             if (request()->get('showGlobal')) {
-                $uuids = $this->model::get($this->model->getKeyName())->pluck($this->model->getKeyName());
+                $uuids = $this->model::whereIn('domain_uuid', MessageSettingsAccess::domains())->pluck($this->model->getKeyName());
             } else {
                 $uuids = $this->model::where('domain_uuid', session('domain_uuid'))
                     ->get($this->model->getKeyName())->pluck($this->model->getKeyName());
@@ -315,7 +343,7 @@ class MessageSettingsController extends Controller
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['All items selected']],
+                'messages' => ['success' => [__('All items selected')]],
                 'items' => $uuids,
             ], 200);
         } catch (\Exception $e) {
@@ -323,13 +351,13 @@ class MessageSettingsController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to select all items']]
+                'errors' => ['server' => [__('Failed to select all items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
 
         return response()->json([
             'success' => false,
-            'errors' => ['server' => ['Failed to select all items']]
+            'errors' => ['server' => [__('Failed to select all items')]]
         ], 500); // 500 Internal Server Error for any other errors
     }
 
@@ -339,36 +367,31 @@ class MessageSettingsController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
-    public function BulkDelete()
+    public function destroy(MessageSetting $setting)
     {
+        abort_unless(MessageSettingsAccess::canManage($setting->domain_uuid), 403);
+        $this->settings->delete([$setting->domain_uuid], [$setting->sms_destination_uuid]);
+
+        return response()->json([
+            'messages' => ['success' => [__('All selected items have been deleted successfully.')]],
+        ]);
+    }
+
+    public function bulkDelete()
+    {
+        abort_unless(MessageSettingsAccess::canManage(), 403);
         try {
-            // Begin Transaction
-            DB::beginTransaction();
-
-            // Retrieve all items
-            $items = $this->model::whereIn('sms_destination_uuid', request('items'))->get();
-
-            foreach ($items as $item) {
-
-                // Delete the item itself
-                $item->delete();
-            }
-
-            // Commit Transaction
-            DB::commit();
+            $this->settings->delete(MessageSettingsAccess::domains(), request('items', []));
 
             return response()->json([
-                'messages' => ['server' => ['All selected items have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected items have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
-            // Rollback Transaction if any error occurs
-            DB::rollBack();
-
             logger('MessageSettingsControler@bulkDelete error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
 
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Server returned an error while deleting the selected items.']]
+                'errors' => ['server' => [__('Server returned an error while deleting the selected items.')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -384,34 +407,36 @@ class MessageSettingsController extends Controller
 
         try {
             // Prepare the data for updating
-            $updateData = collect(request()->all())->only([
+            $updateData = collect($request->validated())->only([
                 'carrier',
                 'chatplan_detail_data',
+                'allowed_extension_uuids',
                 'email',
                 'description'
             ])->filter(function ($value) {
                 return $value !== null;
             })->toArray();
 
-            $updated = MessageSetting::whereIn('sms_destination_uuid', request()->items)
-                ->update($updateData);
+            $this->settings->bulkUpdate(MessageSettingsAccess::domains(), $request->validated('items'), $updateData);
 
             // Return a JSON response indicating success
             return response()->json([
-                'messages' => ['success' => ['Selected items updated']],
+                'messages' => ['success' => [__('Selected items updated')]],
             ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             logger($e->getMessage());
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update selected items']]
+                'errors' => ['server' => [__('Failed to update selected items')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
 
         return response()->json([
             'success' => false,
-            'errors' => ['server' => ['Failed to update selected items']]
+            'errors' => ['server' => [__('Failed to update selected items')]]
         ], 500); // 500 Internal Server Error for any other errors
     }
 }

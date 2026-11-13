@@ -1,5 +1,5 @@
 <template>
-    <PageWithSideMenu title="Account Settings" :navigation="navigation" :pages="pages" :header-icon="Cog6ToothIcon"
+    <PageWithSideMenu :title="$t('Account Settings')" :navigation="navigation" :pages="pages" :header-icon="Cog6ToothIcon"
         :initial-menu-option="initialMenuOption" @update-selected-menu-option="handleUpdateSelectedMenuOption">
 
         <template #default="{ selectedMenuOption }">
@@ -7,7 +7,7 @@
             <!-- GENERAL -->
             <section v-show="selectedMenuOption === 'general'">
                 <Vueform ref="form$" :endpoint="submitForm" @success="handleSuccess" @error="handleError"
-                    @response="handleResponse" :display-errors="false">
+                    @response="handleResponse" :display-errors="false" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
                     <template #empty>
 
                         <div class="lg:grid lg:grid-cols-12 lg:gap-x-5">
@@ -17,29 +17,42 @@
 
                                     <!-- General Tab -->
 
-                                    <StaticElement name="general_tab_label" tag="h4" content="General" />
+                                    <StaticElement name="general_tab_label" tag="h4" :content="$t('General')" />
                                     <HiddenElement name="domain_uuid" :meta="true" />
-                                    <ToggleElement name="domain_enabled" text="Account Status" />
-                                    <TextElement name="domain_description" label="Account Name"
-                                        placeholder="Enter Account Name" :floating="false" :columns="{
+                                    <ToggleElement name="domain_enabled" :text="$t('Account Status')" />
+                                    <TextElement name="domain_description" :label="$t('Account Name')"
+                                        :placeholder="$t('Enter Account Name')" :floating="false" :columns="{
                                             sm: {
                                                 container: 6,
                                             },
                                         }" />
-                                    <TextElement name="domain_name" label="Domain" :readonly="true" :columns="{
+                                    <TextElement name="domain_name" :label="$t('Domain')" :readonly="true" :columns="{
                                         sm: {
                                             container: 6,
                                         },
                                     }" />
-                                    <SelectElement name="time_zone" :groups="true" :items="timezones" :search="true"
-                                        :native="false" label="Time Zone" input-type="search" autocomplete="off"
-                                        placeholder="Select Time Zone" :floating="false" :strict="false" :columns="{
-                                            sm: {
-                                                container: 6,
-                                            },
-                                        }" />
+                                    <!-- Schema-driven account settings, one group at a time.
+                                         Add a field in AccountSettingsSchema and it renders here. -->
+                                    <template v-for="group in settingGroups" :key="group">
+                                        <StaticElement :name="`settings_group_${group}`" tag="h4" :content="group" />
+                                        <template v-for="field in settingsByGroup[group]" :key="field.key">
+                                            <SelectElement v-if="field.type === 'select'" :name="field.key"
+                                                :label="field.label" :items="settings_options[field.options] ?? []"
+                                                :groups="!!field.grouped" :search="!!field.searchable" :native="false"
+                                                input-type="search" autocomplete="off" :placeholder="field.placeholder"
+                                                :floating="false" :strict="false" :info="field.info || undefined"
+                                                :description="field.description || undefined"
+                                                :columns="{ sm: { container: 6 } }" />
+                                            <TextElement v-else-if="field.type === 'text'" :name="field.key"
+                                                :label="field.label" :placeholder="field.placeholder" :floating="false"
+                                                :info="field.info || undefined" :description="field.description || undefined"
+                                                :columns="{ sm: { container: 6 } }" />
+                                            <ToggleElement v-else-if="field.type === 'toggle'" :name="field.key"
+                                                :text="field.label" />
+                                        </template>
+                                    </template>
 
-                                    <ButtonElement name="general_submit" button-label="Save" :submits="true"
+                                    <ButtonElement name="general_submit" :button-label="$t('Save')" :submits="true"
                                         align="right" />
 
 
@@ -51,13 +64,23 @@
                 </Vueform>
             </section>
 
+            <!-- MESSAGING -->
+            <section v-show="selectedMenuOption === 'messaging'">
+                <MessagingSettingsForm :settings="messagingSettings" :route="routes.messaging_update"
+                    :secret-route="routes.message_webhook_secret"
+                    :reset-route="routes.messaging_reset"
+                    :can-manage="permissions?.messaging_manage"
+                    @success="messages => showNotification('success', messages)"
+                    @error="messages => showNotification('error', messages)" />
+            </section>
+
             <!-- LOCATIONS -->
             <section v-show="selectedMenuOption === 'locations'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Locations"
-                        description="Locations help you group your users and resources within your organization. When you assign users to specific locations, they will only be able to see the resources that belong to those locations." />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Locations')"
+                        :description="$t('Locations help you group your users and resources within your organization. When you assign users to specific locations, they will only be able to see the resources that belong to those locations.')" />
 
-                    <ButtonElement name="add_location" button-label="Add Location" align="right"
+                    <ButtonElement name="add_location" :button-label="$t('Add Location')" align="right"
                         @click="handleAddLocationButtonClick" :loading="addLocationButtonLoading"
                         :conditions="[() => permissions?.location_create]" />
                     <GroupElement name="container_1" />
@@ -67,11 +90,31 @@
                     @edit-item="handleUpdateLocationButtonClick" @delete-item="handleDeleteLocationButtonClick" />
             </section>
 
+            <!-- ACTIVE DIRECTORY -->
+            <section v-if="ldapDirectorySettings && permissions?.ldap_directory_view"
+                v-show="selectedMenuOption === 'active_directory'">
+                <LdapDirectorySettings :settings="ldapDirectorySettings"
+                    @success="messages => showNotification('success', messages)"
+                    @error="messages => showNotification('error', messages)" />
+            </section>
+
+            <!-- ADVANCED -->
+            <section v-if="selectedMenuOption === 'advanced' && props.domainSettings">
+                <DomainSettingsPanel v-bind="props.domainSettings" embedded />
+            </section>
+
+            <!-- CALL WEBHOOKS -->
+            <section v-if="permissions?.call_webhook_view" v-show="selectedMenuOption === 'call_webhooks'">
+                <CallWebhookSettingsForm :trigger="callWebhookTrigger" :routes="routes"
+                    :permissions="permissions" @success="messages => showNotification('success', messages)"
+                    @error="handleErrorResponse" />
+            </section>
+
             <!-- AUTO PROVISIONING -->
             <section v-show="selectedMenuOption === 'auto_provisioning'">
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Auto Provisioning"
-                        description="Manage your auto provisioning templates." />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Auto Provisioning')"
+                        :description="$t('Manage your auto provisioning templates.')" />
 
                     <GroupElement name="container_1" />
                 </Vueform>
@@ -95,18 +138,18 @@
             <!-- ROOM MANAGEMENT -->
             <section v-show="selectedMenuOption === 'room_management'">
                 <Vueform ref="pmsProviderForm$" :endpoint="submitPmsProviderForm" @success="handlePmsProviderSuccess"
-                    @error="handleError" @response="handleResponse" :display-errors="false">
-                    <StaticElement name="pms_provider_title" tag="h4" content="Hotel PMS Provider"
-                        description="Select which PMS integration to use." />
-                    <SelectElement name="pms_provider" label="Provider" :items="pmsProviderOptions" :native="false"
+                    @error="handleError" @response="handleResponse" :display-errors="false" @mounted="(form) => form.disableValidation()" @submit="clearServerFormErrors">
+                    <StaticElement name="pms_provider_title" tag="h4" :content="$t('Hotel PMS Provider')"
+                        :description="$t('Select which PMS integration to use.')" />
+                    <SelectElement name="pms_provider" :label="$t('Provider')" :items="pmsProviderOptions" :native="false"
                         :search="false" :floating="false" :columns="{
                             sm: {
                                 container: 6,
                             },
                         }" />
-                    <ButtonElement name="pms_provider_submit" button-label="Save PMS Provider" :submits="true"
+                    <ButtonElement name="pms_provider_submit" :button-label="$t('Save PMS Provider')" :submits="true"
                         align="right" />
-                    <StaticElement name="room_management_title" tag="h4" content="Room Management" description="" />
+                    <StaticElement name="room_management_title" tag="h4" :content="$t('Room Management')" description="" />
                 </Vueform>
 
                 <RoomManagement :trigger="roomManagementTrigger" :routes="routes" :permissions="permissions"
@@ -116,7 +159,7 @@
             <!-- ROOM STATUS -->
             <section v-show="selectedMenuOption === 'room_status'">
                 <Vueform>
-                    <StaticElement name="room_management_title" tag="h4" content="Room Status" description="" />
+                    <StaticElement name="room_management_title" tag="h4" :content="$t('Room Status')" description="" />
                     <GroupElement name="container_1" />
                 </Vueform>
 
@@ -128,7 +171,7 @@
             <section v-show="selectedMenuOption === 'emergency_calls'">
 
                 <Vueform>
-                    <StaticElement name="locations_title" tag="h4" content="Emergency Calls" description="" />
+                    <StaticElement name="locations_title" tag="h4" :content="$t('Emergency Calls')" description="" />
 
 
                     <GroupElement name="container_1" />
@@ -161,9 +204,9 @@
 
             <ConfirmationModal :show="showDeleteLocationConfirmationModal"
                 @close="showDeleteLocationConfirmationModal = false" @confirm="confirmDeleteLocationAction"
-                :header="'Confirm Deletion'" :loading="isDeleteLocationLoading"
-                :text="'This action will permanently delete the selected location. Are you sure you want to proceed?'"
-                confirm-button-label="Delete" cancel-button-label="Cancel" />
+                :header="$t('Confirm Deletion')" :loading="isDeleteLocationLoading"
+                :text="$t('This action will permanently delete the selected location. Are you sure you want to proceed?')"
+                :confirm-button-label="$t('Delete')" :cancel-button-label="$t('Cancel')" />
 
         </template>
 
@@ -172,13 +215,16 @@
 </template>
 
 <script setup>
-import { ref, onMounted, markRaw } from 'vue'
+import { clearServerFormErrors } from '../composables/serverFormErrors.js';
+import { trans } from '@i18n';
+import { ref, computed, onMounted, markRaw } from 'vue'
 import PageWithSideMenu from '../Layouts/PageWithSideMenu.vue'
 import Notification from "./components/notifications/Notification.vue";
 import EmergencyCalls from "./components/EmergencyCalls.vue";
 import AutoProvisioning from "./components/AutoProvisioning.vue";
 import RoomManagement from "./components/RoomManagement.vue";
 import RoomStatus from "./components/RoomStatus.vue";
+import DomainSettingsPanel from "./DomainSettings.vue";
 import EmergencyServiceStatus from "./components/EmergencyServiceStatus.vue";
 import Locations from "./components/Locations.vue";
 import CreateLocationModal from "./components/modal/CreateLocationModal.vue"
@@ -187,6 +233,9 @@ import ConfirmationModal from "./components/modal/ConfirmationModal.vue";
 import GraphicEqIcon from "@icons/GraphicEqIcon.vue"
 import CallTranscriptionOptionsForm from "./components/forms/CallTranscriptionOptionsForm.vue"
 import AssemblyAiForm from "./components/forms/AssemblyAiForm.vue"
+import CallWebhookSettingsForm from "./components/forms/CallWebhookSettingsForm.vue"
+import LdapDirectorySettings from "./components/LdapDirectorySettings.vue"
+import MessagingSettingsForm from "./components/forms/MessagingSettingsForm.vue"
 import {
     Cog6ToothIcon,
     MapPinIcon,
@@ -195,7 +244,11 @@ import {
     KeyIcon,
     BellAlertIcon,
     ClipboardDocumentCheckIcon,
+    AdjustmentsHorizontalIcon,
     AdjustmentsVerticalIcon,
+    ArrowPathRoundedSquareIcon,
+    ServerStackIcon,
+    ChatBubbleLeftRightIcon,
 } from '@heroicons/vue/24/outline'
 
 const props = defineProps({
@@ -203,24 +256,61 @@ const props = defineProps({
         type: Object,
         default: () => ({}) // Providing an empty object as default
     },
-    timezones: Object,
     routes: Object,
     permissions: Object,
+    messagingSettings: { type: Object, default: () => ({ enabled: false, available: false }) },
+    messageWebhookSettings: { type: Object, default: () => ({ available: false }) },
     pms_provider_options: {
         type: Array,
         default: () => [],
     },
-
+    // Declarative account-setting fields (from AccountSettingsSchema), the
+    // resolved option lists they reference, and this account's own override
+    // values keyed by field. The General tab renders and saves from these.
+    settings_schema: {
+        type: Array,
+        default: () => [],
+    },
+    settings_options: {
+        type: Object,
+        default: () => ({}),
+    },
+    settings_values: {
+        type: Object,
+        default: () => ({}),
+    },
+    domainSettings: {
+        type: Object,
+        default: null,
+    },
+    initial_section: {
+        type: String,
+        default: '',
+    },
+    ldapDirectorySettings: {
+        type: Object,
+        default: null,
+    },
 })
 
 const pages = [
-    { name: 'Dashboard', href: props.routes.dashboard_route, current: true },
-    { name: 'Account Settings', href: '#', current: true },
+    { name: trans('Dashboard'), href: props.routes.dashboard_route, current: true },
+    { name: trans('Account Settings'), href: '#', current: true },
 ]
 
 // State for collapsible navigation
 const initialMenuOption = ref(null)
 const form$ = ref(null)
+
+// Group the schema fields for grouped rendering in the General tab.
+const settingsByGroup = computed(() => {
+    const map = {}
+    ;(props.settings_schema ?? []).forEach((field) => {
+        ;(map[field.group] ??= []).push(field)
+    })
+    return map
+})
+const settingGroups = computed(() => Object.keys(settingsByGroup.value))
 const pmsProviderForm$ = ref(null)
 const isLocationsLoading = ref(false)
 const isDeleteLocationLoading = ref(false)
@@ -235,6 +325,7 @@ const confirmDeleteLocationAction = ref(null);
 const autoProvisioningTrigger = ref(false)
 const roomManagementTrigger = ref(false)
 const roomStatusTrigger = ref(false)
+const callWebhookTrigger = ref(false)
 const pmsProviderOptions = props.pms_provider_options?.length
     ? props.pms_provider_options
     : [
@@ -250,49 +341,68 @@ const handleUpdateSelectedMenuOption = (key) => {
         getPmsProvider()
     }
     if (key === 'room_status') roomStatusTrigger.value = !roomStatusTrigger.value
+    if (key === 'call_webhooks') callWebhookTrigger.value = !callWebhookTrigger.value
 }
 
 const navigation = [
-    { key: 'general', name: 'General', icon: Cog6ToothIcon },
-    { key: 'locations', name: 'Locations', icon: MapPinIcon },
-    { key: 'auto_provisioning', name: 'Auto Provisioning', icon: WrenchScrewdriverIcon },
+    { key: 'general', name: trans('General'), icon: Cog6ToothIcon },
+    { key: 'messaging', name: trans('Messaging'), icon: ChatBubbleLeftRightIcon },
+    { key: 'locations', name: trans('Locations'), icon: MapPinIcon },
+    ...(props.ldapDirectorySettings && props.permissions?.ldap_directory_view
+        ? [{ key: 'active_directory', name: trans('Directory Services'), icon: ServerStackIcon }]
+        : []),
+    { key: 'auto_provisioning', name: trans('Auto Provisioning'), icon: WrenchScrewdriverIcon },
+    ...(props.permissions?.call_webhook_view
+        ? [{ key: 'call_webhooks', name: trans('Call Webhooks'), icon: ArrowPathRoundedSquareIcon }]
+        : []),
     // { key: 'billing', name: 'Billing', icon: CreditCardIcon },
     {
         key: 'call_transcription',
-        name: 'Call Transcription',
+        name: trans('Call Transcription'),
         icon: markRaw(GraphicEqIcon),
         children: [
-            { key: 'transcription_options', name: 'Options', icon: markRaw(AdjustmentsVerticalIcon) },
+            { key: 'transcription_options', name: trans('Options'), icon: markRaw(AdjustmentsVerticalIcon) },
             { key: 'assemblyai', name: 'AssemblyAI', icon: markRaw(GraphicEqIcon) }
         ],
     },
     {
         key: 'hotel',
-        name: 'Hotel Management',
+        name: trans('Hotel Management'),
         icon: BuildingOffice2Icon,
         children: [
-            { key: 'room_management', name: 'Room Management', icon: KeyIcon },
-            { key: 'room_status', name: 'Room Status', icon: ClipboardDocumentCheckIcon },
-            { key: 'emergency_calls', name: 'Emergency Calls', icon: BellAlertIcon },
+            { key: 'room_management', name: trans('Room Management'), icon: KeyIcon },
+            { key: 'room_status', name: trans('Room Status'), icon: ClipboardDocumentCheckIcon },
+            { key: 'emergency_calls', name: trans('Emergency Calls'), icon: BellAlertIcon },
 
         ],
     },
+    ...(props.domainSettings ? [{ key: 'advanced', name: trans('Advanced'), icon: AdjustmentsHorizontalIcon }] : []),
 ]
 
 
 onMounted(() => {
     if (navigation.length) {
-        initialMenuOption.value = navigation[0].key
+        const requestedSectionExists = navigation.some(item =>
+            item.key === props.initial_section || item.children?.some(child => child.key === props.initial_section)
+        )
+        initialMenuOption.value = requestedSectionExists ? props.initial_section : navigation[0].key
         // handleUpdateSelectedMenuOption(navigation.value[0].key)
     }
+
+    // Each schema field is empty when the account has no override of its own,
+    // so it inherits whatever the default setting defines. Only picking a
+    // value creates an override; clearing it removes the override (see the
+    // update endpoint), so nothing here writes a redundant row.
+    const settingValues = Object.fromEntries(
+        (props.settings_schema ?? []).map((field) => [field.key, props.settings_values?.[field.key] ?? null])
+    )
 
     form$.value.update({ // updates form data
         domain_uuid: props.data.domain_uuid ?? null,
         domain_enabled: props.data.domain_enabled ?? false,
         domain_name: props.data.domain_name ?? '',
         domain_description: props.data.domain_description ?? '',
-        time_zone: props.data.named_settings.time_zone?.value ?? null,
-
+        ...settingValues,
     })
 
     form$.value.clean()
@@ -380,72 +490,27 @@ const handlePmsProviderSuccess = (response, form$) => {
 }
 
 const submitForm = async (FormData, form$) => {
-    // Using form$.requestData will EXCLUDE conditional elements and it 
-    // will submit the form as Content-Type: application/json . 
+    // form$.requestData EXCLUDES conditional elements and submits as JSON.
     const requestData = form$.requestData
 
-    // Build a lookup of original settings by subcategory
-    const originalMap = props.data.settings.reduce((map, s) => {
-        map[s.domain_setting_subcategory] = {
-            value: s.domain_setting_value,
-            category: s.domain_setting_category,
-            uuid: s.domain_setting_uuid,
-            enabled: s.domain_setting_enabled,
-        }
-        return map
-    }, {})
-
-    const updatedSettings = []
-    const newSettings = []
-
-    // Meta‐fields that are NOT “settings”
-    const metaKeys = [
-        'domain_uuid',
-        'domain_enabled',
-        'domain_description',
-        'domain_name',
-        // plus anything else your form has at top‐level
-    ]
-
-    // Handle updates to EXISTING settings
-    Object.entries(originalMap).forEach(([subcat, orig]) => {
-        // if the form actually sent us this subcat...
-        if (requestData.hasOwnProperty(subcat)) {
-            const newValue = requestData[subcat]
-            if (newValue !== orig.value) {
-                updatedSettings.push({
-                    domain_uuid: props.data.domain_uuid,
-                    domain_setting_uuid: orig.uuid,
-                    domain_setting_category: orig.category,
-                    domain_setting_subcategory: subcat,
-                    domain_setting_value: newValue,
-                    domain_setting_enabled: true,
-                })
-            }
-        }
+    // Collect every schema field into a clean {key: value} map. The backend
+    // (AccountSettingsController::applySettings) maps each key back to its
+    // domain_settings row via the schema and decides create/update/remove --
+    // empty removes the override (inherit default), a change upserts it, an
+    // unchanged value is skipped. No reverse-engineering of settings here.
+    const settings = {}
+    ;(props.settings_schema ?? []).forEach((field) => {
+        settings[field.key] = requestData[field.key] ?? null
     })
 
-    // Handle brand-new settings
-    Object.keys(requestData).forEach(key => {
-        // if it’s not one of the meta-fields AND not in originalMap
-        if (!metaKeys.includes(key) && !originalMap.hasOwnProperty(key)) {
-            newSettings.push({
-                domain_uuid: props.data.domain_uuid,
-                domain_setting_subcategory: key,
-                domain_setting_value: requestData[key],
-                domain_setting_enabled: true,
-            })
-        }
-    })
-
-    // Overwrite the “settings” payload and add “newSettings”
     const payload = {
-        ...requestData,
-        updatedSettings,
-        newSettings
+        domain_uuid: requestData.domain_uuid,
+        domain_name: requestData.domain_name,
+        domain_description: requestData.domain_description,
+        domain_enabled: requestData.domain_enabled,
+        settings,
     }
 
-    // console.log(requestData);
     return await form$.$vueform.services.axios.put(props.routes.settings_update, payload)
 };
 
@@ -470,8 +535,9 @@ const handleResponse = (response, form$) => {
     // Display custom errors for elements
     if (response?.data?.errors) {
         Object.keys(response.data.errors).forEach((elName) => {
-            if (form$.el$(elName)) {
-                form$.el$(elName).messageBag.append(response.data.errors[elName][0])
+            const field = elName.replace(/^settings\./, '')
+            if (form$.el$(field)) {
+                form$.el$(field).messageBag.append(response.data.errors[elName][0])
             }
         })
     }
@@ -494,7 +560,7 @@ const handleError = (error, details, form$) => {
         case 'prepare':
             console.log(error) // Error object
 
-            form$.messageBag.append('Could not prepare form')
+            form$.messageBag.append(trans('Could not prepare form'))
             break
 
         // Error occured because response status is outside of 2xx
@@ -514,14 +580,14 @@ const handleError = (error, details, form$) => {
         case 'cancel':
             console.log(error) // Error object
 
-            form$.messageBag.append('Request cancelled')
+            form$.messageBag.append(trans('Request cancelled'))
             break
 
         // Some other errors happened (no response object)
         case 'other':
             console.log(error) // Error object
 
-            form$.messageBag.append('Couldn\'t submit form')
+            form$.messageBag.append(trans('Couldn\'t submit form'))
             break
     }
 }
@@ -564,7 +630,7 @@ const handleErrorResponse = (error) => {
         // The request was made and the server responded with a status code
         // that falls out of the range of 2xx
         // console.log(error.response.data);
-        showNotification('error', error.response.data.errors || { request: [error.message] });
+        showNotification('error', error.response.data.errors || error.response.data.messages || { request: [error.message] });
     } else if (error.request) {
         // The request was made but no response was received
         // `error.request` is an instance of XMLHttpRequest in the browser and an instance of

@@ -3,8 +3,8 @@
 namespace App\Listeners;
 
 use App\Models\Domain;
-use App\Models\DomainSettings;
 use App\Models\DefaultSettings;
+use App\Services\MenuSelectionService;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Support\Facades\DB;
 use App\Providers\RouteServiceProvider;
@@ -77,39 +77,27 @@ class SetUpUserSession
             $group_uuids[] = $group->group_uuid;
         }
 
-        // set menu id for the user
-        $menu_uuid = DB::table('v_user_settings')
-            ->where([
-                ['user_uuid', '=', $event->user->user_uuid],
-                ['user_setting_subcategory', '=', 'menu'],
-            ])
-            ->value('user_setting_value');
-        // user_setting_value": "9c143165-fda6-4539-a607-4184eb05b065"
+        // Menus are assigned per account, falling back to the system default.
+        $activeMenu = app(MenuSelectionService::class)->forAccount($domain->domain_uuid);
 
-        // If user doesn't have a custom menu check if there is one set on the domain level
-        if (is_null($menu_uuid)) {
+        $menu_uuid = $activeMenu?->menu_uuid;
 
-            $menu_uuid = DomainSettings::where('domain_setting_category', 'domain')
-                ->where('domain_setting_subcategory', 'menu')
-                ->where('domain_uuid', $domain->domain_uuid)
-                ->where('domain_setting_enabled', true)
-                ->value('domain_setting_value');
-        }
-
-        // If domain doesn't have a custom menu assign a default one
-        if (is_null($menu_uuid)) {
-            $menu_uuid = DefaultSettings::where('default_setting_category', 'domain')
-                ->where('default_setting_subcategory', 'menu')
-                ->value('default_setting_value');
-        }
-
-        if (!is_null($menu_uuid)) {
+        if ($activeMenu) {
             Session::put('user.menu_uuid', $menu_uuid);
+            Session::put('user.menu_name', $activeMenu->menu_name);
+            Session::put('user.menu_language', $activeMenu->menu_language);
 
             // Add variables required by Fusion to built the menu
             $_SESSION['domain']['menu']['uuid'] = $menu_uuid;
             $_SESSION['domain']['language']['code'] = get_domain_setting('language');
             // $_SESSION['groups'][0]['group_name'] = Session::get('user.group_name');
+        } else {
+            Session::forget([
+                'user.menu_uuid',
+                'user.menu_name',
+                'user.menu_language',
+            ]);
+            unset($_SESSION['domain']['menu']['uuid']);
         }
 
         // Build top level menu

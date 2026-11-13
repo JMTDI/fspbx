@@ -15,6 +15,8 @@ use Spatie\QueryBuilder\AllowedFilter;
 use Illuminate\Support\Facades\Session;
 use App\Http\Requests\StoreDomainRequest;
 use App\Http\Requests\UpdateDomainRequest;
+use App\Services\SipRegistrationSummaryService;
+use Throwable;
 
 class DomainController extends Controller
 {
@@ -46,6 +48,7 @@ class DomainController extends Controller
                 'routes' => [
                     // 'current_page' => route('devices.index'),
                     'data_route' => route('domains.data'),
+                    'registration_summary' => route('domains.registration-summary'),
                     // 'store' => route('devices.store'),
                     // 'select_all' => route('devices.select.all'),
                     'bulk_delete' => route('domains.bulk.delete'),
@@ -103,6 +106,53 @@ class DomainController extends Controller
         return $domainsDto;
     }
 
+    public function registrationSummary(SipRegistrationSummaryService $registrationSummaryService)
+    {
+        abort_unless(userCheckPermission('domain_view'), 403);
+
+        $domains = Domain::query()
+            ->select(['domain_uuid', 'domain_name'])
+            ->get();
+
+        $enabledExtensionCounts = DB::table('v_extensions')
+            ->select('domain_uuid', DB::raw('COUNT(*) AS aggregate'))
+            ->where('enabled', 'true')
+            ->groupBy('domain_uuid')
+            ->pluck('aggregate', 'domain_uuid');
+
+        try {
+            $onlineCounts = $registrationSummaryService->onlineExtensionCountsByRealm();
+            $available = true;
+        } catch (Throwable $e) {
+            $message = 'DomainController@registrationSummary error: ' . $e->getMessage();
+
+            try {
+                logger($message);
+            } catch (Throwable) {
+                error_log($message);
+            }
+
+            $onlineCounts = [];
+            $available = false;
+        }
+
+        $summary = $domains->mapWithKeys(function (Domain $domain) use ($available, $enabledExtensionCounts, $onlineCounts) {
+            $realm = strtolower(trim((string) $domain->domain_name));
+
+            return [
+                $domain->domain_uuid => [
+                    'online_extensions' => $available ? (int) ($onlineCounts[$realm] ?? 0) : null,
+                    'enabled_extensions' => (int) ($enabledExtensionCounts[$domain->domain_uuid] ?? 0),
+                ],
+            ];
+        });
+
+        return response()->json([
+            'available' => $available,
+            'domains' => $summary,
+        ]);
+    }
+
     public function getItemOptions()
     {
         try {
@@ -149,7 +199,7 @@ class DomainController extends Controller
             // Handle any other exception that may occur
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to get item details']]
+                'errors' => ['server' => [__('Failed to get item details')]]
             ], 500); // 500 Internal Server Error for any other errors
         }
     }
@@ -180,9 +230,6 @@ class DomainController extends Controller
             Session::put('context', $_SESSION["domain_name"]);
             $_SESSION["context"] = $_SESSION["domain_name"];
 
-            // unset destinations belonging to old domain
-            unset($_SESSION["destinations"]["array"]);
-
             // This is a workaround to ensure the filters are reset when the domain changes.
             // Given that url()->previous() includes the filter options, it's necessary to pass a refreshed URL.
             if ($request->redirect_url) {
@@ -197,7 +244,7 @@ class DomainController extends Controller
             'status' => 200,
             'redirectUrl' => $url ?? '',
             'success' => [
-                'message' => 'Domain has been switched'
+                'message' => __('Domain has been switched')
             ]
         ]);
     }
@@ -228,9 +275,6 @@ class DomainController extends Controller
             Session::put('context', $_SESSION["domain_name"]);
             $_SESSION["context"] = $_SESSION["domain_name"];
 
-            // unset destinations belonging to old domain
-            unset($_SESSION["destinations"]["array"]);
-
             $url = getFusionPBXPreviousURL(url()->previous());
             return redirect($url);
         }
@@ -249,7 +293,7 @@ class DomainController extends Controller
 
         // Check if domains exist in session
         if (!$domains) {
-            return response()->json(['error' => 'Domains not found in session'], 404);
+            return response()->json(['error' => __('Domains not found in session')], 404);
         }
 
         // Check if search parameter is provided
@@ -308,14 +352,14 @@ class DomainController extends Controller
             $this->sessionDomainService->refreshForUser(Auth::user());
 
             return response()->json([
-                'messages' => ['success' => ['Domain created successfully.']],
+                'messages' => ['success' => [__('Domain created successfully.')]],
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
             logger('DomainController@store error: ' . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to create domain']],
+                'errors' => ['server' => [__('Failed to create domain')]],
             ], 500);
         }
     }
@@ -366,7 +410,7 @@ class DomainController extends Controller
             $this->sessionDomainService->refreshForUser(Auth::user());
 
             return response()->json([
-                'messages' => ['success' => ['Domain updated successfully.']],
+                'messages' => ['success' => [__('Domain updated successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -376,7 +420,7 @@ class DomainController extends Controller
             );
             return response()->json([
                 'success' => false,
-                'errors' => ['server' => ['Failed to update this domain']]
+                'errors' => ['server' => [__('Failed to update this domain')]]
             ], 500);
         }
     }
@@ -394,7 +438,7 @@ class DomainController extends Controller
             if (empty($items) || !is_array($items)) {
                 return response()->json([
                     'success' => false,
-                    'errors'  => ['request' => ['No domains were selected for deletion.']],
+                    'errors'  => ['request' => [__('No domains were selected for deletion.')]],
                 ], 422);
             }
 
@@ -418,7 +462,7 @@ class DomainController extends Controller
             $this->sessionDomainService->refreshForUser(Auth::user());
 
             return response()->json([
-                'messages' => ['server' => ['All selected domains have been deleted successfully.']],
+                'messages' => ['server' => [__('All selected domains have been deleted successfully.')]],
             ], 200);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -430,7 +474,7 @@ class DomainController extends Controller
 
             return response()->json([
                 'success' => false,
-                'errors'  => ['server' => ['Server returned an error while deleting the selected domains.']],
+                'errors'  => ['server' => [__('Server returned an error while deleting the selected domains.')]],
             ], 500);
         }
     }

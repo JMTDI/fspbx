@@ -2,7 +2,6 @@
 
 namespace App\Mail;
 
-use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 
 class FaxSent extends BaseMailable
@@ -16,16 +15,17 @@ class FaxSent extends BaseMailable
             ?? 'Fax sent'
                 . ($destination ? ' to ' . $destination : '')
                 . ($pages !== '' ? ' (' . $pages . ' page' . ((string) $pages === '1' ? '' : 's') . ')' : '');
-
+        $attributes['fax_date'] = $attributes['fax_date'] ?? now()->format('Y-m-d H:i');
         parent::__construct($attributes);
+        $this->useEmailTemplate('fax', 'sent');
     }
 
     public function content(): Content
     {
-        return new Content(
-            view: 'emails.fax.success',
-            text: 'emails.fax.success-text',
-        );
+        return $this->databaseTemplateContent(new Content(
+            view: 'emails.en-us.fax.sent',
+            text: 'emails.en-us.fax.sent-text',
+        ));
     }
 
     public function attachments(): array
@@ -33,13 +33,13 @@ class FaxSent extends BaseMailable
         $path = $this->attributes['attachment_path'] ?? null;
 
         if (!$path || !is_file($path)) {
-            return [];
+            return $this->attachmentsFromReferences([]);
         }
 
-        return [
-            Attachment::fromPath($path)
-                ->as($this->attributes['attachment_name'] ?? basename($path))
-                ->withMime($this->attributes['attachment_mime'] ?? 'application/pdf'),
-        ];
+        return $this->attachmentsFromReferences([[
+            'path' => $path,
+            'name' => $this->attributes['attachment_name'] ?? basename($path),
+            'mime' => $this->attributes['attachment_mime'] ?? 'application/pdf',
+        ]]);
     }
 }

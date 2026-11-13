@@ -6,6 +6,9 @@ use Carbon\Carbon;
 use App\Rules\UniqueExtension;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Rules\RoutingTarget;
+use App\Services\CallRoutingOptionsService;
+use Illuminate\Validation\Rule;
 
 class UpdateBusinessHoursRequest extends FormRequest
 {
@@ -68,67 +71,32 @@ class UpdateBusinessHoursRequest extends FormRequest
                         $start = Carbon::createFromFormat('h:i a', $from);
                         $end   = Carbon::createFromFormat('h:i a', $value);
                     } catch (\Exception $e) {
-                        return $fail("Invalid time format in slot #{$idx}.");
+                        return $fail(__('Invalid time format in slot #:index.', ['index' => $idx]));
                     }
 
                     if ($end->lte($start)) {
-                        $fail("End time must be after the start time in slot #{$idx}.");
+                        $fail(__('End time must be after the start time in slot #:index.', ['index' => $idx]));
                     }
                 },
             ],
 
 
             'time_slots.*.action' => [
-                'sometimes',
                 'required',
+                'string',
+                Rule::in(array_column((new CallRoutingOptionsService)->routingTypes, 'value')),
             ],
 
-            'time_slots.*.target' => [
-                'sometimes',
-                function ($attribute, $value, $fail) {
-                    $action = $this->input('time_slots.*.action');
-
-                    // if an action *needs* a target (i.e. it is NOT one of these),
-                    // then failback_target cannot be empty
-                    if (
-                        $action
-                        && ! in_array($action, [
-                            'company_directory',
-                            'check_voicemail',
-                            'hangup',
-                        ], true)
-                        && empty($value)
-                    ) {
-                        $fail('A target must be provided when action is selected.');
-                    }
-                },
-            ],
+            'time_slots.*.target' => [new RoutingTarget('action')],
 
             'after_hours_action' => [
                 'sometimes',
                 'required',
+                'string',
+                Rule::in(array_column((new CallRoutingOptionsService)->routingTypes, 'value')),
             ],
 
-            'after_hours_target' => [
-                'sometimes',
-                function ($attribute, $value, $fail) {
-                    $action = $this->input('after_hours_action');
-
-                    // if an action *needs* a target (i.e. it is NOT one of these),
-                    // then failback_target cannot be empty
-                    if (
-                        $action
-                        && ! in_array($action, [
-                            'company_directory',
-                            'check_voicemail',
-                            'hangup',
-                        ], true)
-                        && empty($value)
-                    ) {
-                        $fail('A target must be provided when action is selected.');
-                    }
-                },
-            ],
+            'after_hours_target' => [new RoutingTarget('after_hours_action')],
 
         ];
     }
@@ -137,10 +105,10 @@ class UpdateBusinessHoursRequest extends FormRequest
     {
         return [
             // 'ring_group_extension.ring_group_unique' => 'This number is already used',
-            'time_slots.*.time_from.required' => 'The from field is required',
-            'time_slots.*.time_to.required' => 'The to field is required',
-            'time_slots.*.weekdays.required' => 'Please select at least one day',
-            'time_slots.*.action.required' => 'The action field is required',
+            'time_slots.*.time_from.required' => __('The from field is required'),
+            'time_slots.*.time_to.required' => __('The to field is required'),
+            'time_slots.*.weekdays.required' => __('Please select at least one day'),
+            'time_slots.*.action.required' => __('The action field is required'),
         ];
     }
 

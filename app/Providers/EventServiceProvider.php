@@ -15,6 +15,7 @@ use App\Listeners\NotifySuperadminListener;
 use App\Events\ExtensionSuspendedStatusChanged;
 use App\Listeners\NotifyModelsOnGreetingDeleted;
 use App\Listeners\UpdateUserWhenExtensionIsUpdated;
+use App\Listeners\UpdateAgentWhenExtensionIsUpdated;
 use App\Listeners\SuspendUserWhenExtensionIsDeleted;
 use App\Listeners\HandleExtensionSuspendedStatusChange;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
@@ -33,10 +34,12 @@ class EventServiceProvider extends ServiceProvider
         ],
 
         ExtensionUpdated::class => [
-            UpdateUserWhenExtensionIsUpdated::class
+            UpdateUserWhenExtensionIsUpdated::class,
+            UpdateAgentWhenExtensionIsUpdated::class,
         ],
         ExtensionDeleted::class => [
-            SuspendUserWhenExtensionIsDeleted::class
+            SuspendUserWhenExtensionIsDeleted::class,
+            \App\Listeners\DeleteAgentWhenExtensionIsDeleted::class,
         ],
         ExtensionSuspendedStatusChanged::class => [
             HandleExtensionSuspendedStatusChange::class,
@@ -55,6 +58,26 @@ class EventServiceProvider extends ServiceProvider
         ],
         MessageSent::class => [
             \App\Listeners\EmailSentLogger::class,
+        ],
+        \Spatie\WebhookServer\Events\DispatchingWebhookCallEvent::class => [
+            \App\Listeners\RecordOutboundWebhookHistory::class,
+        ],
+        \Spatie\WebhookServer\Events\WebhookCallSucceededEvent::class => [
+            \App\Listeners\RecordOutboundWebhookHistory::class,
+            \App\Listeners\RecordMessageWebhookResult::class,
+            \App\Listeners\RecordCallWebhookTestResult::class,
+        ],
+        \Spatie\WebhookServer\Events\WebhookCallFailedEvent::class => [
+            \App\Listeners\RecordOutboundWebhookHistory::class,
+            \App\Listeners\RecordMessageWebhookResult::class,
+            \App\Listeners\LogCallWebhookFailure::class,
+            \App\Listeners\RecordCallWebhookTestResult::class,
+        ],
+        \Spatie\WebhookServer\Events\FinalWebhookCallFailedEvent::class => [
+            \App\Listeners\RecordOutboundWebhookHistory::class,
+            \App\Listeners\RecordMessageWebhookResult::class,
+            \App\Listeners\LogCallWebhookFailure::class,
+            \App\Listeners\RecordCallWebhookTestResult::class,
         ],
 
     ];

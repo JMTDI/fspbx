@@ -5,10 +5,13 @@ use App\Http\Controllers\AccessControlController;
 use App\Http\Controllers\ActiveConferenceController;
 use App\Http\Controllers\ActiveCallsController;
 use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\AiAgentController;
 use App\Http\Controllers\AppsController;
 use App\Http\Controllers\AppsCredentialsController;
 use App\Http\Controllers\Auth\ForgotPasswordController;
 use App\Http\Controllers\BusinessHoursController;
+use App\Http\Controllers\FlagsController;
+use App\Http\Controllers\PagingGroupsController;
 use App\Http\Controllers\BridgeController;
 use App\Http\Controllers\BasicDialerController;
 use App\Http\Controllers\BasicQueueController;
@@ -29,31 +32,36 @@ use App\Http\Controllers\DeviceCloudProvisioningController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceImportExportController;
 use App\Http\Controllers\DeviceKeyTemplateController;
+use App\Http\Controllers\DeviceProfileController;
 use App\Http\Controllers\DialplanController;
 use App\Http\Controllers\DomainController;
 use App\Http\Controllers\DomainGroupsController;
-use App\Http\Controllers\EmailQueueController;
+use App\Http\Controllers\DynamicRouteController;
+use App\Http\Controllers\EmailTemplateController;
 use App\Http\Controllers\ExtensionsController;
 use App\Http\Controllers\ExtensionStatisticsController;
 use App\Http\Controllers\FaxesController;
 use App\Http\Controllers\FaxInboxController;
 use App\Http\Controllers\FaxLogController;
-use App\Http\Controllers\FaxQueueController;
 use App\Http\Controllers\FaxSentController;
+use App\Http\Controllers\FiberneticsMmsWebhookController;
 use App\Http\Controllers\FirewallController;
 use App\Http\Controllers\GatewayController;
 use App\Http\Controllers\GroupsController;
 use App\Http\Controllers\LogsController;
+use App\Http\Controllers\LegacyProvisionTemplateController;
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\MessageMediaController;
 use App\Http\Controllers\MessageSettingsController;
+use App\Http\Controllers\MenuManagerController;
 use App\Http\Controllers\MusicOnHoldController;
 use App\Http\Controllers\PhoneNumbersController;
 use App\Http\Controllers\PinNumberController;
-use App\Http\Controllers\PolycomLogController;
 use App\Http\Controllers\PolycomProvisioningFileController;
 use App\Http\Controllers\ProFeaturesController;
 use App\Http\Controllers\ProvisioningController;
+use App\Http\Controllers\PhonebookController;
+use App\Http\Controllers\PhonebookManagerController;
 use App\Http\Controllers\RecordingsController;
 use App\Http\Controllers\RecordingsManagerController;
 use App\Http\Controllers\RegistrationsController;
@@ -70,7 +78,7 @@ use App\Http\Controllers\SwitchModuleController;
 use App\Http\Controllers\SystemController;
 use App\Http\Controllers\SystemSettingsController;
 use App\Http\Controllers\UserLogsController;
-use App\Http\Controllers\UsersController;
+use App\Http\Controllers\UserController;
 use App\Http\Controllers\VirtualReceptionistController;
 use App\Http\Controllers\VoicemailController;
 use App\Http\Controllers\VoicemailMessagesController;
@@ -92,9 +100,6 @@ use Illuminate\Support\Facades\Route;
 Route::get('/extensions/callerid', [ExtensionsController::class, 'callerID'])->withoutMiddleware(['auth'])->name('callerID');
 Route::post('/extensions/{extension}/callerid/update/', [ExtensionsController::class, 'updateCallerID'])->withoutMiddleware(['auth'])->name('updateCallerID');
 
-//Polycom log handling
-Route::put('/polycom/log/{name}', [PolycomLogController::class, 'store'])->withoutMiddleware(['auth', 'web'])->name('log.store');
-Route::get('/polycom/log/{name}', [PolycomLogController::class, 'show'])->withoutMiddleware(['auth', 'web'])->name('log.get');
 // Route::get('/extensions', [ExtensionsController::class, 'index']) ->name('extensionsList');
 
 // Webhooks
@@ -102,12 +107,17 @@ Route::webhooks('webhook/postmark', 'postmark');
 Route::webhooks('webhook/mailgun', 'mailgun');
 Route::webhooks('webhook/commio/sms', 'commio_messaging');
 Route::webhooks('webhook/sinch/sms', 'sinch_messaging');
+Route::webhooks('webhook/voxutel/sms', 'voxutel_messaging');
 Route::webhooks('webhook/bandwidth/sms', 'bandwidth_messaging');
 Route::webhooks('webhook/telnyx/sms', 'telnyx_messaging');
 Route::webhooks('webhook/clicksend/sms', 'clicksend_messaging');
 Route::webhooks('webhook/apidaze/sms', 'apidaze_messaging');
 Route::webhooks('webhook/bulkvs/sms', 'bulkvs_messaging');
 Route::webhooks('webhook/voipms/sms', 'voipms_messaging');
+Route::webhooks('webhook/fibernetics/sms', 'fibernetics_messaging', 'get');
+Route::post('webhook/fibernetics/sms', FiberneticsMmsWebhookController::class)
+    ->name('webhook.fibernetics.mms');
+Route::webhooks('webhook/twilio/sms', 'twilio_messaging');
 Route::webhooks('/sms/ringotelwebhook', 'ringotel_messaging');
 Route::webhooks('/webhook/freeswitch', 'freeswitch');
 Route::webhooks('/webhook/stripe', 'stripe');
@@ -120,11 +130,15 @@ Route::put('/email-challenge', [App\Http\Controllers\Auth\EmailChallengeControll
     ->name('email-challenge.new-code');
 Route::post('/email-challenge', [App\Http\Controllers\Auth\EmailChallengeController::class, 'store']);
 
-// Message media URL for MMS
+// Intentionally public: MMS carriers fetch these attachment URLs without a portal
+// session or credentials. The message UUID is the bearer link: anyone who obtains
+// it can read its attachments; the domain selects storage, not caller authorization.
+// Adding login middleware would break carrier delivery. Skipping the web stack also
+// keeps legacy PHP session no-store headers and file locks off these downloads.
 Route::get(
     '/messages/media/{message_uuid}/{index}/{file_name?}',
     [MessageMediaController::class, 'show']
-)->name('messages.media.show');
+)->withoutMiddleware('web')->name('messages.media.show');
 
 // Csrf token
 Route::get('/csrf-token/refresh', [CsrfTokenController::class, 'store']);
@@ -144,6 +158,15 @@ Route::match(['PUT', 'GET', 'HEAD'], '/prov/{bucket}/{id}-{kind}.{ext}', [Polyco
     ->middleware(['throttle:provision', 'provision.digest'])
     ->withoutMiddleware(['auth', 'web'])
     ->name('provision.polycom-files');
+
+// Device directory / phonebook XML. Must be registered before the /prov/{path}
+// catch-all so it is not shadowed by it.
+Route::match(['GET', 'HEAD'], '/prov/directory/{book}/{path}', [PhonebookController::class, 'serve'])
+    ->where('book', '[0-9A-Fa-f-]{36}|all')
+    ->where('path', '.*')
+    ->middleware(['throttle:provision', 'provision.digest'])
+    ->withoutMiddleware(['auth', 'web'])
+    ->name('provision.directory');
 
 Route::match(['GET', 'HEAD'], '/prov/{path}', [ProvisioningController::class, 'serve'])
     ->where('path', '.*')
@@ -195,7 +218,7 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('/domains/filter/', [DomainController::class, 'filterDomainsFusionPBX'])->name('filterDomainsFusionPBX');
 
     //Users
-    Route::get('users', [UsersController::class, 'index'])->name('users.index');
+    Route::get('users', [UserController::class, 'index'])->name('users.index');
     // Route::post('user/{user}/settings', [UserSettingsController::class, 'store'])->name('users.settings.store');
     // Route::delete('user/settings/{setting}', [UserSettingsController::class, 'destroy'])->name('users.settings.destroy');
     Route::post('user/password/email', [ForgotPasswordController::class, 'sendResetLinkEmail'])->name('users.password.email');
@@ -203,6 +226,9 @@ Route::group(['middleware' => 'auth'], function () {
     // Groups
     Route::get('groups', [GroupsController::class, 'index'])->name('groups.index');
     Route::get('groups/{group}/permissions', [GroupsController::class, 'permissionsIndex'])->name('groups.permissions.index');
+
+    // Menu Manager
+    Route::get('menus', [MenuManagerController::class, 'index'])->name('menus.index');
 
     // Domains
     Route::get('domains', [DomainController::class, 'index'])->name('domains.index');
@@ -234,10 +260,18 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('recordings-manager/{recording}/download', [RecordingsManagerController::class, 'download'])->name('recordings-manager.download');
 
     // Music on Hold
+    Route::get('streams', [\App\Http\Controllers\StreamController::class, 'index'])->name('streams.index');
     Route::get('music-on-hold', [MusicOnHoldController::class, 'index'])->name('music-on-hold.index');
     Route::get('music-on-hold/{music_on_hold}/files/{file}', [MusicOnHoldController::class, 'download'])
         ->where('file', '[^/]+')
         ->name('music-on-hold.files.download');
+
+    // Email Templates
+    Route::get('email-templates', [EmailTemplateController::class, 'index'])->name('email-templates.index');
+
+    // Legacy Provisioning Templates
+    Route::get('legacy-provision-templates', [LegacyProvisionTemplateController::class, 'index'])
+        ->name('legacy-provision-templates.index');
 
     // Modules
     Route::get('modules', [SwitchModuleController::class, 'index'])->name('modules.index');
@@ -257,6 +291,11 @@ Route::group(['middleware' => 'auth'], function () {
     // Business hours
     Route::get('business-hours', [BusinessHoursController::class, 'index'])->name('business-hours.index');
 
+    // Flags
+    Route::get('flags', [FlagsController::class, 'index'])->name('flags.index');
+    // Paging groups
+    Route::get('paging-groups', [PagingGroupsController::class, 'index'])->name('paging-groups.index');
+
     // Bridges
     Route::get('bridges', [BridgeController::class, 'index'])->name('bridges.index');
 
@@ -269,6 +308,7 @@ Route::group(['middleware' => 'auth'], function () {
 
     // Call Flows
     Route::get('call-flows', [CallFlowController::class, 'index'])->name('call-flows.index');
+    Route::get('dynamic-routes', [DynamicRouteController::class, 'index'])->name('dynamic-routes.index');
 
     // Basic Queues
     Route::get('basic-queues', [BasicQueueController::class, 'index'])->name('basic-queues.index');
@@ -280,6 +320,7 @@ Route::group(['middleware' => 'auth'], function () {
 
     // Conference Centers
     Route::get('conference-centers', [ConferenceCenterController::class, 'index'])->name('conference-centers.index');
+    Route::get('ai-agents', [AiAgentController::class, 'index'])->name('ai-agents.index');
     Route::get('conferences', [ConferenceController::class, 'index'])->name('conferences.index');
     Route::get('conference-controls', [ConferenceControlController::class, 'index'])->name('conference-controls.index');
     Route::get('conference-profiles', [ConferenceProfileController::class, 'index'])->name('conference-profiles.index');
@@ -326,6 +367,10 @@ Route::group(['middleware' => 'auth'], function () {
     Route::post('/devices/import', [DeviceImportExportController::class, 'importPreview'])->name('devices.import.preview');
     Route::post('/devices/import/commit', [DeviceImportExportController::class, 'importCommit'])->name('devices.import.commit');
     Route::get('device-key-templates', [DeviceKeyTemplateController::class, 'index'])->name('device-key-templates.index');
+    Route::get('device-profiles', [DeviceProfileController::class, 'index'])->name('device-profiles.index');
+
+    //Phonebooks
+    Route::get('phonebooks', [PhonebookManagerController::class, 'index'])->name('phonebooks.index');
 
     //Phone Numbers
     Route::get('phone-numbers', [PhoneNumbersController::class, 'index'])->name('phone-numbers.index');
@@ -343,13 +388,11 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
     //Users
-    // Route::get('/users', [UsersController::class, 'index']) ->name('usersList');
-    //Route::get('/users/create', [UsersController::class, 'createUser']) ->name('usersCreateUser');
-    //Route::get('/users/edit/{id}', [UsersController::class, 'editUser']) ->name('editUser');
-    // Route::post('/saveUser', [UsersController::class, 'saveUser']) ->name('saveUser');
-    // Route::post('/updateUser', [UsersController::class, 'updateUser']) ->name('updateUser');
-    Route::post('/deleteUser', [UsersController::class, 'deleteUser'])->name('deleteUser');
-    Route::post('/addSetting', [UsersController::class, 'addSetting'])->name('addSetting');
+    // Route::get('/users', [UserController::class, 'index']) ->name('usersList');
+    //Route::get('/users/create', [UserController::class, 'createUser']) ->name('usersCreateUser');
+    //Route::get('/users/edit/{id}', [UserController::class, 'editUser']) ->name('editUser');
+    // Route::post('/saveUser', [UserController::class, 'saveUser']) ->name('saveUser');
+    // Route::post('/updateUser', [UserController::class, 'updateUser']) ->name('updateUser');
 
 
     //Voicemails
@@ -360,25 +403,15 @@ Route::group(['middleware' => 'auth'], function () {
 
     //Apps
     Route::resource('apps', AppsController::class);
-    Route::post('apps/item-options', [AppsController::class, 'getItemOptions'])->name('apps.item.options');
-    Route::post('/apps/organization/create', [AppsController::class, 'createOrganization'])->name('apps.organization.create');
-    Route::put('/apps/organization/update', [AppsController::class, 'updateOrganization'])->name('apps.organization.update');
-    Route::post('/apps/organization/destroy', [AppsController::class, 'destroyOrganization'])->name('apps.organization.destroy');
-    Route::post('/apps/organization/all', [AppsController::class, 'getOrganizations'])->name('apps.organization.all');
-    Route::post('/apps/organization/pair', [AppsController::class, 'pairOrganization'])->name('apps.organization.pair');
     Route::post('/apps/mobile-app-options', [AppsController::class, 'getMobileAppOptions'])->name('apps.user.options');
     //Route::get('/apps/organization/update', [AppsController::class, 'updateOrganization']) ->name('appsUpdateOrganization');
-    Route::post('/apps/connection/create', [AppsController::class, 'createConnection'])->name('apps.connection.create');
-    Route::put('/apps/connection/update', [AppsController::class, 'updateConnection'])->name('apps.connection.update');
-    Route::post('/apps/connection/delete', [AppsController::class, 'destroyConnection'])->name('apps.connection.destroy');
     Route::get('/apps/connection/update', [AppsController::class, 'updateConnection'])->name('appsUpdateConnection');
-    Route::post('/apps/token/get', [AppsController::class, 'getToken'])->name('apps.token.get');
-    Route::post('/apps/token/update', [AppsController::class, 'updateToken'])->name('apps.token.update');
     Route::post('/apps/user/create', [AppsController::class, 'createUser'])->name('apps.user.create');
     Route::post('/apps/user/delete', [AppsController::class, 'deleteUser'])->name('apps.user.delete');
     Route::post('/apps/user/activate', [AppsController::class, 'activateUser'])->name('apps.user.activate');
     Route::post('/apps/user/deactivate', [AppsController::class, 'deactivateUser'])->name('apps.user.deactivate');
-    Route::post('/apps/sync-users', [AppsController::class, 'syncUsers'])->name('apps.users.sync');
+    Route::post('/apps/user/state', [AppsController::class, 'setUserState'])->name('apps.user.state');
+    Route::post('/apps/user/device/delete', [AppsController::class, 'deleteDevice'])->name('apps.user.device.delete');
     Route::post('/apps/user/reset-password', [AppsController::class, 'resetPassword'])->name('apps.user.reset');
     Route::post('/apps/users/{extension}/status', [AppsController::class, 'SetStatus'])->name('appsSetStatus');
     Route::get('/apps/email', [AppsController::class, 'emailUser'])->name('emailUser');
@@ -407,14 +440,7 @@ Route::group(['middleware' => 'auth'], function () {
 
 
 
-    // Email Queues
-    Route::get('emailqueue', [EmailQueueController::class, 'index'])->name('emailqueue.index');
-    Route::get('emailqueue/{emailQueue}/{status?}', [EmailQueueController::class, 'updateStatus'])->name('emailqueue.updateStatus');
-
     // Fax Queue
-    Route::resource('faxqueue', FaxQueueController::class);
-    Route::post('/faxqueue/retry', [FaxQueueController::class, 'retry'])->name('faxqueue.retry');
-    Route::post('/faxqueue/select-all', [FaxQueueController::class, 'selectAll'])->name('faxqueue.select.all');
 
     // Recordings
     Route::get('recordings', [RecordingsController::class, 'index'])->name('recordings.index');
@@ -427,16 +453,12 @@ Route::group(['middleware' => 'auth'], function () {
     Route::put('recordings/{recording}/{entity}/{entityid}', [RecordingsController::class, 'use'])->name('recordings.use');
 
     //Route::get('/recordings/{filename?}', [RecordingsController::class, 'getRecordings']) ->name('getRecordings');
-    //Route::delete('recordings/{filename}',[RecordingsController::class, 'destroy'])->name('faxQueue.destroy');
 
     // Activity Log
-    Route::resource('activities', ActivityLogController::class);
-    Route::post('/activities/bulk-delete', [ActivityLogController::class, 'bulkDelete'])->name('activities.bulk.delete');
-    Route::post('/activities/select-all', [ActivityLogController::class, 'selectAll'])->name('activities.select.all');
+    Route::get('activities', [ActivityLogController::class, 'index'])->name('activities.index');
 
     // Reports
     Route::get('reports', [ReportsController::class, 'index'])->name('reports.index');
-    Route::post('reports/generate', [ReportsController::class, 'store'])->name('reports.generate');
 
     // Call Routing options
     Route::post('/call-routing-options', [CallRoutingOptionsController::class, 'getRoutingOptions'])->name('routing.options');
@@ -445,47 +467,18 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('registrations', [RegistrationsController::class, 'index'])->name('registrations.index');
 
     // Sansay Registrations
-    Route::resource('sansay/registrations', SansayRegistrationsController::class)->names([
-        'index' => 'sansay.registrations.index',
-        'create' => 'sansay.registrations.create',
-        'store' => 'sansay.registrations.store',
-        'show' => 'sansay.registrations.show',
-        'edit' => 'sansay.registrations.edit',
-        'update' => 'sansay.registrations.update',
-        'destroy' => 'sansay.registrations.destroy',
-    ]);
-
-    Route::post('sansay/registrations/select-all', [SansayRegistrationsController::class, 'selectAll'])->name('sansay.registrations.select.all');
-    Route::post('sansay/registrations/delete', [SansayRegistrationsController::class, 'destroy'])->name('sansay.registrations.delete');
+    Route::get('sansay/registrations', [SansayRegistrationsController::class, 'index'])->name('sansay.registrations.index');
 
     // Sansay Active Calls
-    Route::resource('sansay/active-calls', SansayActiveCallsController::class)->names([
-        'index' => 'sansay.active-calls.index',
-        'create' => 'sansay.active-calls.create',
-        'store' => 'sansay.active-calls.store',
-        'show' => 'sansay.active-calls.show',
-        'edit' => 'sansay.active-calls.edit',
-        'update' => 'sansay.active-calls.update',
-        'destroy' => 'sansay.active-calls.destroy',
-    ]);
-
-    Route::post('sansay/active-calls/select-all', [SansayActiveCallsController::class, 'selectAll'])->name('sansay.active-calls.select.all');
-    Route::post('sansay/active-calls/delete', [SansayActiveCallsController::class, 'destroy'])->name('sansay.active-calls.delete');
+    Route::get('sansay/active-calls', [SansayActiveCallsController::class, 'index'])->name('sansay.active-calls.index');
 
     // Active Calls
     Route::get('active-conferences', [ActiveConferenceController::class, 'index'])->name('active-conferences.index');
     Route::get('active-conferences/{conference}/interactive', [ActiveConferenceController::class, 'interactive'])->name('active-conferences.interactive');
-    Route::resource('active-calls', ActiveCallsController::class);
-    Route::post('/active-calls/select-all', [ActiveCallsController::class, 'selectAll'])->name('active-calls.select.all');
-    Route::post('/active-calls/action', [ActiveCallsController::class, 'handleAction'])->name('active-calls.action');
+    Route::get('active-calls', [ActiveCallsController::class, 'index'])->name('active-calls.index');
 
     // Pro Features
-    Route::resource('pro-features', ProFeaturesController::class);
-    // Route::post('/pro-features/action', [ProFeaturesController::class, 'handleAction'])->name('pro-features.action');
-    Route::post('pro-features/item-options', [ProFeaturesController::class, 'getItemOptions'])->name('pro-features.item.options');
-    Route::post('pro-features/activate', [ProFeaturesController::class, 'activate'])->name('pro-features.activate');
-    Route::post('pro-features/install', [ProFeaturesController::class, 'install'])->name('pro-features.install');
-    Route::post('pro-features/uninstall', [ProFeaturesController::class, 'uninstall'])->name('pro-features.uninstall');
+    Route::get('pro-features', [ProFeaturesController::class, 'index'])->name('pro-features.index');
 
 
     // Cloud Provisioning
@@ -502,9 +495,7 @@ Route::group(['middleware' => 'auth'], function () {
 
 
     // Whitelisted Numbers
-    Route::resource('whitelisted-numbers', WhitelistedNumbersController::class);
-    Route::post('/whitelisted-numbers/bulk-delete', [WhitelistedNumbersController::class, 'bulkDelete'])->name('whitelisted-numbers.bulk.delete');
-    Route::post('/whitelisted-numbers/select-all', [WhitelistedNumbersController::class, 'selectAll'])->name('whitelisted-numbers.select.all');
+    Route::get('whitelisted-numbers', [WhitelistedNumbersController::class, 'index'])->name('whitelisted-numbers.index');
 });
 
 

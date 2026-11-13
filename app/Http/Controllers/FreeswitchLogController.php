@@ -5,6 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\CDR;
 use App\Models\DefaultSettings;
 use App\Services\FreeswitchEslService;
+use App\Services\FreeswitchLogCallGraph;
+use App\Services\OpenSearchFreeswitchLogService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -13,19 +16,114 @@ use Illuminate\Support\Collection;
 class FreeswitchLogController extends Controller
 {
     private const DEFAULT_LOG_DIR = '/var/log/freeswitch';
-    private const DEFAULT_SIZE_KB = 5120;
-    private const MAX_SIZE_KB = 10240;
+    private const DEFAULT_SIZE_KB = 102400;
+    private const MAX_SIZE_KB = 102400;
     private const DEFAULT_MAX_LINES = 3000;
     private const MAX_LINES = 5000;
     private const DEFAULT_CORRELATION_PADDING_MINUTES = 5;
     private const MAX_CORRELATION_PADDING_MINUTES = 60;
     private const MAX_SIP_TRACE_BLOCK_LINES = 180;
 
+    public function externalIndex(Request $request, OpenSearchFreeswitchLogService $openSearch): JsonResponse
+    {
+        if (! userCheckPermission('log_view')) {
+            return response()->json([
+                'messages' => ['error' => [__('Permission denied.')]],
+            ], 403);
+        }
+
+        if (! $openSearch->configured()) {
+            return response()->json([
+                'messages' => ['error' => [__('OpenSearch external log search is not configured.')]],
+            ], 503);
+        }
+
+        $request->merge([
+            'whole_call' => filter_var(
+                $request->input('whole_call', true),
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            ) ?? true,
+        ]);
+
+        $validated = $request->validate([
+            'seed_uuid' => ['nullable', 'string', 'max:255'],
+            'whole_call' => ['nullable', 'boolean'],
+            'search' => ['nullable', 'string', 'max:255'],
+            'level' => ['nullable', 'string', 'in:all,debug,info,notice,warning,err,crit,alert'],
+            'max_lines' => ['nullable', 'integer', 'min:1', 'max:' . self::MAX_LINES],
+            'sort' => ['nullable', 'string', 'in:asc,desc'],
+            'correlation_padding_minutes' => ['nullable', 'integer', 'min:1', 'max:' . self::MAX_CORRELATION_PADDING_MINUTES],
+        ]);
+
+        $seed = trim((string) ($validated['seed_uuid'] ?? ''));
+        $wholeCall = (bool) ($validated['whole_call'] ?? true);
+        $paddingMinutes = (int) ($validated['correlation_padding_minutes'] ?? self::DEFAULT_CORRELATION_PADDING_MINUTES);
+        $correlation = $seed !== ''
+            ? $this->correlateCall($seed, $wholeCall, $paddingMinutes)
+            : $this->emptyCorrelation();
+        $identifiers = collect($correlation['uuids'])
+            ->merge($correlation['sip_call_ids'])
+            ->filter()
+            ->unique()
+            ->values();
+        $maxLines = (int) ($validated['max_lines'] ?? self::DEFAULT_MAX_LINES);
+        $sort = $validated['sort'] ?? 'asc';
+
+        try {
+            $result = $openSearch->search(
+                identifiers: $identifiers,
+                textSearch: trim((string) ($validated['search'] ?? '')),
+                level: $validated['level'] ?? 'all',
+                timeWindow: $correlation['time_window'],
+                maxLines: $maxLines,
+                sort: $sort,
+            );
+        } catch (ConnectionException $e) {
+            report($e);
+
+            return response()->json([
+                'messages' => ['error' => [__('External FreeSWITCH logs are temporarily unavailable.')]],
+            ], 503);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'messages' => ['error' => [
+                    $openSearch->configured()
+                        ? __('External FreeSWITCH log search failed.')
+                        : __('OpenSearch external log search is not configured.'),
+                ]],
+            ], $openSearch->configured() ? 502 : 503);
+        }
+
+        return response()->json([
+            'lines' => $result['lines'],
+            'correlation' => $correlation,
+            'filters' => [
+                'whole_call' => $wholeCall,
+                'max_lines' => $maxLines,
+                'sort' => $sort,
+                'level' => $validated['level'] ?? 'all',
+                'correlation_padding_minutes' => $paddingMinutes,
+            ],
+            'meta' => [
+                'matched_lines' => $result['matched_lines'],
+                'returned_lines' => $result['returned_lines'],
+                'truncated_matches' => $result['matched_lines'] > $result['returned_lines'],
+                'took_ms' => $result['took_ms'],
+                'timed_out' => $result['timed_out'],
+                'index' => config('services.opensearch_logs.index'),
+                'errors' => [],
+            ],
+        ]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         if (! userCheckPermission('log_view')) {
             return response()->json([
-                'messages' => ['error' => ['Permission denied.']],
+                'messages' => ['error' => [__('Permission denied.')]],
             ], 403);
         }
 
@@ -46,7 +144,7 @@ class FreeswitchLogController extends Controller
                 'lines' => [],
                 'correlation' => $this->emptyCorrelation(),
                 'meta' => [
-                    'errors' => ['No FreeSWITCH log files were found.'],
+                    'errors' => [__('No FreeSWITCH log files were found.')],
                     'log_dir' => $this->visibleLogDirectory($logDirectory),
                 ],
             ]);
@@ -64,7 +162,7 @@ class FreeswitchLogController extends Controller
             'correlation_padding_minutes' => ['nullable', 'integer', 'min:1', 'max:' . self::MAX_CORRELATION_PADDING_MINUTES],
         ]);
 
-        $selectedFile = $validated['log_file'] ?? 'freeswitch.log';
+        $selectedFile = $validated['log_file'] ?? 'all';
         $filesToSearch = $this->selectedFiles($approvedFiles, $selectedFile);
 
         if ($filesToSearch->isEmpty()) {
@@ -73,7 +171,7 @@ class FreeswitchLogController extends Controller
                 'lines' => [],
                 'correlation' => $this->emptyCorrelation($validated['seed_uuid'] ?? null),
                 'meta' => [
-                    'errors' => ['The selected log file is not available.'],
+                    'errors' => [__('The selected log file is not available.')],
                     'log_dir' => $this->visibleLogDirectory($logDirectory),
                 ],
             ], 422);
@@ -100,7 +198,11 @@ class FreeswitchLogController extends Controller
             sizeKb: (int) ($validated['size_kb'] ?? self::DEFAULT_SIZE_KB),
             maxLines: (int) ($validated['max_lines'] ?? self::DEFAULT_MAX_LINES),
             sort: $validated['sort'] ?? 'asc',
+            discoverLegs: $wholeCall && $seed !== '',
         );
+
+        $correlation['uuids'] = array_values(array_unique(array_merge($correlation['uuids'], $result['discovered']['uuids'])));
+        $correlation['sip_call_ids'] = array_values(array_unique(array_merge($correlation['sip_call_ids'], $result['discovered']['sip_call_ids'])));
 
         return response()->json([
             'files' => $this->fileOptions($approvedFiles),
@@ -130,7 +232,7 @@ class FreeswitchLogController extends Controller
     {
         if (! userCheckPermission('log_view')) {
             return response()->json([
-                'messages' => ['error' => ['Permission denied.']],
+                'messages' => ['error' => [__('Permission denied.')]],
             ], 403);
         }
 
@@ -140,7 +242,7 @@ class FreeswitchLogController extends Controller
 
         if (! $eslService->isConnected()) {
             return response()->json([
-                'messages' => ['error' => ['FreeSWITCH event socket is unavailable.']],
+                'messages' => ['error' => [__('FreeSWITCH event socket is unavailable.')]],
             ], 503);
         }
 
@@ -161,7 +263,7 @@ class FreeswitchLogController extends Controller
 
                     return response()->json([
                         'messages' => [
-                            'error' => ['FreeSWITCH returned an error.'],
+                            'error' => [__('FreeSWITCH returned an error.')],
                             'error_1' => [$this->cleanEslError((string) $response)],
                         ],
                     ], 500);
@@ -179,8 +281,8 @@ class FreeswitchLogController extends Controller
             'messages' => [
                 'success' => [
                     $enabled
-                        ? 'SIP packet logging enabled.'
-                        : 'SIP packet logging disabled.',
+                        ? __('SIP packet logging enabled.')
+                        : __('SIP packet logging disabled.'),
                 ],
             ],
             'enabled' => $enabled,
@@ -243,7 +345,7 @@ class FreeswitchLogController extends Controller
             ])
             ->prepend([
                 'value' => 'all',
-                'label' => 'All rotated logs',
+                'label' => __('All local logs'),
                 'size' => $files->sum('size'),
                 'modified_at' => null,
                 'readable' => $files->contains(fn ($file) => $file['readable']),
@@ -480,53 +582,42 @@ class FreeswitchLogController extends Controller
         int $sizeKb,
         int $maxLines,
         string $sort,
+        bool $discoverLegs = false,
     ): array {
         $limitBytes = min(max($sizeKb, 1), self::MAX_SIZE_KB) * 1024;
         $maxLines = min(max($maxLines, 1), self::MAX_LINES);
         $lines = [];
         $errors = [];
         $bytesRead = 0;
+        $matchedLines = 0;
+        $discovered = ['uuids' => [], 'sip_call_ids' => []];
+
+        if ($discoverLegs && $searchTerms->isNotEmpty()) {
+            $graph = new FreeswitchLogCallGraph();
+            // Discover before filtering, across rotations, so later links also
+            // recover the first INVITE and all earlier messages for a leg.
+            foreach ($files as $file) {
+                $entries = $this->readLogEntries($file, $limitBytes) ?? [];
+                $graph->addEntries($entries, $this->sipTraceBlocks($entries));
+            }
+            $discovered = $graph->discover($searchTerms);
+            $searchTerms = $searchTerms->merge($discovered['uuids'])->merge($discovered['sip_call_ids'])->unique()->values();
+            unset($entries, $graph);
+        }
 
         foreach ($files as $file) {
             if (! $file['readable']) {
-                $errors[] = $file['basename'] . ' is not readable by the web server.';
+                $errors[] = __(':file is not readable by the web server.', ['file' => $file['basename']]);
                 continue;
             }
 
-            $handle = @fopen($file['path'], 'rb');
-            if (! $handle) {
-                $errors[] = 'Unable to open ' . $file['basename'] . '.';
+            $entries = $this->readLogEntries($file, $limitBytes);
+            if ($entries === null) {
+                $errors[] = __('Unable to open :file.', ['file' => $file['basename']]);
                 continue;
             }
 
-            $fileSize = $file['size'];
-            $offset = max($fileSize - $limitBytes, 0);
-
-            if ($offset > 0) {
-                fseek($handle, $offset);
-                fgets($handle);
-            }
-
-            $lineNumber = 0;
-            $entries = [];
-
-            while (($line = fgets($handle)) !== false) {
-                $lineNumber++;
-                $bytesRead += strlen($line);
-                $line = rtrim($line, "\r\n");
-
-                $parsed = $this->parseLine($line);
-                $entries[] = [
-                    'file' => $file['basename'],
-                    'line_number' => $lineNumber,
-                    'timestamp' => $parsed['timestamp'],
-                    'level' => $parsed['level'],
-                    'message' => $line,
-                    'matched_terms' => [],
-                ];
-            }
-
-            fclose($handle);
+            $bytesRead += min($file['size'], $limitBytes);
 
             $sipTraceBlocks = $this->sipTraceBlocks($entries);
             $included = [];
@@ -551,16 +642,16 @@ class FreeswitchLogController extends Controller
                     $included[$lineKey] = true;
                     $entries[$blockIndex]['matched_terms'] = $this->matchedTerms($entries[$blockIndex]['message'], $searchTerms);
                     $lines[] = $entries[$blockIndex];
+                    $matchedLines++;
+
+                    if (count($lines) > $maxLines) {
+                        array_shift($lines);
+                    }
                 }
             }
         }
 
-        $matchedLines = count($lines);
         $truncated = $matchedLines > $maxLines;
-
-        if ($truncated) {
-            $lines = array_slice($lines, -$maxLines);
-        }
 
         if ($sort === 'desc') {
             $lines = array_reverse($lines);
@@ -572,7 +663,40 @@ class FreeswitchLogController extends Controller
             'matched_lines' => $matchedLines,
             'truncated_matches' => $truncated,
             'errors' => $errors,
+            'discovered' => $discovered,
         ];
+    }
+
+    private function readLogEntries(array $file, int $limitBytes): ?array
+    {
+        $handle = $file['readable'] ? @fopen($file['path'], 'rb') : false;
+        if (! $handle) {
+            return null;
+        }
+
+        $offset = max($file['size'] - $limitBytes, 0);
+        if ($offset > 0) {
+            fseek($handle, $offset);
+            fgets($handle);
+        }
+
+        $entries = [];
+        // Stop at the snapshotted size even if the live log keeps growing.
+        while (ftell($handle) < $file['size'] && ($line = fgets($handle)) !== false) {
+            $line = rtrim($line, "\r\n");
+            $parsed = $this->parseLine($line);
+            $entries[] = [
+                'file' => $file['basename'],
+                'line_number' => count($entries) + 1,
+                'timestamp' => $parsed['timestamp'],
+                'level' => $parsed['level'],
+                'message' => $line,
+                'matched_terms' => [],
+            ];
+        }
+        fclose($handle);
+
+        return $entries;
     }
 
     private function sipTraceBlocks(array $entries): array
@@ -633,7 +757,8 @@ class FreeswitchLogController extends Controller
 
     private function isTimestampedLogLine(string $line): bool
     {
-        return (bool) preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[[A-Z]+\]/', $line);
+        return $this->parseLine($line)['timestamp'] !== null
+            || (bool) preg_match('/^(?:[0-9a-fA-F-]{36}\s+)?(?:EXECUTE\b|Dialplan:)/', $line);
     }
 
     private function eslResponseFailed($response): bool
@@ -643,12 +768,12 @@ class FreeswitchLogController extends Controller
 
     private function cleanEslError(string $message): string
     {
-        return trim(preg_replace('/^-ERR\s*/', '', $message)) ?: 'FreeSWITCH returned no response.';
+        return trim(preg_replace('/^-ERR\s*/', '', $message)) ?: __('FreeSWITCH returned no response.');
     }
 
     private function parseLine(string $line): array
     {
-        preg_match('/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/', $line, $timestampMatch);
+        preg_match('/^(?:[0-9a-fA-F-]{36}\s+)?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/', $line, $timestampMatch);
         preg_match('/\[(DEBUG|INFO|NOTICE|WARNING|ERR|CRIT|ALERT)\]/i', $line, $levelMatch);
 
         return [

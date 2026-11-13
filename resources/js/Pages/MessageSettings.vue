@@ -3,7 +3,7 @@
 
     <div class="m-3">
         <DataTable @search-action="handleSearchButtonClick" @reset-filters="handleFiltersReset">
-            <template #title>Message Settings</template>
+            <template #title>{{ $t('Message Settings') }}</template>
 
             <template #filters>
                 <div class="relative min-w-64 focus-within:z-10 mb-2 sm:mr-4">
@@ -13,28 +13,28 @@
                     <input type="text" v-model="filterData.search" name="mobile-search-candidate"
                         id="mobile-search-candidate"
                         class="block w-full rounded-md border-0 py-1.5 pl-10 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:hidden"
-                        placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                        :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
                     <input type="text" v-model="filterData.search" name="desktop-search-candidate"
                         id="desktop-search-candidate"
                         class="hidden w-full rounded-md border-0 py-1.5 pl-10 text-sm leading-6 text-gray-900 ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:block"
-                        placeholder="Search" @keydown.enter="handleSearchButtonClick" />
+                        :placeholder="$t('Search')" @keydown.enter="handleSearchButtonClick" />
                 </div>
             </template>
 
             <template #action>
-                <button type="button" @click.prevent="handleCreateButtonClick()"
+                <button v-if="permissions.manage" type="button" @click.prevent="handleCreateButtonClick()"
                     class="rounded-md bg-indigo-600 px-2.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                    Create
+                    {{ $t('Create') }}
                 </button>
 
                 <button v-if="!showGlobal" type="button" @click.prevent="handleShowGlobal()"
                     class="rounded-md bg-white px-2.5 py-1.5 ml-2 sm:ml-4 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
-                    Show global
+                    {{ $t('Show global') }}
                 </button>
 
                 <button v-if="showGlobal" type="button" @click.prevent="handleShowLocal()"
                     class="rounded-md bg-white px-2.5 py-1.5 ml-2 sm:ml-4 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
-                    Show local
+                    {{ $t('Show local') }}
                 </button>
             </template>
 
@@ -47,38 +47,40 @@
 
 
             <template #table-header>
-                <TableColumnHeader header="Phone Number"
+                <TableColumnHeader :header="$t('Phone Number')"
                     class="flex whitespace-nowrap px-4 py-3.5 text-left text-sm font-semibold text-gray-900 items-center justify-start">
                     <input type="checkbox" v-model="selectPageItems" @change="handleSelectPageItems"
                         class="h-4 w-4 rounded border-gray-300 text-indigo-600">
-                    <span class="pl-4">Phone Number</span>
+                    <span class="pl-4">{{ $t('Phone Number') }}</span>
                 </TableColumnHeader>
-                <TableColumnHeader v-if="showGlobal" header="Domain"
+                <TableColumnHeader v-if="showGlobal" :header="$t('Domain')"
                     class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
 
-                <TableColumnHeader header="Carrier" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Assigned Extension"
+                <TableColumnHeader :header="$t('Carrier')" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
+                <TableColumnHeader v-if="webhook_available" :header="$t('Incoming messages')"
                     class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Assigned Email"
+                <TableColumnHeader :header="$t('Members')"
                     class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Description"
+                <TableColumnHeader :header="$t('Assigned Email')"
                     class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
-                <TableColumnHeader header="Action" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
+                <TableColumnHeader :header="$t('Description')"
+                    class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
+                <TableColumnHeader :header="$t('Action')" class="px-2 py-3.5 text-left text-sm font-semibold text-gray-900" />
             </template>
 
             <template v-if="selectPageItems" v-slot:current-selection>
                 <td colspan="9">
                     <div class="text-sm text-center m-2">
-                        <span class="font-semibold ">{{ selectedItems.length }} </span> items are selected.
+                        {{ $tChoice('{1} :count item is selected.|[0,*] :count items are selected.', selectedItems.length) }}
                         <button v-if="!selectAll && selectedItems.length != data.total"
                             class="text-blue-500 rounded py-2 px-2 hover:bg-blue-200  hover:text-blue-500 focus:outline-none focus:ring-1 focus:bg-blue-200 focus:ring-blue-300 transition duration-500 ease-in-out"
                             @click="handleSelectAll">
-                            Select all {{ data.total }} items
+                            {{ $tChoice('{1} Select all :count item|[0,*] Select all :count items', data.total) }}
                         </button>
                         <button v-if="selectAll"
                             class="text-blue-500 rounded py-2 px-2 hover:bg-blue-200  hover:text-blue-500 focus:outline-none focus:ring-1 focus:bg-blue-200 focus:ring-blue-300 transition duration-500 ease-in-out"
                             @click="handleClearSelection">
-                            Clear selection
+                            {{ $t('Clear selection') }}
                         </button>
                     </div>
                 </td>
@@ -90,10 +92,11 @@
                         :text="row.destination_formatted">
                         <input v-if="row.destination" v-model="selectedItems" type="checkbox" name="action_box[]"
                             :value="row.sms_destination_uuid" class="h-4 w-4 rounded border-gray-300 text-indigo-600">
-                        <div class="ml-4 cursor-pointer hover:text-gray-900"
+                        <button v-if="permissions.manage" type="button" class="ml-4 cursor-pointer hover:text-gray-900"
                             @click="handleEditButtonClick(row.sms_destination_uuid)">
                             {{ row.destination_formatted }}
-                        </div>
+                        </button>
+                        <span v-else class="ml-4">{{ row.destination_formatted }}</span>
                         <ejs-tooltip :content="tooltipCopyContent" position='TopLeft' class="ml-2"
                             @click="handleCopyToClipboard(row.destination)" target="#destination_tooltip_target">
                             <div id="destination_tooltip_target">
@@ -113,21 +116,39 @@
                         </ejs-tooltip>
                     </TableField>
                     <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500" :text="row.carrier" />
-                    <TableField class="flex whitespace-nowrap px-2 py-2 text-sm text-gray-500"
-                        :text="row.extension ? row.extension.name_formatted : row.chatplan_detail_data">
-                        <template #action-buttons>
-                            <Warning v-if="!row.extension && !row.chatplan_detail_data == ''"
-                                class="ml-2 h-5 w-5 text-amber-500" />
-                        </template>
+                    <TableField v-if="webhook_available" class="px-2 py-2 text-sm text-gray-500">
+                        <span v-if="!row.delivery || row.delivery.type === 'members'">{{ $t('Members') }}</span>
+                        <div v-else class="flex flex-col items-start gap-1">
+                            <Badge :text="row.delivery.type === 'custom' ? $t('Custom webhook') : $t('Account webhook')"
+                                backgroundColor="bg-indigo-50" textColor="text-indigo-700" ringColor="ring-indigo-600/20" />
+                            <span class="block max-w-[16rem] truncate text-xs" :title="row.delivery.url">{{ row.delivery.url }}</span>
+                        </div>
                     </TableField>
+                    <TableField class="px-2 py-2 text-sm text-gray-500"
+                        :text="(row.allowed_extensions || []).map(ext => ext.label).join(', ') || '—'" />
                     <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500" :text="row.email" />
                     <TableField class="whitespace-nowrap px-2 py-2 text-sm text-gray-500" :text="row.description" />
                     <TableField class="whitespace-nowrap text-sm text-gray-500">
 
                         <template #action-buttons>
-
                             <div class="flex items-center whitespace-nowrap">
-                                <ejs-tooltip :content="'Edit'" position='TopCenter'
+                            <button v-if="permissions.manage && row.auto_replies_available" type="button"
+                                :title="$t('Auto-replies')" :aria-label="$t('Auto-replies')"
+                                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                @click="autoReplyTarget = { route: row.auto_replies_route, destination: row.destination_formatted }">
+                                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M20 14a3 3 0 0 1-3 3H9l-5 4V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8Z M10 7l-3 3 3 3 M7 10h6a3 3 0 0 1 3 3" />
+                                </svg>
+                            </button>
+                            <button v-if="permissions.opt_out_manage && row.opt_out_available" type="button"
+                                :title="$t('Manage opt-outs')" :aria-label="$t('Manage opt-outs')"
+                                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                @click="openOptOuts({ route: row.opt_out_route, destination: row.destination_formatted })">
+                                <MinusCircleIcon class="h-5 w-5" />
+                            </button>
+
+                            <div v-if="permissions.manage" class="flex items-center whitespace-nowrap">
+                                <ejs-tooltip :content="$t('Edit')" position='TopCenter'
                                     target="#destination_tooltip_target">
                                     <div id="destination_tooltip_target">
                                         <PencilSquareIcon @click="handleEditButtonClick(row.sms_destination_uuid)"
@@ -136,13 +157,14 @@
                                     </div>
                                 </ejs-tooltip>
 
-                                <ejs-tooltip :content="'Delete'" position='TopCenter'
+                                <ejs-tooltip :content="$t('Delete')" position='TopCenter'
                                     target="#destination_tooltip_target">
                                     <div id="destination_tooltip_target">
                                         <TrashIcon @click="handleSingleItemDeleteRequest(row.sms_destination_uuid)"
                                             class="h-9 w-9 transition duration-500 ease-in-out py-2 rounded-full text-gray-400 hover:bg-gray-200 hover:text-gray-600 active:bg-gray-300 active:duration-150 cursor-pointer" />
                                     </div>
                                 </ejs-tooltip>
+                            </div>
                             </div>
                         </template>
                     </TableField>
@@ -152,9 +174,9 @@
                 <!-- Conditional rendering for 'no records' message -->
                 <div v-if="data.data.length === 0" class="text-center my-5 ">
                     <MagnifyingGlassIcon class="mx-auto h-12 w-12 text-gray-400" />
-                    <h3 class="mt-2 text-sm font-semibold text-gray-900">No results found</h3>
+                    <h3 class="mt-2 text-sm font-semibold text-gray-900">{{ $t('No results found') }}</h3>
                     <p class="mt-1 text-sm text-gray-500">
-                        Adjust your search and try again.
+                        {{ $t('Adjust your search and try again.') }}
                     </p>
                 </div>
             </template>
@@ -177,10 +199,12 @@
         @success="showNotification" :loading="isModalLoading" />
 
     <UpdateMessageSettingsForm :show="showUpdateModal" :options="itemOptions" :loading="isModalLoading"  @refresh-data="handleSearchButtonClick"
+        @manage-opt-outs="openOptOuts"
+        @error="error => showNotification('error', error.response.data.errors)"
         @success="showNotification" @close="showUpdateModal = false" />
 
 
-    <AddEditItemModal :show="bulkUpdateModalTrigger" :header="'Bulk Edit'" :loading="isModalLoading"
+    <AddEditItemModal :show="bulkUpdateModalTrigger" :header="$t('Bulk Edit')" :loading="isModalLoading"
         @close="handleModalClose">
         <template #modal-body>
             <BulkUpdateMessageSettingsForm :items="selectedItems" :options="itemOptions" :errors="formErrors"
@@ -188,6 +212,19 @@
         </template>
     </AddEditItemModal>
 
+    <AddEditItemModal :show="!!optOutTarget" :header="$t('Manage opt-outs')" @close="optOutTarget = null">
+        <template #modal-body>
+            <MessageOptOutsForm v-if="optOutTarget" :key="optOutTarget.route" v-bind="optOutTarget"
+                @success="messages => showNotification('success', messages)" @error="messages => showNotification('error', messages)" />
+        </template>
+    </AddEditItemModal>
+    <AddEditItemModal :show="!!autoReplyTarget" :header="$t('Auto-replies')" @close="autoReplyTarget = null">
+        <template #modal-body>
+            <MessageAutoRepliesForm v-if="autoReplyTarget" :key="autoReplyTarget.route" v-bind="autoReplyTarget"
+                @success="messages => { showNotification('success', messages); autoReplyTarget = null; }"
+                @error="messages => showNotification('error', messages)" />
+        </template>
+    </AddEditItemModal>
     <DeleteConfirmationModal :show="showConfirmationModal" @close="showConfirmationModal = false"
         @confirm="confirmDeleteAction" />
         
@@ -198,7 +235,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import MessageOptOutsForm from './components/forms/MessageOptOutsForm.vue';
+import MessageAutoRepliesForm from './components/forms/MessageAutoRepliesForm.vue';
+import { MinusCircleIcon } from '@heroicons/vue/24/outline';
+import { trans } from '@i18n';
+import { ref, onMounted, computed } from "vue";
 import axios from 'axios';
 import DataTable from "./components/general/DataTable.vue";
 import TableColumnHeader from "./components/general/TableColumnHeader.vue";
@@ -211,6 +252,7 @@ import UpdateMessageSettingsForm from "./components/forms/UpdateMessageSettingsF
 import CreateMessageSettingsForm from "./components/forms/CreateMessageSettingsForm.vue";
 import BulkUpdateMessageSettingsForm from "./components/forms/BulkUpdateMessageSettingsForm.vue";
 import Loading from "./components/general/Loading.vue";
+import Badge from "./components/general/Badge.vue";
 import { registerLicense } from '@syncfusion/ej2-base';
 import { MagnifyingGlassIcon, TrashIcon, PencilSquareIcon } from "@heroicons/vue/24/solid";
 import { ClipboardDocumentIcon } from "@heroicons/vue/24/outline";
@@ -238,7 +280,10 @@ const bulkUpdateFormSubmiting = ref(null);
 const formErrors = ref(null);
 const confirmDeleteAction = ref(null);
 const itemOptions = ref([])
-let tooltipCopyContent = ref('Copy to Clipboard');
+const optOutTarget = ref(null);
+const autoReplyTarget = ref(null);
+const openOptOuts = target => { optOutTarget.value = target; };
+let tooltipCopyContent = ref(trans('Copy to Clipboard'));
 const data = ref({
     data: [],
     prev_page_url: null,
@@ -254,6 +299,8 @@ const data = ref({
 
 const props = defineProps({
     routes: Object,
+    permissions: { type: Object, default: () => ({}) },
+    webhook_available: { type: Boolean, default: false },
 });
 
 onMounted(() => {
@@ -267,18 +314,18 @@ const filterData = ref({
 
 const showGlobal = ref(false);
 
-const bulkActions = ref([
-    // {
-    //     id: 'bulk_update',
-    //     label: 'Edit',
-    //     icon: 'PencilSquareIcon'
-    // },
+const bulkActions = computed(() => props.permissions.manage ? [
+    {
+        id: 'bulk_update',
+        label: trans('Edit'),
+        icon: 'PencilSquareIcon'
+    },
     {
         id: 'bulk_delete',
-        label: 'Delete',
+        label: trans('Delete'),
         icon: 'TrashIcon'
     },
-]);
+] : []);
 
 const handleSelectPageItems = () => {
     if (selectPageItems.value) {
@@ -314,9 +361,9 @@ const handleCopyToClipboard = (value) => {
     // Use regular expression to remove any non-digit characters
     value = value.replace(/\D/g, '');
     navigator.clipboard.writeText(value).then(() => {
-        tooltipCopyContent.value = 'Copied'
+        tooltipCopyContent.value = trans('Copied')
         setTimeout(() => {
-            tooltipCopyContent.value = 'Copy to Clipboard'
+            tooltipCopyContent.value = trans('Copy to Clipboard')
         }, 500);
     }).catch((error) => {
         // Handle the error case
@@ -348,6 +395,8 @@ const handleBulkUpdateRequest = (form) => {
         })
         .catch((error) => {
             bulkUpdateFormSubmiting.value = false;
+            formErrors.value = error.response?.data?.errors || null;
+            if (!formErrors.value) handleErrorResponse(error);
         });
 }
 
@@ -430,6 +479,7 @@ const getItemOptions = async (itemUuid = null) => {
 }
 
 const handleEditButtonClick = (itemUuid) => {
+    if (!props.permissions.manage) return;
     getItemOptions(itemUuid);
 }
 

@@ -10,7 +10,7 @@
     ],
     "info": {
         "name": "FS PBX",
-        "_postman_id": "a89a284c-f8a7-4188-9bdc-0bf891c36118",
+        "_postman_id": "2f830185-b2c8-48d2-8cd8-2dd69c1f291e",
         "description": "",
         "schema": "https:\/\/schema.getpostman.com\/json\/collection\/v2.1.0\/collection.json"
     },
@@ -312,7 +312,7 @@
                                 {
                                     "key": "status",
                                     "value": "answered",
-                                    "description": "Optional. Filter by status. Accepted values: answered, no answer, cancelled, voicemail, missed call, abandoned.",
+                                    "description": "Optional. Filter by status. Accepted values: answered, no answer, cancelled, voicemail, missed call, abandoned, queue_exited, queue_timeout, queue_other, callback_requested.",
                                     "disabled": false
                                 },
                                 {
@@ -362,7 +362,7 @@
                             }
                         ],
                         "body": null,
-                        "description": "Returns CDRs for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `xml_cdr_view` permission.\n\nPagination (cursor-based):\n- Both `limit` and `starting_after` are optional.\n- If `limit` is not provided, it defaults to 500.\n- If `starting_after` is not provided, results start from the beginning.\n- If `has_more` is true, request the next page by passing `starting_after`\n  equal to the last item's `xml_cdr_uuid` from the previous response.\n\nOptional filters:\n- `search` matches caller\/destination fields and status.\n- `direction` filters by call direction.\n- `status` filters by call status.\n  Accepted values: `answered`, `no answer`, `cancelled`, `voicemail`,\n  `missed call`, `abandoned`.\n- `extension_uuid` filters by extension UUID.\n- `call_center_queue_uuid` filters by queue UUID.\n- `date_from` and `date_to` filter by `start_epoch` in epoch seconds.\n\nExamples:\n- First page: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs`\n- Next page:  `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?starting_after={last_xml_cdr_uuid}`\n- Custom size: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?limit=25`\n- Search: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?search=2135551212`\n- Date range (epoch): `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?date_from=1775001600&date_to=1775087999`"
+                        "description": "Returns CDRs for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `xml_cdr_view` permission.\n\nPagination (cursor-based):\n- Both `limit` and `starting_after` are optional.\n- If `limit` is not provided, it defaults to 500.\n- If `starting_after` is not provided, results start from the beginning.\n- If `has_more` is true, request the next page by passing `starting_after`\n  equal to the last item's `xml_cdr_uuid` from the previous response.\n\nOptional filters:\n- `search` matches caller\/destination fields and status.\n- `direction` filters by call direction.\n- `status` filters by call status.\n  Accepted values: `answered`, `no answer`, `cancelled`, `voicemail`,\n  `missed call`, `abandoned`, `queue_exited`, `queue_timeout`, `queue_other`, `callback_requested`.\nQueue exits and timeouts have their own effective status, including calls that later reach voicemail.\nThe `voicemail` filter selects messages left independently of the queue status.\n- `extension_uuid` filters by extension UUID.\n- `call_center_queue_uuid` filters by queue UUID.\n- `date_from` and `date_to` filter by `start_epoch` in epoch seconds.\n\nExamples:\n- First page: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs`\n- Next page:  `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?starting_after={last_xml_cdr_uuid}`\n- Custom size: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?limit=25`\n- Search: `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?search=2135551212`\n- Date range (epoch): `GET \/api\/v1\/domains\/{domain_uuid}\/cdrs?date_from=1775001600&date_to=1775087999`"
                     },
                     "response": [
                         {
@@ -780,7 +780,7 @@
                         ],
                         "body": {
                             "mode": "raw",
-                            "raw": "{\"device_address\":\"0004f23a5bc7\",\"serial_number\":\"8603123456789\",\"device_profile_uuid\":\"51759db8-c8bf-4b2f-b48a-6577d7ad6a1a\",\"device_template\":\"Yealink T46U\",\"device_template_uuid\":\"a6cf59ba-4b2b-4bdd-b870-35cc55bca146\",\"device_description\":\"Reception desk device\",\"device_lines\":[[]]}"
+                            "raw": "{\"device_address\":\"0004f23a5bc7\",\"serial_number\":\"8603123456789\",\"device_profile_uuid\":\"51759db8-c8bf-4b2f-b48a-6577d7ad6a1a\",\"device_template\":\"Yealink T46U\",\"device_template_uuid\":\"a6cf59ba-4b2b-4bdd-b870-35cc55bca146\",\"device_keys\":[],\"phonebook_mode\":\"default\",\"phonebook_uuids\":[\"66529e01-d113-3473-8d6f-9e11e09332ea\"],\"device_description\":\"Reception desk device\",\"device_lines\":[[]]}"
                         },
                         "description": "Creates a new device in the specified domain.\n\nNotes:\n- `device_template` is deprecated and retained for backward compatibility.\n- Use `device_template_uuid` as its successor."
                     },
@@ -1190,7 +1190,7 @@
                         {
                             "header": [],
                             "code": 400,
-                            "body": "{\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"message\": \"Please enter a domain label.\",\n    \"code\": \"invalid_parameter\",\n    \"param\": \"domain_description\",\n    \"doc_url\": \"https:\/\/www.fspbx.com\/docs\/api\/v1\/errors\/\"\n  }\n}",
+                            "body": "{\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"message\": \"Please enter a domain label.\",\n    \"code\": \"invalid_parameter\",\n    \"param\": \"domain_description\"\n  }\n}",
                             "name": "Validation error"
                         },
                         {
@@ -1750,6 +1750,979 @@
             ]
         },
         {
+            "name": "Message Settings",
+            "description": "",
+            "item": [
+                {
+                    "name": "List message settings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/message-settings",
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "25",
+                                    "description": "Results per page (1-100). Defaults to 25.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "starting_after",
+                                    "value": "",
+                                    "description": "Return results after this message setting UUID.",
+                                    "disabled": true
+                                },
+                                {
+                                    "key": "search",
+                                    "value": "support",
+                                    "description": "Search phone number, provider, email, or description.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "carrier",
+                                    "value": "voipms",
+                                    "description": "Filter by message provider identifier.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "enabled",
+                                    "value": "1",
+                                    "description": "Filter by enabled status.",
+                                    "disabled": false
+                                }
+                            ],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/message-settings?limit=25&starting_after=&search=support&carrier=voipms&enabled=1",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The account UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Lists messaging phone numbers in an account, including their provider,\nallowed extensions, email recipient, inbound delivery mode, custom webhook URL,\ndescription, and enabled status. Signing secrets are omitted from all responses.\nSearch by phone number, provider, email, or description.\n\nWhen `has_more` is true, pass the last result's `sms_destination_uuid`\nas `starting_after` to retrieve the next page.\nRequires account access and `message_settings_list_view`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"object\":\"list\",\"url\":\"\/api\/v1\/domains\/4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\/message-settings\",\"has_more\":false,\"data\":[{\"sms_destination_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"message_setting\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[\"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\"],\"email\":\"messages@example.com\",\"description\":\"Customer support\",\"enabled\":true,\"inbound_delivery\":\"inherit\",\"inbound_webhook_url\":null}]}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The limit must not be greater than 100.\",\"code\":\"invalid_parameter\",\"param\":\"limit\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Retrieve message settings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The account UUID."
+                                },
+                                {
+                                    "id": "sms_destination_uuid",
+                                    "key": "sms_destination_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The message setting UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns one messaging phone number's configuration. `allowed_extension_uuids`\ncontains the extensions permitted to share this number. Use the Extensions\nAPI to retrieve their names and extension numbers.\n`inbound_delivery` is `inherit`, `members`, or `webhook`. `inbound_webhook_url`\nis the saved custom URL, used only in `webhook` mode; it does not contain\nthe inherited account URL. An unset delivery mode is returned as `inherit`.\nSigning secrets are omitted. Authorized administrators can retrieve the account\nsecret in Account Settings > Messaging or the number's Message Settings form.\nRequires account access and `message_settings_list_view`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"sms_destination_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"message_setting\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[],\"email\":null,\"description\":\"Customer support\",\"enabled\":true,\"inbound_delivery\":\"webhook\",\"inbound_webhook_url\":\"https:\/\/example.com\/messages\"}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid message setting UUID.\",\"code\":\"invalid_request\",\"param\":\"sms_destination_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Message setting not found.\",\"code\":\"resource_missing\",\"param\":\"sms_destination_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Create message settings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/message-settings",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/message-settings",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The account UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"inbound_delivery\":\"members\",\"inbound_webhook_url\":\"https:\\\/\\\/example.com\\\/messages\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[\"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\"],\"email\":\"messages@example.com\",\"description\":\"Customer support\",\"enabled\":false}"
+                        },
+                        "description": "Configures a messaging phone number for an account. Supply the phone number,\nits message provider, and any extensions that should share it. National numbers\nare automatically converted to E.164 using the account country or the country\nin Default Settings. If neither is configured, supply an international number with + and its country code. Numbers starting\nwith + use their supplied country code.\nAllowed extensions can send and receive messages using the number and see\neach other's replies. An empty or omitted extension list grants no extension access.\n\nIncoming delivery defaults to `inherit`: use the account webhook when configured,\notherwise use the number's members and email. Choose `members` to use local\nmembers and email regardless of the account webhook, or `webhook` with a public\nHTTPS `inbound_webhook_url` to forward only to that URL. Custom webhook delivery\nclears local members and email, including values supplied in this request.\n\nWebhooks use the account's shared HMAC-SHA256 signing secret, generated if absent.\nThis API does not return or accept changes to the secret. Authorized administrators\ncan retrieve it in Account Settings > Messaging or the number's Message Settings form.\nReceivers verify the Signature header against the raw JSON request body and return\nHTTP 2xx. Webhook-routed SMS\/MMS remain in administrative logs and bypass local\nconversations and email. Changes affect newly received messages.\n\nThe number is enabled by default. This endpoint saves the configuration in FS PBX; it does not purchase\na number or configure your provider's account.\nRequires account access and `message_settings_manage`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 201,
+                            "body": "{\"sms_destination_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"message_setting\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[\"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\"],\"email\":\"messages@example.com\",\"description\":\"Customer support\",\"enabled\":true,\"inbound_delivery\":\"members\",\"inbound_webhook_url\":null}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The inbound webhook url field is required when inbound delivery is webhook.\",\"code\":\"invalid_parameter\",\"param\":\"inbound_webhook_url\"}}",
+                            "name": "Missing webhook URL"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Enter a valid phone number for the configured country, or include + and the country code.\",\"code\":\"invalid_parameter\",\"param\":\"destination\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid JSON request body. Remove trailing commas and check the JSON syntax.\",\"code\":\"invalid_json\",\"param\":null}}",
+                            "name": "Invalid JSON"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"message_settings_manage\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Update message settings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The account UUID."
+                                },
+                                {
+                                    "id": "sms_destination_uuid",
+                                    "key": "sms_destination_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The message setting UUID."
+                                }
+                            ]
+                        },
+                        "method": "PATCH",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"inbound_delivery\":\"webhook\",\"inbound_webhook_url\":\"https:\\\/\\\/example.com\\\/messages\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[],\"email\":\"messages@example.com\",\"description\":\"Customer support\",\"enabled\":false}"
+                        },
+                        "description": "Changes a messaging phone number's configuration. All fields are optional;\nomitted fields retain their current values except that custom webhook delivery\nclears local members and email. When supplied, `allowed_extension_uuids`\nreplaces the entire access list. Send [] to remove all extension access.\nSend null to clear the email recipient, description, or provider.\n\nTo switch from local members to a webhook, send `inbound_delivery: \"webhook\"`\nand `inbound_webhook_url: \"https:\/\/example.com\/messages\"`. This removes existing\nmembers and email. To switch back, send `inbound_delivery: \"members\"` and the\ndesired members\/email; removed assignments are not restored automatically.\nChoose `inherit` to follow the account webhook, or members\/email when none is set.\n\nOmit the URL to keep the saved custom URL, including when reselecting webhook mode.\nA URL-only update keeps the delivery mode. The URL cannot be cleared while the\nresulting mode is `webhook`; select `members` or `inherit` to clear it with null.\nAll supplied URLs must use HTTPS and resolve to public IP addresses.\n\nThe account signing secret is reused, or generated if none exists. It is omitted\nfrom every API response and cannot be changed here. Retrieve it through Account\nSettings > Messaging or the number's Message Settings form with messaging management\npermission. Webhooks sign the raw JSON body with HMAC-SHA256 in the Signature header.\nDelivery changes apply to new messages; previously received messages keep their route.\nRequires account access and `message_settings_manage`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"sms_destination_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"message_setting\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"destination\":\"+12125550123\",\"carrier\":\"voipms\",\"allowed_extension_uuids\":[],\"email\":null,\"description\":\"Customer support\",\"enabled\":true,\"inbound_delivery\":\"webhook\",\"inbound_webhook_url\":\"https:\/\/example.com\/messages\"}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The inbound webhook url field is required.\",\"code\":\"invalid_parameter\",\"param\":\"inbound_webhook_url\"}}",
+                            "name": "Missing webhook URL"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The selected allowed_extension_uuids.0 is invalid.\",\"code\":\"invalid_parameter\",\"param\":\"allowed_extension_uuids.0\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid JSON request body. Remove trailing commas and check the JSON syntax.\",\"code\":\"invalid_json\",\"param\":null}}",
+                            "name": "Invalid JSON"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"message_settings_manage\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Message setting not found.\",\"code\":\"resource_missing\",\"param\":\"sms_destination_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Delete message settings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/message-settings\/:sms_destination_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The account UUID."
+                                },
+                                {
+                                    "id": "sms_destination_uuid",
+                                    "key": "sms_destination_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The message setting UUID."
+                                }
+                            ]
+                        },
+                        "method": "DELETE",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Removes a messaging phone number's configuration and its extension access\nlist from the account. Existing message history is retained. This does not\ncancel the phone number with your provider.\nRequires account access and `message_settings_manage`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"message_setting\",\"deleted\":true}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid message setting UUID.\",\"code\":\"invalid_request\",\"param\":\"sms_destination_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"message_settings_manage\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Message setting not found.\",\"code\":\"resource_missing\",\"param\":\"sms_destination_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Messages",
+            "description": "",
+            "item": [
+                {
+                    "name": "Send an SMS or MMS",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/messages",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/messages",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "Account UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Idempotency-Key",
+                                "value": "32dcb5f0-70e1-44ed-a034-493984af48d1"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"from\":\"+12125550123\",\"to\":\"+12125550124\",\"text\":\"Your appointment is confirmed.\",\"media_urls\":[\"vmqeopfuudtdsufvyvddq\"],\"type\":\"SMS\"}"
+                        },
+                        "description": "Send a text message or attachments from an enabled number in Message Settings.\nRequires access to the account and the messages_send permission.\nA 200 response means FS PBX accepted your request; it does not confirm delivery.\nSave data.id to match the message with delivery callbacks and message logs.\nAPI messages appear in Status > Logs > Messages, but not in member conversations.\n\nBoth from and to must use E.164 format: + followed by the country code and\nphone number, such as +12025550100, without spaces or punctuation. National\nnumbers are not accepted. The account's country setting is not used.\nPhone numbers in responses and delivery callbacks use E.164.\n\nTo receive delivery updates, select an account or custom webhook for the\nsending number in Message Settings. Verify callbacks using the Signing secret\nin Account Settings > Messaging. Without a webhook, check results in message logs.\n\nIdempotency-Key is optional. Reuse it with the same request, account, API user,\nand endpoint for up to 24 hours to retry without creating another message.\nDifferent message details with the same key return 409. Use a new key for each\nnew message. A repeated response shows the original acceptance, not current\ndelivery status. On a 503 response, retry with the same key and body.\nValidation errors return 400 with an error object identifying the invalid field."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"data\":{\"id\":\"751ec0cb-4a4e-4462-85ac-f333cbaf77ee\",\"record_type\":\"message\",\"direction\":\"outbound\",\"type\":\"SMS\",\"from\":{\"phone_number\":\"+12125550123\"},\"to\":[{\"phone_number\":\"+12125550124\",\"status\":\"queued\"}],\"text\":\"Your appointment is confirmed.\",\"media\":[],\"received_at\":\"2026-11-05T00:00:00+00:00\",\"sent_at\":null,\"completed_at\":null,\"errors\":[]}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Provide text or at least one media URL.\",\"code\":\"invalid_parameter\",\"param\":\"text\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"messages_send\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 409,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Idempotency-Key was already used with a different request.\",\"code\":\"idempotency_conflict\",\"param\":\"Idempotency-Key\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 503,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"Unable to queue the message. Retry with the same Idempotency-Key.\",\"code\":\"queue_unavailable\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Send a group MMS",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/messages\/group_mms",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/messages\/group_mms",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "Account UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Idempotency-Key",
+                                "value": "32dcb5f0-70e1-44ed-a034-493984af48d1"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"from\":\"+12125550123\",\"to\":[\"+12125550124\",\"+12125550125\"],\"text\":\"Your appointment is confirmed.\",\"media_urls\":[\"ufvyvddqamniihfqcoynl\"],\"type\":\"MMS\"}"
+                        },
+                        "description": "Send a message to a shared group conversation. Use an array for to, with at\nleast two distinct recipient numbers excluding the sender. Repeated numbers\ncount once. Sinch supports up to 20 recipients; supported Bandwidth local\nnumbers support up to 10. Other providers and Bandwidth toll-free numbers do\nnot support group MMS. Text-only groups are also MMS.\n\nThe from number and every number in to must use E.164 format: + followed by\nthe country code and phone number, without spaces or punctuation. National\nnumbers are not accepted. Responses and delivery callbacks use E.164 phone numbers.\n\nRequires account access and messages_send. Authentication, optional\nIdempotency-Key, and delivery callbacks work as described for Send an SMS or\nMMS. The response also includes group_id and participants. Check each recipient's\nstatus in delivery callbacks, as group members may have different results."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"data\":{\"id\":\"751ec0cb-4a4e-4462-85ac-f333cbaf77ee\",\"record_type\":\"message\",\"direction\":\"outbound\",\"type\":\"MMS\",\"from\":{\"phone_number\":\"+12125550123\"},\"to\":[{\"phone_number\":\"+12125550124\",\"status\":\"queued\"},{\"phone_number\":\"+12125550125\",\"status\":\"queued\"}],\"text\":\"Hello everyone\",\"media\":[],\"received_at\":\"2026-11-05T00:00:00+00:00\",\"sent_at\":null,\"completed_at\":null,\"errors\":[],\"group_id\":\"3241c8f9-988c-588c-a039-1132d1969876\",\"participants\":[\"+12125550123\",\"+12125550124\",\"+12125550125\"]}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Group messaging is not available for this sending number.\",\"code\":\"invalid_parameter\",\"param\":\"to\"}}",
+                            "name": ""
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Phone Control",
+            "description": "",
+            "item": [
+                {
+                    "name": "Create a click-to-dial call",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/click-to-dial",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/click-to-dial",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"extension\":\"1001\",\"destination\":\"18005551212\",\"agent\":\"SIP-T53W\",\"vendor\":\"yealink\",\"event\":\"ACTION-URI\",\"content_type\":\"message\\\/sipfrag\",\"body\":\"number=18005551212&outgoing_uri=sip:1001@example.com\"}"
+                        },
+                        "description": "Makes the selected registered phone place a call to the requested\ndestination. If no selector is provided, FS PBX picks the freshest\ncontrollable registration group and returns any other matching groups in\n`skipped_targets`. To select a specific phone, retrieve its `agent` from\n`GET \/api\/v1\/domains\/{domain_uuid}\/phone-control\/targets` and send it\nwith this request. Use `vendor` only when any phone from that vendor is\nan acceptable target.\n\nAccess rules:\n- Caller must have access to the target domain.\n- Caller must have the `phone_control_call` permission.\n- Only the caller's assigned extension is accessible unless they also have\n  `phone_control_view_all_records` for account-wide access."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"click_to_dial_call\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"extension_uuid\": \"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\",\n  \"extension\": \"1001\",\n  \"destination\": \"18005551212\",\n  \"sent\": true,\n  \"targets\": [\n    {\n      \"vendor\": \"yealink\",\n      \"agent\": \"Yealink SIP-T53W 96.86.0.45\"\n    }\n  ],\n  \"skipped_targets\": [],\n  \"results\": [\n    {\n      \"sent\": true,\n      \"reason\": null,\n      \"vendor\": \"yealink\",\n      \"agent\": \"Yealink SIP-T53W 96.86.0.45\"\n    }\n  ]\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"No controllable registrations matched the selection.\",\"code\":\"invalid_request\",\"param\":\"selection\"}}",
+                            "name": "Invalid selection"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The destination field is required.\",\"code\":\"invalid_parameter\",\"param\":\"destination\"}}",
+                            "name": "Validation error"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": "Forbidden (domain access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"phone_control_call\"}}",
+                            "name": "Forbidden (missing permission)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this extension.\",\"code\":\"forbidden_extension\",\"param\":\"extension\"}}",
+                            "name": "Forbidden (extension access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Extension not found.\",\"code\":\"resource_missing\",\"param\":\"extension\"}}",
+                            "name": "Extension not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 409,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"No controllable registrations found for 1001@pbx.example.com.\",\"code\":\"no_controllable_registrations\",\"param\":\"extension\"}}",
+                            "name": "No controllable registrations"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"An unexpected error occurred.\"}}",
+                            "name": "Internal server error"
+                        }
+                    ]
+                },
+                {
+                    "name": "List phone-control targets",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/phone-control\/targets",
+                            "query": [
+                                {
+                                    "key": "extension",
+                                    "value": "1001",
+                                    "description": "Extension number to inspect.",
+                                    "disabled": false
+                                }
+                            ],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/phone-control\/targets?extension=1001",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns the registered phones that FS PBX can control for one extension.\nUse the returned `agent` value with either the click-to-dial or phone-control\naction endpoint. Each target also lists its supported phone-control actions.\nUse `vendor`, `lan_ip`, or a `registration_call_ids` value when needed.\nSee [Supported phones and actions](https:\/\/www.fspbx.com\/docs\/additional-information\/phone-control\/#supported-phones-and-actions)\nfor vendor-specific capabilities and behavior.\n\nAccess rules:\n- Caller must have access to the target domain.\n- Caller must have the `phone_control_view` permission.\n- Only the caller's assigned extension is accessible unless they also have\n  `phone_control_view_all_records` for account-wide access."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"list\",\n  \"url\": \"\/api\/v1\/domains\/4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\/phone-control\/targets\",\n  \"has_more\": false,\n  \"data\": [\n    {\n      \"vendor\": \"yealink\",\n      \"agent\": \"Yealink SIP-T53W 96.86.0.45\",\n      \"lan_ip\": \"10.0.0.25\",\n      \"registration_count\": 1,\n      \"registration_call_ids\": [\"8cc81337-3728-4b87-a507-f59627abf313\"],\n      \"supported_actions\": [\"hold\", \"resume\", \"blind-transfer\", \"attended-transfer\", \"complete-transfer\", \"cancel-transfer\", \"conference\", \"mute-toggle\", \"end-call\", \"answer-call\", \"dnd-on\", \"dnd-off\"]\n    }\n  ]\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The extension field is required.\",\"code\":\"invalid_parameter\",\"param\":\"extension\"}}",
+                            "name": "Validation error"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": "Forbidden (domain access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"phone_control_view\"}}",
+                            "name": "Forbidden (missing permission)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this extension.\",\"code\":\"forbidden_extension\",\"param\":\"extension\"}}",
+                            "name": "Forbidden (extension access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Extension not found.\",\"code\":\"resource_missing\",\"param\":\"extension\"}}",
+                            "name": "Extension not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"An unexpected error occurred.\"}}",
+                            "name": "Internal server error"
+                        }
+                    ]
+                },
+                {
+                    "name": "List active calls for phone control",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/phone-control\/calls",
+                            "query": [
+                                {
+                                    "key": "extension",
+                                    "value": "1001",
+                                    "description": "Extension number to inspect.",
+                                    "disabled": false
+                                }
+                            ],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/phone-control\/calls?extension=1001",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns the extension's current FreeSWITCH calls and their states. Use\nthis before or after an action to confirm whether a call is `RINGING`,\n`ACTIVE`, or `HELD`. An empty `data` array means there are no calls.\n\nAccess rules:\n- Caller must have access to the target domain.\n- Caller must have the `phone_control_view` permission.\n- Only the caller's assigned extension is accessible unless they also have\n  `phone_control_view_all_records` for account-wide access."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"list\",\n  \"url\": \"\/api\/v1\/domains\/4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\/phone-control\/calls\",\n  \"has_more\": false,\n  \"data\": [\n    {\n      \"channel_uuid\": \"adf94fd8-4a57-45ea-a463-2c1f53b38f80\",\n      \"sip_call_id\": \"0_123456@10.0.0.25\",\n      \"state\": \"ACTIVE\",\n      \"direction\": \"inbound\",\n      \"other_party\": \"2001\"\n    }\n  ]\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The extension field is required.\",\"code\":\"invalid_parameter\",\"param\":\"extension\"}}",
+                            "name": "Validation error"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": "Forbidden (domain access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"phone_control_view\"}}",
+                            "name": "Forbidden (missing permission)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this extension.\",\"code\":\"forbidden_extension\",\"param\":\"extension\"}}",
+                            "name": "Forbidden (extension access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Extension not found.\",\"code\":\"resource_missing\",\"param\":\"extension\"}}",
+                            "name": "Extension not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"An unexpected error occurred.\"}}",
+                            "name": "Internal server error"
+                        }
+                    ]
+                },
+                {
+                    "name": "Create a phone-control action",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/phone-control\/actions",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/phone-control\/actions",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"extension\":\"1001\",\"action\":\"hold\",\"destination\":\"2001\",\"agent\":\"SIP-T53W\",\"vendor\":\"yealink\",\"lan_ip\":\"10.0.0.25\",\"call_id\":\"8cc81337-3728-4b87-a507-f59627abf313\",\"force\":false,\"no_resume\":false,\"dry_run\":false}"
+                        },
+                        "description": "Controls a registered phone or its active call through the same service\nused by `php artisan phone:control`. Vendor support differs, so first use\nthe targets endpoint and choose an action from that phone's\n`supported_actions`. Prefer `agent` when selecting a specific phone.\nSee [Supported phones and actions](https:\/\/www.fspbx.com\/docs\/additional-information\/phone-control\/#supported-phones-and-actions)\nfor vendor-specific capabilities and behavior.\n\nCall-state safeguards are enabled by default. Hold, resume, end-call,\ntransfer, and answer-call normally require one unambiguous call in the\nexpected state. `force=true` bypasses those checks. `dry_run=true`\nresolves the target and returns a command preview without sending it.\n\nAccess rules:\n- Caller must have access to the target domain.\n- Caller must have the `phone_control_call` permission.\n- Only the caller's assigned extension is accessible unless they also have\n  `phone_control_view_all_records` for account-wide access."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"phone_control_action\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"extension_uuid\": \"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\",\n  \"extension\": \"1001\",\n  \"action\": \"hold\",\n  \"destination\": null,\n  \"vendor\": \"yealink\",\n  \"active_call_id\": \"0_123456@10.0.0.25\",\n  \"state_is_toggle\": false,\n  \"dry_run\": false,\n  \"sent\": true,\n  \"targets\": [{\"vendor\":\"yealink\",\"agent\":\"Yealink SIP-T53W 96.86.0.45\",\"lan_ip\":\"10.0.0.25\"}],\n  \"skipped_targets\": [],\n  \"results\": [{\"sent\":true,\"reason\":null,\"vendor\":\"yealink\",\"agent\":\"Yealink SIP-T53W 96.86.0.45\",\"lan_ip\":\"10.0.0.25\",\"sip_profile_name\":\"internal\",\"target_uri\":\"1001@pbx.example.com\",\"transport\":\"esl-notify\",\"registration_call_id\":\"8cc81337-3728-4b87-a507-f59627abf313\"}],\n  \"auto_resume\": null\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"phone_control_action\",\n  \"action\": \"hold\",\n  \"dry_run\": true,\n  \"sent\": true,\n  \"results\": [{\"sent\":true,\"vendor\":\"yealink\",\"command\":\"sendevent NOTIFY ...\",\"body\":\"key=F_HOLD\"}]\n}",
+                            "name": "Dry run"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"No supported phone-control registrations matched the selection.\",\"code\":\"invalid_request\",\"param\":\"selection\"}}",
+                            "name": "Invalid selection"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The destination field is required when action is blind transfer.\",\"code\":\"invalid_parameter\",\"param\":\"destination\"}}",
+                            "name": "Validation error"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": "Forbidden (domain access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"phone_control_call\"}}",
+                            "name": "Forbidden (missing permission)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this extension.\",\"code\":\"forbidden_extension\",\"param\":\"extension\"}}",
+                            "name": "Forbidden (extension access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Extension not found.\",\"code\":\"resource_missing\",\"param\":\"extension\"}}",
+                            "name": "Extension not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 409,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"No supported phone-control registrations found for 1001@pbx.example.com.\",\"code\":\"no_supported_registrations\",\"param\":\"extension\"}}",
+                            "name": "No supported registrations"
+                        },
+                        {
+                            "header": [],
+                            "code": 409,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Action [dnd-on] is not supported for Poly.\",\"code\":\"unsupported_action\",\"param\":\"action\"}}",
+                            "name": "Unsupported action"
+                        },
+                        {
+                            "header": [],
+                            "code": 409,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The call on 1001@pbx.example.com is already on hold.\",\"code\":\"invalid_call_state\",\"param\":\"action\"}}",
+                            "name": "Invalid call state"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"An unexpected error occurred.\"}}",
+                            "name": "Internal server error"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
             "name": "Phone Numbers",
             "description": "",
             "item": [
@@ -1795,7 +2768,7 @@
                             }
                         ],
                         "body": null,
-                        "description": "Returns phone numbers for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `destination_domain` permission.\n\nPagination (cursor-based):\n- Both `limit` and `starting_after` are optional.\n- If `limit` is not provided, it defaults to 50.\n- If `starting_after` is not provided, results start from the beginning.\n- If `has_more` is true, request the next page by passing `starting_after`\n  equal to the last item's `destination_uuid` from the previous response.\n\nExamples:\n- First page: `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers`\n- Next page:  `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers?starting_after={destination_uuid}`\n- Custom size: `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers?limit=50`"
+                        "description": "Returns phone numbers for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `destination_view` permission.\n\nPagination (cursor-based):\n- Both `limit` and `starting_after` are optional.\n- If `limit` is not provided, it defaults to 50.\n- If `starting_after` is not provided, results start from the beginning.\n- If `has_more` is true, request the next page by passing `starting_after`\n  equal to the last item's `destination_uuid` from the previous response.\n\nExamples:\n- First page: `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers`\n- Next page:  `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers?starting_after={destination_uuid}`\n- Custom size: `GET \/api\/v1\/domains\/{domain_uuid}\/phone-numbers?limit=50`"
                     },
                     "response": [
                         {
@@ -2155,6 +3128,506 @@
                             "code": 500,
                             "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error.\",\"code\":\"internal_error\"}}",
                             "name": "Internal server error"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Recordings",
+            "description": "",
+            "item": [
+                {
+                    "name": "List recordings",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/recordings",
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "50",
+                                    "description": "Optional. Number of results to return (min 1, max 100). Defaults to 50.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "starting_after",
+                                    "value": "c0ec8113-aa15-40ac-8437-47185dd9dcf4",
+                                    "description": "Optional. Return results after this recording UUID (cursor).",
+                                    "disabled": false
+                                }
+                            ],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/recordings?limit=50&starting_after=c0ec8113-aa15-40ac-8437-47185dd9dcf4",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns recordings for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `recording_view` permission.\n\nPagination (cursor-based):\n- Both `limit` and `starting_after` are optional.\n- If `limit` is not provided, it defaults to 50.\n- If `starting_after` is not provided, results start from the beginning.\n- If `has_more` is true, request the next page by passing `starting_after`\n  equal to the last item's `recording_uuid` from the previous response.\n\nExamples:\n- First page: `GET \/api\/v1\/domains\/{domain_uuid}\/recordings`\n- Next page: `GET \/api\/v1\/domains\/{domain_uuid}\/recordings?starting_after={last_recording_uuid}`\n- Custom size: `GET \/api\/v1\/domains\/{domain_uuid}\/recordings?limit=50`"
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"object\": \"list\",\n  \"url\": \"\/api\/v1\/domains\/4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\/recordings\",\n  \"has_more\": true,\n  \"data\": [\n    {\n      \"recording_uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n      \"object\": \"recording\",\n      \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n      \"recording_name\": \"Main Menu Greeting\",\n      \"recording_description\": \"Primary virtual receptionist greeting\",\n      \"recording_filename\": \"uploaded_abc123.wav\",\n      \"audio_available\": true,\n      \"audio_replaced\": false,\n      \"bytes\": null,\n      \"sha256\": null\n    }\n  ]\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid starting_after UUID.\",\"code\":\"invalid_request\",\"param\":\"starting_after\"}}",
+                            "name": "Invalid cursor UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"recording_view\"}}",
+                            "name": "Forbidden"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        }
+                    ]
+                },
+                {
+                    "name": "Create a recording",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/recordings",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/recordings",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "multipart\/form-data"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "recording_name",
+                                    "value": "Main Menu Greeting",
+                                    "type": "text",
+                                    "description": "The recording display name."
+                                },
+                                {
+                                    "key": "recording_description",
+                                    "value": "Primary virtual receptionist greeting",
+                                    "type": "text",
+                                    "description": "Optional description."
+                                },
+                                {
+                                    "key": "file",
+                                    "src": [],
+                                    "type": "file"
+                                }
+                            ]
+                        },
+                        "description": "Creates a recording in the specified domain and converts the uploaded audio\nto mono, 16 kHz, 16-bit PCM WAV for FreeSWITCH playback.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `recording_upload` permission.\n\nSend this request as `multipart\/form-data`."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 201,
+                            "body": "{\n  \"recording_uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n  \"object\": \"recording\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"recording_name\": \"Main Menu Greeting\",\n  \"recording_description\": \"Primary virtual receptionist greeting\",\n  \"recording_filename\": \"uploaded_abc123.wav\",\n  \"audio_available\": true,\n  \"audio_replaced\": true,\n  \"bytes\": 384044,\n  \"sha256\": \"6d27ccf17b7106932c46d299f908f793b52cb168f4cc47b70ef661755adb59f4\"\n}",
+                            "name": "Created"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"recording_upload\"}}",
+                            "name": "Forbidden"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 422,
+                            "body": "{\"message\":\"The file field is required.\",\"errors\":{\"file\":[\"The file field is required.\"]}}",
+                            "name": "Validation error"
+                        },
+                        {
+                            "header": [],
+                            "code": 422,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The uploaded audio could not be converted to a valid recording.\",\"code\":\"audio_processing_failed\",\"param\":\"file\"}}",
+                            "name": "Audio processing failed"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"The recording operation failed.\",\"code\":\"internal_error\"}}",
+                            "name": "Internal error"
+                        }
+                    ]
+                },
+                {
+                    "name": "Retrieve a recording",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "recording_uuid",
+                                    "key": "recording_uuid",
+                                    "value": "c0ec8113-aa15-40ac-8437-47185dd9dcf4",
+                                    "description": "The recording UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns one recording and details about its stored audio file.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `recording_view` permission."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"recording_uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n  \"object\": \"recording\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"recording_name\": \"Main Menu Greeting\",\n  \"recording_description\": \"Primary virtual receptionist greeting\",\n  \"recording_filename\": \"uploaded_abc123.wav\",\n  \"audio_available\": true,\n  \"audio_replaced\": false,\n  \"bytes\": 384044,\n  \"sha256\": \"6d27ccf17b7106932c46d299f908f793b52cb168f4cc47b70ef661755adb59f4\"\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid recording UUID.\",\"code\":\"invalid_request\",\"param\":\"recording_uuid\"}}",
+                            "name": "Invalid recording UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"recording_view\"}}",
+                            "name": "Forbidden"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Recording not found.\",\"code\":\"resource_missing\",\"param\":\"recording_uuid\"}}",
+                            "name": "Recording not found"
+                        }
+                    ]
+                },
+                {
+                    "name": "Update a recording",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "recording_uuid",
+                                    "key": "recording_uuid",
+                                    "value": "c0ec8113-aa15-40ac-8437-47185dd9dcf4",
+                                    "description": "The recording UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "multipart\/form-data"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "recording_name",
+                                    "value": "Updated Main Menu Greeting",
+                                    "type": "text",
+                                    "description": "Optional recording display name."
+                                },
+                                {
+                                    "key": "recording_description",
+                                    "value": "Updated automatically",
+                                    "type": "text",
+                                    "description": "Optional description; may be null."
+                                },
+                                {
+                                    "key": "_method",
+                                    "value": "PATCH",
+                                    "type": "text",
+                                    "description": "Required only for multipart audio uploads. Must be `PATCH`."
+                                },
+                                {
+                                    "key": "file",
+                                    "src": [],
+                                    "type": "file"
+                                },
+                                {
+                                    "key": "_method",
+                                    "value": "PATCH",
+                                    "type": "text"
+                                }
+                            ]
+                        },
+                        "description": "Updates the name, description, audio file, or any combination of those\nfields. Supplying `file` converts and atomically updates the stored audio\nwhile retaining the recording UUID and filename, so existing call-routing\nreferences continue to use the updated audio.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `recording_upload` permission.\n\nFor metadata-only updates, send `PATCH` normally. For an audio upload, send\n`multipart\/form-data` as POST with `_method=PATCH` so PHP parses the file.\nAt least one update field is required."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"recording_uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n  \"object\": \"recording\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"recording_name\": \"Updated Main Menu Greeting\",\n  \"recording_description\": \"Updated automatically\",\n  \"recording_filename\": \"uploaded_abc123.wav\",\n  \"audio_available\": true,\n  \"audio_replaced\": true,\n  \"bytes\": 512044,\n  \"sha256\": \"9ecf58932d0d11dc64e30b6f96f24c49ecaffdf8ce739dfa0e2e73198c331d2e\"\n}",
+                            "name": "Audio and metadata updated"
+                        },
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"recording_uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n  \"object\": \"recording\",\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"recording_name\": \"Updated Main Menu Greeting\",\n  \"recording_description\": \"Updated automatically\",\n  \"recording_filename\": \"uploaded_abc123.wav\",\n  \"audio_available\": true,\n  \"audio_replaced\": false,\n  \"bytes\": 384044,\n  \"sha256\": \"6d27ccf17b7106932c46d299f908f793b52cb168f4cc47b70ef661755adb59f4\"\n}",
+                            "name": "Metadata updated"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid recording UUID.\",\"code\":\"invalid_request\",\"param\":\"recording_uuid\"}}",
+                            "name": "Invalid recording UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"recording_upload\"}}",
+                            "name": "Forbidden"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Recording not found.\",\"code\":\"resource_missing\",\"param\":\"recording_uuid\"}}",
+                            "name": "Recording not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 422,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Provide a name, description, or audio file to update.\",\"code\":\"validation_error\"}}",
+                            "name": "No update fields"
+                        },
+                        {
+                            "header": [],
+                            "code": 422,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The uploaded audio could not be converted to a valid recording.\",\"code\":\"audio_processing_failed\",\"param\":\"file\"}}",
+                            "name": "Audio processing failed"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"The recording operation failed.\",\"code\":\"internal_error\"}}",
+                            "name": "Internal error"
+                        }
+                    ]
+                },
+                {
+                    "name": "Delete a recording",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/recordings\/:recording_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "recording_uuid",
+                                    "key": "recording_uuid",
+                                    "value": "c0ec8113-aa15-40ac-8437-47185dd9dcf4",
+                                    "description": "The recording UUID."
+                                }
+                            ]
+                        },
+                        "method": "DELETE",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Deletes the recording database row and its stored audio file.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `recording_delete` permission.\n\nDeleting a recording may clear references from features that use it. Use\nupdate when the goal is to replace audio without changing call routing."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"uuid\": \"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\n  \"object\": \"recording\",\n  \"deleted\": true\n}",
+                            "name": "Deleted"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid recording UUID.\",\"code\":\"invalid_request\",\"param\":\"recording_uuid\"}}",
+                            "name": "Invalid recording UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"recording_delete\"}}",
+                            "name": "Forbidden"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Recording not found.\",\"code\":\"resource_missing\",\"param\":\"recording_uuid\"}}",
+                            "name": "Recording not found"
+                        },
+                        {
+                            "header": [],
+                            "code": 500,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"The recording could not be deleted.\",\"code\":\"internal_error\"}}",
+                            "name": "Delete failed"
                         }
                     ]
                 }
@@ -2554,6 +4027,82 @@
             ]
         },
         {
+            "name": "Reports",
+            "description": "",
+            "item": [
+                {
+                    "name": "Retrieve active and suspended extensions report",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/reports\/active-extensions",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/reports\/active-extensions",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns the current \"Active and suspended extensions per domain\" report\nfor one domain as a single JSON object. No export or email is generated.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `extension_view` permission.\n\nCounts follow the report's definitions:\n- Total extensions includes all extensions, including disabled extensions.\n- Suspended extensions have their advanced setting `suspended` set to true.\n- Active extensions equals total minus suspended. Missing advanced settings\n  mean the extension is not suspended. This is not a SIP registration count.\n- Active mobile apps counts extensions with a linked mobile app in the same\n  domain whose stored status is 1, independently of extension suspension.\n- Domains without extensions return zero for every count."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\n  \"domain_uuid\": \"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\n  \"object\": \"active_extension_report\",\n  \"domain_name\": \"10001.fspbx.com\",\n  \"domain_description\": \"BluePeak Solutions\",\n  \"total_extensions\": 11,\n  \"suspended_extensions\": 2,\n  \"active_extensions\": 9,\n  \"active_mobile_apps\": 3\n}",
+                            "name": "Success"
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": "Invalid domain UUID"
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": "Unauthenticated"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": "Forbidden (domain access)"
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"success\":false,\"message\":\"Forbidden (missing permission).\",\"error\":{\"code\":\"forbidden_permission\",\"permission\":\"extension_view\"}}",
+                            "name": "Forbidden (missing permission)"
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": "Domain not found"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
             "name": "Ring Groups",
             "description": "",
             "item": [
@@ -2669,7 +4218,7 @@
                             }
                         ],
                         "body": null,
-                        "description": "Returns a single ring group for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `ring_group_domain` permission."
+                        "description": "Returns a single ring group for the specified domain the caller is allowed to access.\n\nAccess rules:\n- Caller must have access to the target domain (domain scope).\n- Caller must have the `ring_group_view` permission."
                     },
                     "response": [
                         {
@@ -2905,6 +4454,463 @@
                             "code": 200,
                             "body": "{\"object\":\"ring_group\",\"uuid\":\"c0ec8113-aa15-40ac-8437-47185dd9dcf4\",\"deleted\":true}",
                             "name": "Success"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Users",
+            "description": "",
+            "item": [
+                {
+                    "name": "List users",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users",
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "25",
+                                    "description": "Results per page (1-100). Defaults to 25.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "starting_after",
+                                    "value": "",
+                                    "description": "Return users after this user UUID.",
+                                    "disabled": true
+                                },
+                                {
+                                    "key": "search",
+                                    "value": "Jane",
+                                    "description": "Search email, first name, or last name.",
+                                    "disabled": false
+                                },
+                                {
+                                    "key": "user_enabled",
+                                    "value": "1",
+                                    "description": "Filter by enabled status.",
+                                    "disabled": false
+                                }
+                            ],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users?limit=25&starting_after=&search=Jane&user_enabled=1",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Lists FS PBX users in the specified account. Use this endpoint to browse user\nprofiles or find a user to retrieve, update, or delete. Each result includes\nthe user's UUID, name, email, enabled status, assigned extension, roles,\nand whether the user is directory-managed. Use Retrieve a user for the\ntime zone, managed accounts, account groups, and locations.\n\nSearch by name or email, or filter by enabled status. Results are paginated;\nwhen `has_more` is true, pass the last result's `user_uuid` as `starting_after`\nto fetch the next page.\n\nRequires access to the domain in the URL and `user_view`. Passwords, API tokens,\nand two-factor secrets are never returned."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"object\":\"list\",\"url\":\"\/api\/v1\/domains\/4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\/users\",\"has_more\":false,\"data\":[{\"user_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"user\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"user_email\":\"jane.smith@example.com\",\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_enabled\":true,\"extension_uuid\":null,\"groups\":[],\"directory_managed\":false}]}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid domain UUID.\",\"code\":\"invalid_request\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Retrieve a user",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "user_uuid",
+                                    "key": "user_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The user UUID."
+                                }
+                            ]
+                        },
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Returns one FS PBX user's profile and access assignments in the specified\naccount. Use this endpoint to inspect the user's current details before\nmaking changes, including their name, email, enabled status, time zone,\nassigned extension, roles, managed accounts, and locations.\n\n`groups` contains role UUIDs; `accounts` and `account_groups` identify the\naccounts and account groups the user is assigned to manage. `locations`\ncontains assigned location UUIDs, and `directory_managed` indicates whether\nthe user is linked to a connected directory.\n\nRequires domain access and `user_view`. The user must belong to the domain\nin the URL. Passwords, API tokens, and two-factor secrets are never returned."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"user_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"user\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"user_email\":\"jane.smith@example.com\",\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_enabled\":true,\"extension_uuid\":null,\"time_zone\":null,\"groups\":[],\"accounts\":[],\"account_groups\":[],\"locations\":[],\"directory_managed\":false}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Invalid user UUID.\",\"code\":\"invalid_request\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You do not have access to this domain.\",\"code\":\"forbidden_domain\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"User not found.\",\"code\":\"resource_missing\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Create a user",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_email\":\"jane.smith@example.com\",\"user_enabled\":false,\"extension_uuid\":\"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\",\"groups\":[\"6fdb722a-3f2f-430d-ab05-46a75de8c587\"],\"time_zone\":\"America\\\/New_York\",\"accounts\":[],\"account_groups\":[],\"locations\":[]}"
+                        },
+                        "description": "Creates a local FS PBX user in the specified account. Use this endpoint to\nadd a staff member or administrator who will sign in to the FS PBX web\ninterface. Returns the created user's profile and `user_uuid`, which can\nbe used to retrieve, update, or delete the user.\n\nOnly `first_name` and `user_email` are required. You can also assign an\nexisting extension and roles to configure the user's access. No role is\nassigned automatically. If `groups` is supplied, it must contain at least\none existing role UUID. The domain in the URL owns the new user. Password\nsetup is a separate step: call Send a password reset email for the new\n`user_uuid` to let the user choose their password. Creating the user does\nnot send an email or set or return a password.\n\nIf `time_zone` is omitted or null, it defaults to the account's local timezone,\nfalling back to the system timezone setting or UTC.\n\nRequires domain access and `user_add`. Role assignments require\n`user_group_edit` and cannot exceed the caller's role level. Only superadmins\nmay assign the superadmin role. Disabled creation requires `user_status`.\nAccount assignments require their corresponding management permissions.\nThe domain's user limit is enforced."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 201,
+                            "body": "{\"user_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"user\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"user_email\":\"jane.smith@example.com\",\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_enabled\":true,\"extension_uuid\":null,\"time_zone\":\"America\/New_York\",\"groups\":[],\"accounts\":[],\"account_groups\":[],\"locations\":[],\"directory_managed\":false}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The first name field is required.\",\"code\":\"invalid_parameter\",\"param\":\"first_name\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"One or more selected groups are not allowed.\",\"code\":\"forbidden\",\"param\":null}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Domain not found.\",\"code\":\"resource_missing\",\"param\":\"domain_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Update a user",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "user_uuid",
+                                    "key": "user_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The user UUID."
+                                }
+                            ]
+                        },
+                        "method": "PATCH",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_email\":\"jane.smith@example.com\",\"user_enabled\":false,\"extension_uuid\":\"d2c7b17c-8b0d-4f0f-b5ff-2cfb6d7a4f4b\",\"groups\":[\"6fdb722a-3f2f-430d-ab05-46a75de8c587\"],\"time_zone\":\"America\\\/New_York\",\"accounts\":[],\"account_groups\":[],\"locations\":[]}"
+                        },
+                        "description": "Updates an existing FS PBX user in the specified account. Use this endpoint\nto change profile details, enable or disable the user, or revise their\nextension, roles, managed accounts, and location assignments. Returns the\nupdated user profile.\n\nThis is a partial update: all fields are optional, and omitted fields and\nassignments are preserved. Send `extension_uuid: null` to unassign the\nextension. If `groups` is supplied, it must contain at least one existing\nrole UUID; an empty array is rejected.\n\nDirectory-managed identity and status cannot be changed here. Directory-managed\nemail and extension assignments are protected, and directory-managed roles\nare preserved. Local roles may still be changed with the appropriate permission.\n\nRequires domain access and `user_edit`. Changes to roles, status, and managed\naccounts require the same additional permissions as creation. Non-superadmins\ncannot modify superadmins or users above their role level."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"user_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"user\",\"domain_uuid\":\"4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b\",\"user_email\":\"jane.smith@example.com\",\"first_name\":\"Jane\",\"last_name\":\"Smith\",\"user_enabled\":true,\"extension_uuid\":null,\"time_zone\":null,\"groups\":[],\"accounts\":[],\"account_groups\":[],\"locations\":[],\"directory_managed\":false}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"This field is managed by the connected directory.\",\"code\":\"invalid_parameter\",\"param\":\"first_name\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You are not allowed to manage this user.\",\"code\":\"forbidden\",\"param\":null}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"User not found.\",\"code\":\"resource_missing\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Send a password reset email",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users\/:user_uuid\/password-reset",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users\/:user_uuid\/password-reset",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "user_uuid",
+                                    "key": "user_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The user UUID."
+                                }
+                            ]
+                        },
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Emails a link that lets an existing local FS PBX user choose a new password.\nUse this after creating a user to set up their first password, or to help\nan existing user regain access. Returns confirmation that the email was sent.\n\nNo request body is needed. The email goes to the user's saved `user_email`\nand uses the existing password-reset email template. Passwords, reset tokens,\nand reset URLs are never returned. The current password stays valid until\nthe user completes the reset; sending the email does not enable a disabled user.\n\nLinks are single-use and expire according to the password-reset configuration\n(60 minutes by default). Repeat requests for the same recipient are throttled\naccording to that configuration (60 seconds by default), returning HTTP 429.\n\nRequires domain access and `user_edit`. The user must belong to the domain\nin the URL. Non-superadmins cannot request resets for superadmins or users\nabove their role level. Directory-managed users must reset their passwords\nthrough the connected directory."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"object\":\"password_reset\",\"user_uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"sent\":true}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"This user is managed by an external directory. Reset the password in the connected directory.\",\"code\":\"invalid_parameter\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You are not allowed to manage this user.\",\"code\":\"forbidden\",\"param\":null}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"User not found.\",\"code\":\"resource_missing\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 429,
+                            "body": "{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Please wait before requesting another password reset email.\",\"code\":\"password_reset_throttled\",\"param\":null}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 503,
+                            "body": "{\"error\":{\"type\":\"api_error\",\"message\":\"Unable to send the password reset email. Please try again later.\",\"code\":\"mail_delivery_failed\",\"param\":null}}",
+                            "name": ""
+                        }
+                    ]
+                },
+                {
+                    "name": "Delete a user",
+                    "request": {
+                        "url": {
+                            "host": "{{baseUrl}}",
+                            "path": "api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "query": [],
+                            "raw": "{{baseUrl}}\/api\/v1\/domains\/:domain_uuid\/users\/:user_uuid",
+                            "variable": [
+                                {
+                                    "id": "domain_uuid",
+                                    "key": "domain_uuid",
+                                    "value": "4018f7a3-8e0a-47bb-9f4f-04b1313e0e1b",
+                                    "description": "The domain UUID."
+                                },
+                                {
+                                    "id": "user_uuid",
+                                    "key": "user_uuid",
+                                    "value": "c9a76140-0ca4-4ea3-95af-7e12c2ff0df5",
+                                    "description": "The user UUID."
+                                }
+                            ]
+                        },
+                        "method": "DELETE",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application\/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application\/json"
+                            }
+                        ],
+                        "body": null,
+                        "description": "Permanently removes a local FS PBX user from the specified account to revoke\ntheir application access. Deletes the user's profile, settings, assignments,\nAPI tokens, and sessions. Returns the deleted user's UUID and a `deleted: true`\nconfirmation.\n\nRequires domain access and `user_delete`. Non-superadmins cannot delete\nsuperadmins or users above their role level. Directory-managed users must\nbe disabled or removed in their connected directory instead."
+                    },
+                    "response": [
+                        {
+                            "header": [],
+                            "code": 200,
+                            "body": "{\"uuid\":\"c9a76140-0ca4-4ea3-95af-7e12c2ff0df5\",\"object\":\"user\",\"deleted\":true}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 400,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Directory-managed users cannot be deleted here. Disable or remove them in the connected directory.\",\"code\":\"invalid_parameter\",\"param\":\"user_uuid\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 401,
+                            "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"Unauthenticated.\",\"code\":\"unauthenticated\"}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 403,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You are not allowed to manage this user.\",\"code\":\"forbidden\",\"param\":null}}",
+                            "name": ""
+                        },
+                        {
+                            "header": [],
+                            "code": 404,
+                            "body": "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"User not found.\",\"code\":\"resource_missing\",\"param\":\"user_uuid\"}}",
+                            "name": ""
                         }
                     ]
                 }

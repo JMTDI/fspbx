@@ -1,3 +1,1 @@
-<?php
-echo $data['content'];
-?>
+@include('emails.en-us.content')
