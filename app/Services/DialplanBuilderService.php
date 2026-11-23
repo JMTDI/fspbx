@@ -11,6 +11,15 @@ class DialplanBuilderService
 
     public function buildDialplanForPhoneNumber(Destinations $phoneNumber, $domainName): void
     {
+        $dialPlan = Dialplans::where('domain_uuid', $phoneNumber->domain_uuid)
+            ->where('dialplan_uuid', $phoneNumber->dialplan_uuid)->first();
+        if (!$dialPlan && Dialplans::where('dialplan_uuid', $phoneNumber->dialplan_uuid)->exists()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'dialplan_uuid' => __('Select a valid routing target in this account.'),
+            ]);
+        }
+        $phoneNumber->destination_number_regex = app(PhoneNumberService::class)
+            ->dialplanMatchForDestination($phoneNumber)['expression'];
         $originalDid = app(PhoneNumberService::class)->originalDid($phoneNumber);
         // logger($phoneNumber);
         // Data to pass to the Blade template
@@ -18,7 +27,7 @@ class DialplanBuilderService
             'phone_number' => $phoneNumber,
             'original_did_export' => $originalDid === null ? null : self::originalDidExport($originalDid),
             'domain_name' => $domainName,
-            'fax_data' => $phoneNumber->fax()->first() ?? null,
+            'fax_data' => $phoneNumber->fax()->where('domain_uuid', $phoneNumber->domain_uuid)->first() ?? null,
             'dialplan_continue' => 'false',
             'destination_condition_field' => self::INBOUND_DESTINATION_FIELD,
         ];
@@ -32,8 +41,6 @@ class DialplanBuilderService
         $dom->formatOutput = true;         // Formats XML properly
         $xml = $dom->saveXML($dom->documentElement);
 
-
-        $dialPlan = Dialplans::where('dialplan_uuid', $phoneNumber->dialplan_uuid)->first();
 
         if (!$dialPlan) {
             $dialPlan = new Dialplans();
@@ -67,16 +74,21 @@ class DialplanBuilderService
 
         $this->generateDialplanDetailsForPhoneNumber($phoneNumber, $dialPlan, $originalDid, $domainName);
 
+        // Direct rebuilds must keep the early inbound lookup in sync with XML.
+        if ($phoneNumber->exists && $phoneNumber->isDirty('destination_number_regex')) {
+            Destinations::query()->whereKey($phoneNumber->getKey())->where('domain_uuid', $phoneNumber->domain_uuid)
+                ->update(['destination_number_regex' => $phoneNumber->destination_number_regex]);
+            $phoneNumber->syncOriginalAttribute('destination_number_regex');
+        }
+
         //clear fusionpbx cache
         $this->clearCacheForPhoneNumber($phoneNumber);
     }
 
     protected function generateDialplanDetailsForPhoneNumber(Destinations $phoneNumber, Dialplans $dialPlan, ?string $originalDid = null, ?string $domainName = null): void
     {
-        // Remove existing device lines
-        if ($dialPlan->dialplan_details()->exists()) {
-            $dialPlan->dialplan_details()->delete();
-        }
+        // Remove this account's existing dialplan details before rebuilding them.
+        $dialPlan->dialplan_details()->where('domain_uuid', $phoneNumber->domain_uuid)->delete();
 
         $detailOrder = 20;
         $detailGroup = 0;

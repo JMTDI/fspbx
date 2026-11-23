@@ -56,6 +56,7 @@ use App\Exports\ExtensionsExport;
 use App\Models\DomainSettings;
 use App\Models\DefaultSettings;
 use App\Services\RingotelApiService;
+use App\Services\ExtensionPasswordService;
 use Illuminate\Support\Facades\Cache;
 
 class ExtensionsController extends Controller
@@ -1230,23 +1231,13 @@ public function store(StoreExtensionRequest $request)
         }
 
         try {
-            DB::beginTransaction();
             $currentDomain = session('domain_uuid');
 
             $extension = Extensions::whereKey($extension_uuid)
                 ->where('domain_uuid', $currentDomain)
                 ->firstOrFail();
 
-            // Generate new password
-            $newPassword = generate_sip_password();
-
-            // Update the extension password
-            $extension->password = $newPassword;
-            $extension->save();
-
-            DB::commit();
-
-            FusionCache::clear("directory:" . $extension->extension . "@" . $extension->user_context);
+            app(ExtensionPasswordService::class)->update($extension, generate_sip_password());
 
             // Return new credentials
             return response()->json([
@@ -1258,7 +1249,6 @@ public function store(StoreExtensionRequest $request)
                 ],
             ]);
         } catch (\Throwable $e) {
-            DB::rollback();
             logger('ExtensionsController@regenerateSipCredentials error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
             return response()->json([
                 'success'  => false,
@@ -2356,8 +2346,6 @@ public function store(StoreExtensionRequest $request)
         }
 
         try {
-            DB::beginTransaction();
-
             $data = request()->validate([
                 'extension_uuid' => ['required', 'uuid'],
                 'password' => ['required', 'string'],
@@ -2367,12 +2355,7 @@ public function store(StoreExtensionRequest $request)
                 ->where('domain_uuid', session('domain_uuid'))
                 ->firstOrFail();
 
-            $extension->password = $data['password'];
-            $extension->save();
-
-            DB::commit();
-
-            FusionCache::clear("directory:" . $extension->extension . "@" . $extension->user_context);
+            app(ExtensionPasswordService::class)->update($extension, $data['password']);
 
             return response()->json([
                 'success' => true,
@@ -2380,7 +2363,6 @@ public function store(StoreExtensionRequest $request)
                 'extension_uuid' => $extension->extension_uuid,
             ], 200);
         } catch (\Throwable $e) {
-            DB::rollBack();
             logger('ExtensionsController@updatePassword error: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
             return response()->json([
                 'success' => false,

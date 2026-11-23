@@ -213,6 +213,56 @@ class PhoneNumberDialplanTest extends TestCase
         return $groups;
     }
 
+    /** @dataProvider destinationNumbers */
+    public function test_saved_destination_xml_and_rules_share_the_country_aware_match(
+        string $country, ?string $prefix, string $number, string $canonical, array $accepted, array $rejected
+    ): void {
+        $this->createDestinationsTable();
+        app()->instance(PhoneNumberService::class, new class($country) extends PhoneNumberService {
+            public function __construct(private string $country) {}
+            public function countryCodeForDomain(?string $domainUuid = null): string { return $this->country; }
+        });
+        $destination = Destinations::create([
+            'destination_uuid' => '8c75b703-9419-4ad7-92d8-408d73c34b3e',
+            'domain_uuid' => '7d58342b-2b29-4dcf-92d6-e9a9e002a4e5',
+            'dialplan_uuid' => '28c7b5c6-3bf7-4899-9d07-f9298d065410',
+            'destination_number' => $number, 'destination_prefix' => $prefix,
+            'destination_enabled' => 'true', 'destination_context' => 'public',
+            'destination_actions' => json_encode([['destination_app' => 'transfer', 'destination_data' => '1001 XML account.test']]),
+        ]);
+        $expression = $destination->fresh()->destination_number_regex;
+        $builder = new class extends DialplanBuilderService {
+            public function clearCacheForPhoneNumber(Destinations $phoneNumber): void {}
+        };
+        $builder->buildDialplanForPhoneNumber($destination, 'account.test');
+        $plan = Dialplans::findOrFail($destination->dialplan_uuid);
+        $details = $plan->dialplan_details()->orderBy('dialplan_detail_order')->get();
+        $this->assertSame($expression, $details->first()->dialplan_detail_data);
+        foreach ([$plan->dialplan_xml, app(DialplanService::class)->buildXml($plan, $details->map->getAttributes()->all())] as $xml) {
+            $actual = (string) simplexml_load_string($xml)->condition['expression'];
+            $this->assertSame($expression, $actual);
+            foreach ($accepted as $value) $this->assertSame(1, preg_match('/'.$actual.'/D', $value), $value);
+            foreach ($rejected as $value) $this->assertSame(0, preg_match('/'.$actual.'/D', $value), $value);
+        }
+    }
+
+    public static function destinationNumbers(): array
+    {
+        return require dirname(__DIR__).'/Fixtures/phone_number_matches.php';
+    }
+
+    private function createDestinationsTable(): void
+    {
+        Schema::create('v_destinations', function (Blueprint $table) {
+            $table->uuid('destination_uuid')->primary();
+            foreach (['domain_uuid', 'dialplan_uuid', 'destination_number', 'destination_prefix',
+                'destination_trunk_prefix', 'destination_area_code', 'destination_number_regex',
+                'destination_actions', 'destination_enabled', 'destination_context', 'update_date', 'update_user'] as $column) {
+                $table->text($column)->nullable();
+            }
+        });
+    }
+
     public function test_rules_editor_still_supplies_context_for_legacy_details(): void
     {
         $dialplan = new Dialplans([
@@ -254,7 +304,21 @@ class PhoneNumberDialplanTest extends TestCase
                 $table->string($column)->nullable();
             }
         });
-        session(['domain_name' => 'account.test']);
+        session(['domain_name' => 'account.test', 'domain_uuid' => '7d58342b-2b29-4dcf-92d6-e9a9e002a4e5']);
+        Schema::create('v_voicemails', function (Blueprint $table) {
+            foreach (['voicemail_uuid', 'domain_uuid', 'voicemail_id'] as $column) {
+                $table->string($column);
+            }
+        });
+        DB::table('v_voicemails')->insert([
+            'voicemail_uuid' => '11111111-1111-4111-8111-111111111111',
+            'domain_uuid' => '7d58342b-2b29-4dcf-92d6-e9a9e002a4e5', 'voicemail_id' => '1001',
+        ]);
+        Schema::create('v_extensions', function (Blueprint $table) {
+            foreach (['extension_uuid', 'domain_uuid', 'extension', 'effective_caller_id_name'] as $column) {
+                $table->string($column)->nullable();
+            }
+        });
         $actions = json_encode([['destination_app' => 'transfer', 'destination_data' => '*991001 XML account.test']]);
         $phoneNumber = new Destinations([
             'destination_uuid' => '8c75b703-9419-4ad7-92d8-408d73c34b3e',
